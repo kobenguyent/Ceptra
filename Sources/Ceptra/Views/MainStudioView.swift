@@ -31,6 +31,14 @@ struct MainStudioView: View {
             NewFileSheetView()
                 .environmentObject(appState)
         }
+        .sheet(isPresented: $appState.showingNewFolderSheet) {
+            NewFolderSheetView()
+                .environmentObject(appState)
+        }
+        .sheet(isPresented: $appState.showingParallelRunSheet) {
+            ParallelRunSheetView()
+                .environmentObject(appState)
+        }
         .sheet(isPresented: $appState.showingUpdateSheet) {
             UpdateSheetView()
                 .environmentObject(appState)
@@ -342,10 +350,46 @@ private struct TopStudioBar: View {
                                 Button("Run Current Test File (⌘⇧R)") { appState.runActiveFile() }
                             }
                             Button("Dry Run (Validate & List)") { appState.run(mode: .dryRun(relativePath: nil)) }
-                            Button("Run Parallel Workers (\(appState.runOptions.workerCount)x \(appState.runOptions.workerStrategy.rawValue))") {
-                                appState.run(mode: .runWorkers(count: appState.runOptions.workerCount, strategy: appState.runOptions.workerStrategy))
-                            }
                             Button("Re-run Last Failed") { appState.run(mode: .runLastFailed) }
+
+                            Divider()
+
+                            Section("Parallel & Multi-Suite") {
+                                Button("Run Workers (\(appState.runOptions.workerCount)x \(appState.runOptions.workerStrategy.rawValue)) (⌘⇧W)") {
+                                    appState.runWorkersWithCurrentOptions()
+                                }
+                                Button("Configure Workers (run-workers)…") {
+                                    appState.presentParallelRunSheet(tab: .workers)
+                                }
+
+                                Button("Run Multiple — All Suites (⌘⇧M)") {
+                                    appState.run(mode: .runMultiple(suites: [], runAll: true))
+                                }
+
+                                if let suites = appState.workspace?.config.multipleSuites, !suites.isEmpty {
+                                    Menu("Run Multiple Suite (\(suites.count))") {
+                                        ForEach(suites) { suite in
+                                            Button("Run \"\(suite.name)\" (all browsers)") {
+                                                appState.run(mode: .runMultiple(suites: [suite.name], runAll: false))
+                                            }
+                                            ForEach(suite.browserTargets, id: \.self) { target in
+                                                Button("  \(target)") {
+                                                    appState.run(mode: .runMultiple(suites: [target], runAll: false))
+                                                }
+                                            }
+                                        }
+                                        Divider()
+                                        Button("Configure Multiple (run-multiple)…") {
+                                            appState.presentParallelRunSheet(tab: .multiple)
+                                        }
+                                    }
+                                } else {
+                                    Button("Configure Multiple (run-multiple)…") {
+                                        appState.presentParallelRunSheet(tab: .multiple)
+                                    }
+                                }
+                            }
+
                             Divider()
                             Button("Check Environment (check)") { appState.run(mode: .checkEnvironment) }
                             Button("Generate Type Defs (def)") { appState.run(mode: .generateDefinitions) }
@@ -659,9 +703,15 @@ private struct RunOptionsPopover: View {
                     Text("Grep:")
                         .font(.system(size: 11.5))
                         .foregroundStyle(CeptraTheme.textSecondary)
-                    TextField("Regex or @tag", text: $appState.runOptions.grepPattern)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11.5))
+                    HStack(spacing: 6) {
+                        TextField("Regex or @tag", text: $appState.runOptions.grepPattern)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11.5))
+                        Toggle("Invert", isOn: $appState.runOptions.invertGrep)
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 10.5))
+                            .help("Invert --grep matches (--invert)")
+                    }
                 }
                 GridRow {
                     Text("Workers:")
@@ -679,10 +729,44 @@ private struct RunOptionsPopover: View {
                         .frame(width: 82)
                     }
                 }
+                GridRow {
+                    Text("Serial:")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                    TextField("Optional --serial pattern", text: $appState.runOptions.workerSerialPattern)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11.5))
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Button {
+                    appState.showingRunOptionsPopover = false
+                    appState.presentParallelRunSheet(tab: .workers)
+                } label: {
+                    Label("run-workers…", systemImage: "cpu")
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button {
+                    appState.showingRunOptionsPopover = false
+                    appState.presentParallelRunSheet(tab: .multiple)
+                } label: {
+                    Label("run-multiple…", systemImage: "square.stack.3d.up")
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
         }
         .padding(14)
-        .frame(width: 320)
+        .frame(width: 340)
         .onDisappear { appState.saveSettings() }
     }
 }

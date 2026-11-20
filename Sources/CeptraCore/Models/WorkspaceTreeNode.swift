@@ -104,13 +104,26 @@ public struct WorkspaceTreeNode: Identifiable, Equatable, Hashable, Sendable {
         return result
     }
 
-    /// Returns the ancestor directory paths leading to `targetFilePath`, so a file can be revealed in the tree.
-    public func ancestorDirectoryPaths(containing targetFilePath: String) -> [String]? {
-        if !isDirectory {
-            return path == targetFilePath ? [] : nil
+    /// Collects relative directory paths inside this subtree (useful for folder pickers).
+    public func allDirectoryRelativePaths() -> [String] {
+        var result: [String] = []
+        if isDirectory {
+            result.append(relativePath)
+            for child in children where child.isDirectory {
+                result.append(contentsOf: child.allDirectoryRelativePaths())
+            }
         }
+        return result
+    }
+
+    /// Returns the ancestor directory paths leading to `targetPath` (works for both files and folders).
+    public func ancestorDirectoryPaths(containing targetPath: String) -> [String]? {
+        if path == targetPath {
+            return isDirectory ? [path] : []
+        }
+        guard isDirectory else { return nil }
         for child in children {
-            if let found = child.ancestorDirectoryPaths(containing: targetFilePath) {
+            if let found = child.ancestorDirectoryPaths(containing: targetPath) {
                 return [path] + found
             }
         }

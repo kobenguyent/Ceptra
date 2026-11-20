@@ -53,12 +53,12 @@ struct CodeEditorView: NSViewRepresentable {
         textView.currentFileURL = URL(fileURLWithPath: documentID)
 
         if documentChanged {
-            // 1. Persist outgoing tab's cursor & scroll offset
+            // 1. Persist outgoing tab's cursor & scroll offset only after initial layout has stabilized
             let outgoingID = coord.currentDocumentID
-            if !outgoingID.isEmpty {
+            if !outgoingID.isEmpty && container.hasCompletedInitialLayout {
                 coord.savedStates[outgoingID] = TabViewState(
                     selectedRange: textView.selectedRange(),
-                    scrollOrigin: container.scrollView.contentView.bounds.origin
+                    scrollOrigin: container.scrollView.documentVisibleRect.origin
                 )
             }
 
@@ -74,16 +74,22 @@ struct CodeEditorView: NSViewRepresentable {
             container.relayoutDocument()
             textView.undoManager?.removeAllActions()
 
-            // 4. Restore incoming tab's cursor & scroll offset (clamped safely to new document bounds)
+            // 4. Restore incoming tab's cursor & scroll offset (or pin cleanly to top-left for freshly opened files)
             let maxLen = (text as NSString).length
             if let saved = coord.savedStates[documentID], jumpToLine == nil {
                 let loc = min(max(0, saved.selectedRange.location), maxLen)
                 let len = min(saved.selectedRange.length, max(0, maxLen - loc))
                 textView.setSelectedRange(NSRange(location: loc, length: len))
                 container.scrollToClampedOrigin(saved.scrollOrigin)
+                if !container.hasCompletedInitialLayout {
+                    container.pendingInitialScrollOrigin = saved.scrollOrigin
+                }
             } else {
                 textView.setSelectedRange(NSRange(location: 0, length: 0))
                 container.scrollToClampedOrigin(.zero)
+                if !container.hasCompletedInitialLayout {
+                    container.pendingInitialScrollOrigin = .zero
+                }
             }
 
             container.updateGutter()
@@ -352,6 +358,12 @@ struct CodeEditorView: NSViewRepresentable {
     }
 }
 
+// MARK: - Flipped Clip View (Keeps Document Origin Pinned at Top-Left y = 0)
+
+private final class FlippedClipView: NSClipView {
+    override var isFlipped: Bool { true }
+}
+
 // MARK: - Container View (TextKit 1 + Sibling Gutter)
 
 final class CeptraEditorContainerView: NSView {
@@ -360,8 +372,16 @@ final class CeptraEditorContainerView: NSView {
     let gutterView: LineNumberGutterView
     private var gutterWidthConstraint: NSLayoutConstraint?
 
+    var hasCompletedInitialLayout = false
+    var pendingInitialScrollOrigin: CGPoint? = .zero
+    var pendingInitialJumpLine: Int? = nil
+
     init(documentID: String, text: String, language: String, fontSize: CGFloat, delegate: NSTextViewDelegate) {
         self.scrollView = NSScrollView()
+        let clipView = FlippedClipView()
+        clipView.drawsBackground = true
+        clipView.backgroundColor = NSColor(red: 0.075, green: 0.082, blue: 0.102, alpha: 1.0)
+        self.scrollView.contentView = clipView
 
         let textStorage = NSTextStorage()
         let layoutManager = NSLayoutManager()
@@ -384,8 +404,6 @@ final class CeptraEditorContainerView: NSView {
         textView.editorLanguage = language
         textView.editorFontSize = fontSize
         textView.configureDefaults()
-        textView.string = text
-        textView.restyleAllText()
 
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
@@ -394,6 +412,10 @@ final class CeptraEditorContainerView: NSView {
         scrollView.drawsBackground = true
         scrollView.backgroundColor = NSColor(red: 0.075, green: 0.082, blue: 0.102, alpha: 1.0)
         scrollView.borderType = .noBorder
+
+        textView.string = text
+        textView.restyleAllText()
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
 
         gutterView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -417,6 +439,7 @@ final class CeptraEditorContainerView: NSView {
         ])
 
         relayoutDocument()
+        scrollToClampedOrigin(.zero)
         updateGutter()
     }
 
@@ -426,14 +449,35 @@ final class CeptraEditorContainerView: NSView {
 
     override func layout() {
         super.layout()
-        // Keep textView minimum size aligned to viewport width/height so short files never appear cut off
         let clipSize = scrollView.contentView.bounds.size
+        guard clipSize.width > 0 && clipSize.height > 0 else { return }
+
+        if !hasCompletedInitialLayout {
+            hasCompletedInitialLayout = true
+            relayoutDocument()
+            if let targetLine = pendingInitialJumpLine {
+                pendingInitialJumpLine = nil
+                pendingInitialScrollOrigin = nil
+                scrollToLine(targetLine)
+            } else if let targetOrigin = pendingInitialScrollOrigin {
+                pendingInitialScrollOrigin = nil
+                scrollToClampedOrigin(targetOrigin)
+            }
+            gutterView.needsDisplay = true
+            return
+        }
+
+        // Keep textView origin pinned at (0, 0) and minimum size aligned to viewport width/height
         textView.minSize = clipSize
-        if textView.frame.width < clipSize.width || textView.frame.height < clipSize.height {
-            textView.setFrameSize(NSSize(
-                width: max(textView.frame.width, clipSize.width),
-                height: max(textView.frame.height, clipSize.height)
-            ))
+        if textView.frame.origin != .zero || textView.frame.width < clipSize.width || textView.frame.height < clipSize.height {
+            textView.frame = NSRect(
+                origin: .zero,
+                size: NSSize(
+                    width: max(textView.frame.width, clipSize.width),
+                    height: max(textView.frame.height, clipSize.height)
+                )
+            )
+            scrollView.reflectScrolledClipView(scrollView.contentView)
         }
         gutterView.needsDisplay = true
     }
@@ -450,7 +494,7 @@ final class CeptraEditorContainerView: NSView {
         let targetWidth = max(clipSize.width, ceil(usedRect.width + insets.width * 2 + 40))
         let targetHeight = max(clipSize.height, ceil(usedRect.height + insets.height * 2 + 40))
         textView.minSize = clipSize
-        textView.setFrameSize(NSSize(width: targetWidth, height: targetHeight))
+        textView.frame = NSRect(origin: .zero, size: NSSize(width: targetWidth, height: targetHeight))
         textView.needsDisplay = true
         scrollView.reflectScrolledClipView(scrollView.contentView)
         scrollView.needsDisplay = true
@@ -479,6 +523,11 @@ final class CeptraEditorContainerView: NSView {
     }
 
     func scrollToLine(_ oneBasedLine: Int) {
+        if scrollView.contentView.bounds.size.height <= 0 {
+            pendingInitialJumpLine = oneBasedLine
+            pendingInitialScrollOrigin = nil
+            return
+        }
         relayoutDocument()
         let ns = textView.string as NSString
         var currentLine = 1
@@ -532,7 +581,7 @@ final class LineNumberGutterView: NSView {
               let textContainer = textView.textContainer,
               let scrollView else { return }
 
-        let visibleRect = scrollView.contentView.bounds
+        let visibleRect = scrollView.documentVisibleRect
         let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
         let nsString = textView.string as NSString
 

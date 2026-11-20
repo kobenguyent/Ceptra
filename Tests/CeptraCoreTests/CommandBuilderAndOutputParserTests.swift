@@ -45,6 +45,54 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
         )
         XCTAssertEqual(Array(workersCmd.arguments.prefix(4)), ["run-workers", "4", "--by", "pool"])
 
+        // Full run-workers with selectedRuns, --serial, --last-failed, and --invert
+        var workerOpts = options
+        workerOpts.grepPattern = "@slow"
+        workerOpts.invertGrep = true
+        let fullWorkersCmd = CommandBuilder.build(
+            mode: .runWorkers(
+                count: 6,
+                strategy: .suite,
+                selectedRuns: ["smoke:chromium", "regression"],
+                serialPattern: "@serial",
+                lastFailed: true
+            ),
+            options: workerOpts,
+            workspaceRoot: root,
+            configFilePath: "/tmp/demo/codecept.conf.ts",
+            toolchain: toolchain
+        )
+        XCTAssertEqual(Array(fullWorkersCmd.arguments.prefix(6)), ["run-workers", "6", "smoke:chromium", "regression", "--by", "suite"])
+        XCTAssertTrue(fullWorkersCmd.arguments.contains("--serial"))
+        XCTAssertTrue(fullWorkersCmd.arguments.contains("@serial"))
+        XCTAssertTrue(fullWorkersCmd.arguments.contains("--last-failed"))
+        XCTAssertTrue(fullWorkersCmd.arguments.contains("--invert"))
+
+        // run-multiple --all
+        let multipleAllCmd = CommandBuilder.build(
+            mode: .runMultiple(suites: [], runAll: true),
+            options: options,
+            workspaceRoot: root,
+            configFilePath: "/tmp/demo/codecept.conf.ts",
+            toolchain: toolchain
+        )
+        XCTAssertEqual(Array(multipleAllCmd.arguments.prefix(2)), ["run-multiple", "--all"])
+        XCTAssertTrue(multipleAllCmd.arguments.contains("--steps"))
+        XCTAssertTrue(multipleAllCmd.arguments.contains("-c"))
+        XCTAssertTrue(multipleAllCmd.arguments.contains("/tmp/demo/codecept.conf.ts"))
+
+        // run-multiple with explicit suites / suite:browser targets
+        let multipleSelectedCmd = CommandBuilder.build(
+            mode: .runMultiple(suites: ["smoke:chromium", "basic:firefox"], runAll: false),
+            options: workerOpts,
+            workspaceRoot: root,
+            configFilePath: "/tmp/demo/codecept.conf.ts",
+            toolchain: toolchain
+        )
+        XCTAssertEqual(Array(multipleSelectedCmd.arguments.prefix(3)), ["run-multiple", "smoke:chromium", "basic:firefox"])
+        XCTAssertFalse(multipleSelectedCmd.arguments.contains("--all"))
+        XCTAssertTrue(multipleSelectedCmd.arguments.contains("--invert"))
+
         // When config is in a custom nested subdirectory, test file path resolves to absolute so CodeceptJS
         // finds it even though store.codeceptDir = dirname(configFile)
         let nestedConfigCmd = CommandBuilder.build(

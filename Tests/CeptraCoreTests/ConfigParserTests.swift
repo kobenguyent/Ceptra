@@ -243,4 +243,130 @@ final class ConfigParserTests: XCTestCase {
         XCTAssertEqual(filtered?.children.map(\.name), ["e2e"])
         XCTAssertEqual(filtered?.testFileCount, 1)
     }
+
+    func testParsesMultipleSuitesFromJSAndJSONConfigs() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("ceptra-multiple-cfg-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let jsConfig = """
+        export const config = {
+          name: 'multi-suite-app',
+          tests: './tests/*_test.ts',
+          helpers: {
+            Playwright: { browser: 'chromium', url: 'https://example.com' }
+          },
+          multiple: {
+            basic: {
+              browsers: ['chromium', 'firefox'],
+            },
+            smoke: {
+              grep: '@smoke',
+              chunks: 2,
+              browsers: [
+                'chromium',
+                { browser: 'webkit', windowSize: 'maximize' },
+              ],
+            },
+          },
+        };
+        """
+        try jsConfig.write(to: root.appendingPathComponent("codecept.conf.ts"), atomically: true, encoding: .utf8)
+
+        let jsSummary = ConfigParser.parseWorkspaceConfig(rootURL: root)
+        XCTAssertEqual(jsSummary.multipleSuites.count, 2)
+        let basic = try XCTUnwrap(jsSummary.multipleSuites.first { $0.name == "basic" })
+        XCTAssertEqual(basic.browsers, ["chromium", "firefox"])
+        XCTAssertEqual(basic.browserTargets, ["basic:chromium", "basic:firefox"])
+        XCTAssertNil(basic.chunks)
+
+        let smoke = try XCTUnwrap(jsSummary.multipleSuites.first { $0.name == "smoke" })
+        XCTAssertEqual(smoke.grep, "@smoke")
+        XCTAssertEqual(smoke.chunks, 2)
+        XCTAssertEqual(smoke.browsers, ["chromium", "webkit"])
+
+        // JSON config multiple parsing
+        let jsonConfig = """
+        {
+          "name": "json-multi",
+          "helpers": { "Playwright": { "browser": "chromium" } },
+          "multiple": {
+            "regression": {
+              "grep": "@regression",
+              "chunks": 4,
+              "browsers": ["chromium", { "browser": "firefox", "show": false }]
+            }
+          }
+        }
+        """
+        let jsonURL = root.appendingPathComponent("custom.json")
+        try jsonConfig.write(to: jsonURL, atomically: true, encoding: .utf8)
+
+        let jsonSummary = ConfigParser.parseWorkspaceConfig(rootURL: root, explicitConfigPath: "custom.json")
+        XCTAssertEqual(jsonSummary.multipleSuites.count, 1)
+        XCTAssertEqual(jsonSummary.multipleSuites[0].name, "regression")
+        XCTAssertEqual(jsonSummary.multipleSuites[0].grep, "@regression")
+        XCTAssertEqual(jsonSummary.multipleSuites[0].chunks, 4)
+        XCTAssertEqual(jsonSummary.multipleSuites[0].browsers, ["chromium", "firefox"])
+    }
+
+    func testCreatesNewFoldersAndFilesAtAnyProjectLevelWithValidation() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("ceptra-create-any-level-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        // 1. Folder at workspace root & nested multi-segment folder
+        let rootFolder = try ProjectScaffolder.createFolder(workspaceRoot: root, relativeDirectory: "", folderName: "fixtures")
+        XCTAssertEqual(rootFolder.relativePath, "fixtures")
+        XCTAssertTrue(fm.fileExists(atPath: rootFolder.url.path))
+
+        let nestedFolder = try ProjectScaffolder.createFolder(workspaceRoot: root, relativeDirectory: "fixtures", folderName: "auth/mocks")
+        XCTAssertEqual(nestedFolder.relativePath, "fixtures/auth/mocks")
+        XCTAssertTrue(fm.fileExists(atPath: nestedFolder.url.path))
+
+        // 2. Blank / custom files at root, nested directory, and via subpath in filename
+        let envFile = try ProjectScaffolder.createFile(workspaceRoot: root, relativeDirectory: "", name: ".env", kind: .blankFile)
+        XCTAssertEqual(envFile.relativePath, ".env")
+        XCTAssertTrue(fm.fileExists(atPath: envFile.url.path))
+
+        let nestedJSON = try ProjectScaffolder.createFile(
+            workspaceRoot: root,
+            relativeDirectory: "fixtures/auth/mocks",
+            name: "users.json",
+            kind: .blankFile
+        )
+        XCTAssertEqual(nestedJSON.relativePath, "fixtures/auth/mocks/users.json")
+
+        let templateNested = try ProjectScaffolder.createFile(
+            workspaceRoot: root,
+            relativeDirectory: "src/e2e",
+            name: "checkout/Payment",
+            kind: .tsTest
+        )
+        XCTAssertEqual(templateNested.relativePath, "src/e2e/checkout/payment_test.ts")
+        let createdBody = try String(contentsOf: templateNested.url, encoding: .utf8)
+        XCTAssertTrue(createdBody.contains("Feature('Payment')"))
+
+        // 3. Rejects duplicates and path traversal escaping workspace
+        XCTAssertThrowsError(
+            try ProjectScaffolder.createFile(workspaceRoot: root, relativeDirectory: "", name: ".env", kind: .blankFile)
+        ) { error in
+            XCTAssertEqual(error as? WorkspaceFileOperationError, .alreadyExists(".env"))
+        }
+
+        XCTAssertThrowsError(
+            try ProjectScaffolder.createFolder(workspaceRoot: root, relativeDirectory: "", folderName: "../outside")
+        ) { error in
+            XCTAssertEqual(error as? WorkspaceFileOperationError, .invalidPath("Path segments cannot contain '.' or '..'."))
+        }
+
+        // 4. WorkspaceScanner reflects every new folder & file in rootTree and ancestorDirectoryPaths finds folder nodes
+        let ws = WorkspaceScanner.scan(rootURL: root)
+        let fixturesNode = try XCTUnwrap(ws.rootTree.first { $0.name == "fixtures" })
+        let folderAncestors = fixturesNode.ancestorDirectoryPaths(containing: nestedFolder.url.path)
+        XCTAssertEqual(folderAncestors?.count, 3) // fixtures -> fixtures/auth -> fixtures/auth/mocks
+        XCTAssertEqual(ws.testFiles.count, 1)
+    }
 }

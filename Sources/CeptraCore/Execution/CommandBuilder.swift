@@ -59,21 +59,69 @@ public enum CommandBuilder {
             args.append("--last-failed")
             appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: true)
 
-        case .runWorkers(let count, let strategy):
+        case .runWorkers(let count, let strategy, let selectedRuns, let serialPattern, let lastFailed):
             args.append("run-workers")
             args.append(String(max(1, count)))
+            let cleanRuns = selectedRuns
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !cleanRuns.isEmpty {
+                args.append(contentsOf: cleanRuns)
+            }
             args.append(contentsOf: ["--by", strategy.rawValue])
+            if let serialPattern {
+                let cleanSerial = serialPattern.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleanSerial.isEmpty {
+                    args.append(contentsOf: ["--serial", cleanSerial])
+                }
+            }
+            if lastFailed {
+                args.append("--last-failed")
+            }
             if let configFilePath, !configFilePath.isEmpty {
                 args.append(contentsOf: ["-c", configFilePath])
             }
             if options.debug { args.append("--debug") }
             if options.verbose { args.append("--verbose") }
             if options.aiEnabled { args.append("--ai") }
-            if !options.profile.trimmingCharacters(in: .whitespaces).isEmpty {
-                args.append(contentsOf: ["--profile", options.profile.trimmingCharacters(in: .whitespaces)])
+            let workerProfile = options.profile.trimmingCharacters(in: .whitespaces)
+            if !workerProfile.isEmpty {
+                args.append(contentsOf: ["--profile", workerProfile])
             }
-            if !options.grepPattern.trimmingCharacters(in: .whitespaces).isEmpty {
-                args.append(contentsOf: ["--grep", options.grepPattern.trimmingCharacters(in: .whitespaces)])
+            let workerGrep = options.grepPattern.trimmingCharacters(in: .whitespaces)
+            if !workerGrep.isEmpty {
+                args.append(contentsOf: ["--grep", workerGrep])
+                if options.invertGrep { args.append("--invert") }
+            }
+            if !options.enabledPlugins.isEmpty {
+                args.append(contentsOf: ["-p", options.enabledPlugins.joined(separator: ",")])
+            }
+
+        case .runMultiple(let suites, let runAll):
+            args.append("run-multiple")
+            let cleanSuites = suites
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if runAll || cleanSuites.isEmpty {
+                args.append("--all")
+            } else {
+                args.append(contentsOf: cleanSuites)
+            }
+            if let configFilePath, !configFilePath.isEmpty {
+                args.append(contentsOf: ["-c", configFilePath])
+            }
+            if options.showSteps { args.append("--steps") }
+            if options.debug { args.append("--debug") }
+            if options.verbose { args.append("--verbose") }
+            if options.aiEnabled { args.append("--ai") }
+            let multipleProfile = options.profile.trimmingCharacters(in: .whitespaces)
+            if !multipleProfile.isEmpty {
+                args.append(contentsOf: ["--profile", multipleProfile])
+            }
+            let multipleGrep = options.grepPattern.trimmingCharacters(in: .whitespaces)
+            if !multipleGrep.isEmpty {
+                args.append(contentsOf: ["--grep", multipleGrep])
+                if options.invertGrep { args.append("--invert") }
             }
             if !options.enabledPlugins.isEmpty {
                 args.append(contentsOf: ["-p", options.enabledPlugins.joined(separator: ",")])
@@ -162,6 +210,9 @@ public enum CommandBuilder {
         let effectiveGrep = overrideGrep ?? options.grepPattern.trimmingCharacters(in: .whitespaces)
         if !effectiveGrep.isEmpty {
             args.append(contentsOf: ["--grep", effectiveGrep])
+            if overrideGrep == nil && options.invertGrep {
+                args.append("--invert")
+            }
         }
 
         if !options.enabledPlugins.isEmpty {

@@ -37,10 +37,16 @@ struct CeptraApp: App {
                 }
                 .keyboardShortcut("o", modifiers: .command)
 
-                Button("New File from Template…") {
-                    appState.showingNewFileSheet = true
+                Button("New File…") {
+                    appState.presentNewFileSheet(inDirectory: appState.activeFileParentRelativeDirectory)
                 }
                 .keyboardShortcut("n", modifiers: .command)
+                .disabled(appState.workspace == nil)
+
+                Button("New Folder…") {
+                    appState.presentNewFolderSheet(inDirectory: appState.activeFileParentRelativeDirectory ?? "")
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(appState.workspace == nil)
 
                 Divider()
@@ -103,6 +109,32 @@ struct CeptraApp: App {
                     appState.run(mode: .runLastFailed)
                 }
                 .disabled(appState.workspace == nil || appState.isRunning)
+
+                Divider()
+
+                Button("Run Workers (run-workers)") {
+                    appState.runWorkersWithCurrentOptions()
+                }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .disabled(appState.workspace == nil || appState.isRunning)
+
+                Button("Configure Workers…") {
+                    appState.presentParallelRunSheet(tab: .workers)
+                }
+                .disabled(appState.workspace == nil)
+
+                Button("Run Multiple — All Suites (run-multiple --all)") {
+                    appState.run(mode: .runMultiple(suites: [], runAll: true))
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(appState.workspace == nil || appState.isRunning)
+
+                Button("Configure Multiple Run…") {
+                    appState.presentParallelRunSheet(tab: .multiple)
+                }
+                .disabled(appState.workspace == nil)
+
+                Divider()
 
                 Button("Stop Execution") {
                     appState.stopActiveRun()

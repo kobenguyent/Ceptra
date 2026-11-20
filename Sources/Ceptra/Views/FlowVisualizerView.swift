@@ -369,6 +369,84 @@ private struct ProjectArchitectureView: View {
                     }
                 }
             }
+
+            // Multiple Suites (run-multiple)
+            if !workspace.config.multipleSuites.isEmpty {
+                architectureCard(title: "MULTIPLE SUITES (\(workspace.config.multipleSuites.count))", icon: "square.stack.3d.up", color: CeptraTheme.success) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Configured for `codeceptjs run-multiple`")
+                                .font(.system(size: 11))
+                                .foregroundStyle(CeptraTheme.textMuted)
+                            Spacer()
+                            Button {
+                                appState.run(mode: .runMultiple(suites: [], runAll: true))
+                            } label: {
+                                Label("Run All (--all)", systemImage: "play.fill")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 4)
+                                    .background(CeptraTheme.success.opacity(0.9), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(appState.isRunning)
+                        }
+
+                        ForEach(workspace.config.multipleSuites) { suite in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 8) {
+                                    Text(suite.name)
+                                        .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(CeptraTheme.textPrimary)
+                                    if let grep = suite.grep {
+                                        CeptraBadge(text: grep, color: CeptraTheme.violet)
+                                    }
+                                    if let chunks = suite.chunks {
+                                        CeptraBadge(text: "\(chunks) chunks", color: CeptraTheme.accentWarm)
+                                    }
+                                    Spacer()
+                                    Button {
+                                        appState.run(mode: .runMultiple(suites: [suite.name], runAll: false))
+                                    } label: {
+                                        Label("Run", systemImage: "play.fill")
+                                            .font(.system(size: 10.5, weight: .semibold))
+                                            .foregroundStyle(CeptraTheme.success)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(appState.isRunning)
+                                }
+
+                                if !suite.browsers.isEmpty {
+                                    HStack(spacing: 6) {
+                                        ForEach(suite.browsers, id: \.self) { browser in
+                                            Button {
+                                                appState.run(mode: .runMultiple(suites: ["\(suite.name):\(browser)"], runAll: false))
+                                            } label: {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "play.fill")
+                                                        .font(.system(size: 8))
+                                                    Text("\(suite.name):\(browser)")
+                                                        .font(.system(size: 10.5, design: .monospaced))
+                                                }
+                                                .foregroundStyle(CeptraTheme.cyan)
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 3)
+                                                .background(CeptraTheme.cyan.opacity(0.14), in: Capsule())
+                                            }
+                                            .buttonStyle(.plain)
+                                            .disabled(appState.isRunning)
+                                            .help("Run `codeceptjs run-multiple \(suite.name):\(browser)`")
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(10)
+                            .background(CeptraTheme.elevatedBG.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                }
+            }
         }
     }
 

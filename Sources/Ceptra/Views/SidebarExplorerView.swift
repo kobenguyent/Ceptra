@@ -92,17 +92,30 @@ struct SidebarExplorerView: View {
                 }
 
                 Button {
-                    appState.presentNewFileSheet()
+                    appState.presentNewFolderSheet(inDirectory: appState.activeFileParentRelativeDirectory ?? "")
                 } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11.5, weight: .semibold))
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 11))
                         .foregroundStyle(CeptraTheme.textSecondary)
                         .frame(width: 22, height: 22)
                         .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 6))
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CeptraTheme.border, lineWidth: 0.75))
                 }
                 .buttonStyle(.plain)
-                .help("New CodeceptJS File (⌘N)")
+                .help("New Folder (⌘⇧N)")
+
+                Button {
+                    appState.presentNewFileSheet(inDirectory: appState.activeFileParentRelativeDirectory)
+                } label: {
+                    Image(systemName: "doc.badge.plus")
+                        .font(.system(size: 11))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                        .frame(width: 22, height: 22)
+                        .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(CeptraTheme.border, lineWidth: 0.75))
+                }
+                .buttonStyle(.plain)
+                .help("New File (⌘N)")
             }
             .padding(.horizontal, 10)
             .padding(.top, 9)
@@ -223,6 +236,13 @@ struct SidebarExplorerView: View {
                 expandAncestors(for: newPath)
             }
         }
+        .onChange(of: appState.pendingRevealTreePath) { _, newPath in
+            if let newPath {
+                explorerMode = .projectTree
+                expandAncestors(for: newPath)
+                appState.pendingRevealTreePath = nil
+            }
+        }
     }
 
     // MARK: - Full Project Directory Tree
@@ -262,10 +282,43 @@ struct SidebarExplorerView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(appState.isRunning)
+                } else {
+                    Button {
+                        appState.presentNewFileSheet(inDirectory: "")
+                    } label: {
+                        Image(systemName: "doc.badge.plus")
+                            .font(.system(size: 10))
+                            .foregroundStyle(CeptraTheme.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                    .help("New File in Project Root")
+
+                    Button {
+                        appState.presentNewFolderSheet(inDirectory: "")
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
+                            .font(.system(size: 10))
+                            .foregroundStyle(CeptraTheme.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                    .help("New Folder in Project Root")
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button("New File in Project Root…") {
+                    appState.presentNewFileSheet(inDirectory: "")
+                }
+                Button("New Folder in Project Root…") {
+                    appState.presentNewFolderSheet(inDirectory: "")
+                }
+                Divider()
+                Button("Reveal Project Root in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([workspace.rootURL])
+                }
+            }
 
             if visibleRoots.isEmpty {
                 Text("No matching files or folders")
@@ -524,6 +577,9 @@ private struct ProjectTreeNodeView: View {
                 Button("New File in \"\(node.name)\"…") {
                     appState.presentNewFileSheet(inDirectory: node.relativePath)
                 }
+                Button("New Folder in \"\(node.name)\"…") {
+                    appState.presentNewFolderSheet(inDirectory: node.relativePath)
+                }
                 Divider()
                 Button("Expand Subtree") {
                     for p in node.allDirectoryPaths() { expandedFolders.insert(p) }
@@ -599,6 +655,14 @@ private struct ProjectTreeNodeView: View {
         .buttonStyle(.plain)
         .help(file.relativePath)
         .contextMenu {
+            let parentDir = parentRelativeDirectory(for: file.relativePath)
+            Button("New File in Same Folder…") {
+                appState.presentNewFileSheet(inDirectory: parentDir)
+            }
+            Button("New Folder in Same Folder…") {
+                appState.presentNewFolderSheet(inDirectory: parentDir)
+            }
+            Divider()
             if ConfigParser.supportedConfigExtensions.contains(file.fileExtension.lowercased()) {
                 Button("Use as Active CodeceptJS Config") {
                     appState.setCustomConfigFile(path: file.path)
@@ -613,6 +677,12 @@ private struct ProjectTreeNodeView: View {
                 NSWorkspace.shared.activateFileViewerSelecting([file.url])
             }
         }
+    }
+
+    private func parentRelativeDirectory(for relativePath: String) -> String {
+        guard !relativePath.hasPrefix("/") else { return "" }
+        let dir = (relativePath as NSString).deletingLastPathComponent
+        return dir == "." ? "" : dir
     }
 
     private func isOutputFolder(_ name: String) -> Bool {
@@ -741,6 +811,18 @@ private struct SuiteFileTreeRow: View {
                     appState.run(mode: .runFile(relativePath: file.relativePath))
                 }
                 .disabled(appState.isRunning)
+                Divider()
+                let parentDir: String = {
+                    guard !file.relativePath.hasPrefix("/") else { return "" }
+                    let dir = (file.relativePath as NSString).deletingLastPathComponent
+                    return dir == "." ? "" : dir
+                }()
+                Button("New File in Same Folder…") {
+                    appState.presentNewFileSheet(inDirectory: parentDir)
+                }
+                Button("New Folder in Same Folder…") {
+                    appState.presentNewFolderSheet(inDirectory: parentDir)
+                }
                 Divider()
                 Button("Copy Relative Path") {
                     NSPasteboard.general.clearContents()

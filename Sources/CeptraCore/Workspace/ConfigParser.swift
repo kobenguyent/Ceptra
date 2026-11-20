@@ -238,6 +238,9 @@ public enum ConfigParser {
         let includeBlock = extractNamedObjectBlock(named: "include", in: configBody) ?? ""
         let includes = parseIncludes(from: includeBlock)
 
+        let multipleBlock = extractNamedObjectBlock(named: "multiple", in: configBody) ?? ""
+        let multipleSuites = parseMultipleSuites(from: multipleBlock)
+
         let gherkinBlock = extractNamedObjectBlock(named: "gherkin", in: configBody) ?? ""
         let gherkinFeatures = extractStringProperty(named: "features", in: gherkinBlock)
         let gherkinSteps = extractStringArrayProperty(named: "steps", in: gherkinBlock)
@@ -257,6 +260,7 @@ public enum ConfigParser {
             helpers: helpers,
             plugins: plugins,
             includes: includes,
+            multipleSuites: multipleSuites,
             packageCodeceptVersion: packageInfo.codeceptVersion,
             isESM: isESM,
             isTypeScript: isTS
@@ -325,6 +329,34 @@ public enum ConfigParser {
             }
         }
 
+        var multipleSuites: [CodeceptMultipleSuiteInfo] = []
+        if let multipleDict = json["multiple"] as? [String: Any] {
+            for (suiteName, rawVal) in multipleDict.sorted(by: { $0.key < $1.key }) {
+                guard let obj = rawVal as? [String: Any] else { continue }
+                let grep = obj["grep"] as? String
+                let chunks = obj["chunks"] as? Int
+                var browsers: [String] = []
+                if let rawBrowsers = obj["browsers"] as? [Any] {
+                    for entry in rawBrowsers {
+                        if let b = entry as? String, !b.isEmpty, !browsers.contains(b) {
+                            browsers.append(b)
+                        } else if let dict = entry as? [String: Any],
+                                  let b = dict["browser"] as? String,
+                                  !b.isEmpty,
+                                  !browsers.contains(b) {
+                            browsers.append(b)
+                        }
+                    }
+                }
+                multipleSuites.append(CodeceptMultipleSuiteInfo(
+                    name: suiteName,
+                    browsers: browsers,
+                    chunks: chunks,
+                    grep: grep
+                ))
+            }
+        }
+
         let gherkin = json["gherkin"] as? [String: Any]
         let gherkinFeatures = gherkin?["features"] as? String
         let gherkinSteps = gherkin?["steps"] as? [String] ?? []
@@ -340,6 +372,7 @@ public enum ConfigParser {
             helpers: helpers,
             plugins: plugins,
             includes: includes,
+            multipleSuites: multipleSuites,
             packageCodeceptVersion: packageInfo.codeceptVersion,
             isESM: packageInfo.isESM,
             isTypeScript: false
@@ -350,7 +383,7 @@ public enum ConfigParser {
 
     private static func looksLikeCodeceptConfig(content: String, ext: String) -> Bool {
         if ext == "json" {
-            return content.contains("\"helpers\"") && (content.contains("\"tests\"") || content.contains("\"output\"") || content.contains("\"gherkin\""))
+            return content.contains("\"helpers\"") && (content.contains("\"tests\"") || content.contains("\"output\"") || content.contains("\"gherkin\"") || content.contains("\"multiple\""))
         }
         let hasCodeceptSignal = content.contains("CodeceptJS")
             || content.contains("@codeceptjs/")
@@ -359,7 +392,7 @@ public enum ConfigParser {
             || content.contains("export const config")
             || content.contains("export default")
         let hasHelpersKey = content.range(of: #"(?:^|[\s,{])["']?helpers["']?\s*:"#, options: .regularExpression) != nil
-        let hasSecondaryKey = content.range(of: #"(?:^|[\s,{])["']?(?:tests|gherkin|include|output|plugins)["']?\s*:"#, options: .regularExpression) != nil
+        let hasSecondaryKey = content.range(of: #"(?:^|[\s,{])["']?(?:tests|gherkin|include|output|plugins|multiple)["']?\s*:"#, options: .regularExpression) != nil
         return hasCodeceptSignal && hasHelpersKey && hasSecondaryKey
     }
 
@@ -472,6 +505,127 @@ public enum ConfigParser {
             }
         }
         return results
+    }
+
+    private static func parseMultipleSuites(from block: String) -> [CodeceptMultipleSuiteInfo] {
+        guard !block.isEmpty else { return [] }
+        let entries = topLevelObjectEntries(in: block)
+        return entries.map { suiteName, body in
+            let grep = extractStringProperty(named: "grep", in: body)
+            let chunks = extractIntProperty(named: "chunks", in: body)
+            let browsers = parseMultipleBrowsers(from: body)
+            return CodeceptMultipleSuiteInfo(
+                name: suiteName,
+                browsers: browsers,
+                chunks: chunks,
+                grep: grep
+            )
+        }
+    }
+
+    private static func parseMultipleBrowsers(from suiteBody: String) -> [String] {
+        guard let arrayBody = extractBracketArrayBody(named: "browsers", in: suiteBody) else {
+            return []
+        }
+        let chars = Array(arrayBody)
+        var results: [String] = []
+        var i = 0
+
+        while i < chars.count {
+            let c = chars[i]
+            if c.isWhitespace || c == "," {
+                i += 1
+                continue
+            }
+            if c == "'" || c == "\"" || c == "`" {
+                let quote = c
+                i += 1
+                var value = ""
+                var escaped = false
+                while i < chars.count {
+                    let ch = chars[i]
+                    if escaped {
+                        value.append(ch)
+                        escaped = false
+                    } else if ch == "\\" {
+                        escaped = true
+                    } else if ch == quote {
+                        i += 1
+                        break
+                    } else {
+                        value.append(ch)
+                    }
+                    i += 1
+                }
+                if !value.isEmpty && !results.contains(value) {
+                    results.append(value)
+                }
+                continue
+            }
+            if c == "{" {
+                if let closeIdx = matchingBraceIndex(chars: chars, openIndex: i) {
+                    let objBody = String(chars[(i + 1)..<closeIdx])
+                    if let browserName = extractStringProperty(named: "browser", in: objBody),
+                       !browserName.isEmpty,
+                       !results.contains(browserName) {
+                        results.append(browserName)
+                    }
+                    i = closeIdx + 1
+                    continue
+                }
+            }
+            i += 1
+        }
+        return results
+    }
+
+    private static func extractBracketArrayBody(named property: String, in text: String) -> String? {
+        let escaped = NSRegularExpression.escapedPattern(for: property)
+        let pattern = "(?:\\b\(escaped)\\b|[\"']\(escaped)[\"'])\\s*:\\s*\\["
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = text as NSString
+        guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        let openUTF16 = match.range.location + match.range.length - 1
+        guard let range = Range(NSRange(location: openUTF16, length: 1), in: text) else { return nil }
+        let startIdx = text.distance(from: text.startIndex, to: range.lowerBound)
+        let chars = Array(text)
+        var depth = 0
+        var inString: Character? = nil
+        var escapedChar = false
+        for idx in startIdx..<chars.count {
+            let c = chars[idx]
+            if let quote = inString {
+                if escapedChar { escapedChar = false }
+                else if c == "\\" { escapedChar = true }
+                else if c == quote { inString = nil }
+                continue
+            }
+            if c == "'" || c == "\"" || c == "`" {
+                inString = c
+                continue
+            }
+            if c == "[" { depth += 1 }
+            else if c == "]" {
+                depth -= 1
+                if depth == 0 {
+                    return String(chars[(startIdx + 1)..<idx])
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func extractIntProperty(named property: String, in text: String) -> Int? {
+        let escaped = NSRegularExpression.escapedPattern(for: property)
+        let pattern = "(?:\\b\(escaped)\\b|[\"']\(escaped)[\"'])\\s*:\\s*(\\d+)\\b"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = text as NSString
+        guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        return Int(ns.substring(with: match.range(at: 1)))
     }
 
     private static func topLevelObjectEntries(in innerBlock: String) -> [(String, String)] {

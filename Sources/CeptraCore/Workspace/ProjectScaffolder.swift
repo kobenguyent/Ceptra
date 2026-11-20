@@ -1,6 +1,7 @@
 import Foundation
 
 public enum ScaffoldTemplateKind: String, CaseIterable, Identifiable, Sendable {
+    case blankFile = "Blank / Custom File"
     case jsTest = "CodeceptJS Test (.js)"
     case tsTest = "CodeceptJS Test (.ts)"
     case gherkinFeature = "Gherkin Feature (.feature)"
@@ -11,6 +12,7 @@ public enum ScaffoldTemplateKind: String, CaseIterable, Identifiable, Sendable {
 
     public var defaultExtension: String {
         switch self {
+        case .blankFile: return ""
         case .jsTest: return "_test.js"
         case .tsTest: return "_test.ts"
         case .gherkinFeature: return ".feature"
@@ -21,10 +23,31 @@ public enum ScaffoldTemplateKind: String, CaseIterable, Identifiable, Sendable {
 
     public var suggestedDirectory: String {
         switch self {
+        case .blankFile: return ""
         case .jsTest, .tsTest: return "tests"
         case .gherkinFeature: return "features"
         case .pageObject: return "pages"
         case .customHelper: return "helpers"
+        }
+    }
+}
+
+public enum WorkspaceFileOperationError: LocalizedError, Equatable, Sendable {
+    case emptyName
+    case invalidPath(String)
+    case escapesWorkspace
+    case alreadyExists(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyName:
+            return "Please enter a name."
+        case .invalidPath(let reason):
+            return reason
+        case .escapesWorkspace:
+            return "Path must stay inside the current workspace."
+        case .alreadyExists(let relPath):
+            return "\"\(relPath)\" already exists."
         }
     }
 }
@@ -36,6 +59,9 @@ public enum ProjectScaffolder {
         let identifier = sanitizeIdentifier(title)
 
         switch kind {
+        case .blankFile:
+            return ""
+
         case .jsTest:
             return """
             Feature('\(title)');
@@ -244,6 +270,160 @@ public enum ProjectScaffolder {
         let parts = raw.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
         guard !parts.isEmpty else { return "Custom" }
         return parts.map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined()
+    }
+
+    /// Computes the normalized workspace-relative path for a file or folder creation preview.
+    public static func previewFileRelativePath(
+        directory: String,
+        name: String,
+        kind: ScaffoldTemplateKind
+    ) -> String {
+        let dir = normalizeRelativeDirectory(directory)
+        let resolvedName = resolveFileName(name: name, kind: kind)
+        guard !resolvedName.isEmpty else { return dir }
+        return dir.isEmpty ? resolvedName : "\(dir)/\(resolvedName)"
+    }
+
+    public static func previewFolderRelativePath(
+        directory: String,
+        folderName: String
+    ) -> String {
+        let dir = normalizeRelativeDirectory(directory)
+        let cleaned = normalizeRelativeDirectory(folderName)
+        guard !cleaned.isEmpty else { return dir }
+        return dir.isEmpty ? cleaned : "\(dir)/\(cleaned)"
+    }
+
+    /// Creates a new folder (and any intermediate nested folders) at any level inside `workspaceRoot`.
+    @discardableResult
+    public static func createFolder(
+        workspaceRoot: URL,
+        relativeDirectory: String,
+        folderName: String
+    ) throws -> (url: URL, relativePath: String) {
+        let trimmedName = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw WorkspaceFileOperationError.emptyName
+        }
+        let target = try resolveBoundedURL(
+            workspaceRoot: workspaceRoot,
+            relativeDirectory: relativeDirectory,
+            itemSubpath: trimmedName
+        )
+
+        let fm = FileManager.default
+        if fm.fileExists(atPath: target.url.path) {
+            throw WorkspaceFileOperationError.alreadyExists(target.relativePath)
+        }
+        try fm.createDirectory(at: target.url, withIntermediateDirectories: true)
+        return target
+    }
+
+    /// Creates a new file (blank/custom OR CodeceptJS template) at any level inside `workspaceRoot`,
+    /// automatically creating missing intermediate parent directories.
+    @discardableResult
+    public static func createFile(
+        workspaceRoot: URL,
+        relativeDirectory: String,
+        name: String,
+        kind: ScaffoldTemplateKind
+    ) throws -> (url: URL, relativePath: String) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw WorkspaceFileOperationError.emptyName
+        }
+
+        let resolvedSubpath = resolveFileName(name: trimmedName, kind: kind)
+        guard !resolvedSubpath.isEmpty else {
+            throw WorkspaceFileOperationError.emptyName
+        }
+
+        let target = try resolveBoundedURL(
+            workspaceRoot: workspaceRoot,
+            relativeDirectory: relativeDirectory,
+            itemSubpath: resolvedSubpath
+        )
+
+        let fm = FileManager.default
+        if fm.fileExists(atPath: target.url.path) {
+            throw WorkspaceFileOperationError.alreadyExists(target.relativePath)
+        }
+
+        let parentDir = target.url.deletingLastPathComponent()
+        try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+
+        let templateStem = (trimmedName as NSString).lastPathComponent
+        let body = renderTemplate(kind: kind, name: templateStem)
+        try body.write(to: target.url, atomically: true, encoding: .utf8)
+        return target
+    }
+
+    private static func resolveFileName(name: String, kind: ScaffoldTemplateKind) -> String {
+        let normalized = name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !normalized.isEmpty else { return "" }
+
+        let parts = normalized.split(separator: "/").map(String.init)
+        guard let last = parts.last else { return "" }
+        let prefixParts = parts.dropLast()
+
+        let finalLast: String
+        if kind == .blankFile || last.contains(".") {
+            finalLast = last
+        } else {
+            let baseName = sanitizeIdentifier(last)
+            let stem = (kind == .pageObject) ? baseName : baseName.lowercased()
+            finalLast = stem + kind.defaultExtension
+        }
+
+        return (prefixParts + [finalLast]).joined(separator: "/")
+    }
+
+    private static func normalizeRelativeDirectory(_ raw: String) -> String {
+        var cleaned = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\", with: "/")
+        while cleaned.hasPrefix("./") {
+            cleaned.removeFirst(2)
+        }
+        cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if cleaned == "." {
+            return ""
+        }
+        return cleaned
+    }
+
+    private static func resolveBoundedURL(
+        workspaceRoot: URL,
+        relativeDirectory: String,
+        itemSubpath: String
+    ) throws -> (url: URL, relativePath: String) {
+        let stdRoot = workspaceRoot.standardizedFileURL
+        let cleanDir = normalizeRelativeDirectory(relativeDirectory)
+        let cleanSub = itemSubpath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        guard !cleanSub.isEmpty else {
+            throw WorkspaceFileOperationError.emptyName
+        }
+
+        let combined = cleanDir.isEmpty ? cleanSub : "\(cleanDir)/\(cleanSub)"
+        let segments = combined.split(separator: "/").map(String.init)
+        if segments.contains("..") || segments.contains(".") {
+            throw WorkspaceFileOperationError.invalidPath("Path segments cannot contain '.' or '..'.")
+        }
+
+        let targetURL = stdRoot.appendingPathComponent(combined).standardizedFileURL
+        let rootPrefix = stdRoot.path.hasSuffix("/") ? stdRoot.path : stdRoot.path + "/"
+        guard targetURL.path.hasPrefix(rootPrefix) else {
+            throw WorkspaceFileOperationError.escapesWorkspace
+        }
+        let relPath = String(targetURL.path.dropFirst(rootPrefix.count))
+        return (targetURL, relPath)
     }
 }
 

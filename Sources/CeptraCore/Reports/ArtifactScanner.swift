@@ -54,6 +54,13 @@ public enum ArtifactScanner {
         return xmls.first?.url
     }
 
+    public static func freshJUnitXMLs(in outputDirectoryURL: URL, modifiedAfter cutoff: Date) -> [URL] {
+        let threshold = cutoff.addingTimeInterval(-2)
+        return scan(outputDirectoryURL: outputDirectoryURL)
+            .filter { $0.kind == .junitXML && $0.modifiedAt >= threshold }
+            .map(\.url)
+    }
+
     private static func classify(extension ext: String, fileName: String) -> ArtifactKind? {
         switch ext {
         case "png", "jpg", "jpeg", "webp":

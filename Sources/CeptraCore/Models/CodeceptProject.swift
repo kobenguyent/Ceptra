@@ -46,6 +46,26 @@ public struct CodeceptIncludeEntry: Identifiable, Codable, Equatable, Hashable, 
     }
 }
 
+public struct CodeceptMultipleSuiteInfo: Identifiable, Codable, Equatable, Hashable, Sendable {
+    public var id: String { name }
+    public let name: String
+    public let browsers: [String]
+    public let chunks: Int?
+    public let grep: String?
+
+    public init(name: String, browsers: [String] = [], chunks: Int? = nil, grep: String? = nil) {
+        self.name = name
+        self.browsers = browsers
+        self.chunks = chunks
+        self.grep = grep
+    }
+
+    /// Individual `suite:browser` targets (e.g. `smoke:chromium`, `smoke:firefox`).
+    public var browserTargets: [String] {
+        browsers.map { "\(name):\($0)" }
+    }
+}
+
 public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
     public let configFilePath: String?
     public let isCustomConfigOverride: Bool
@@ -57,6 +77,7 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
     public let helpers: [CodeceptHelperInfo]
     public let plugins: [CodeceptPluginInfo]
     public let includes: [CodeceptIncludeEntry]
+    public let multipleSuites: [CodeceptMultipleSuiteInfo]
     public let packageCodeceptVersion: String?
     public let isESM: Bool
     public let isTypeScript: Bool
@@ -72,6 +93,7 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
         helpers: [CodeceptHelperInfo] = [],
         plugins: [CodeceptPluginInfo] = [],
         includes: [CodeceptIncludeEntry] = [],
+        multipleSuites: [CodeceptMultipleSuiteInfo] = [],
         packageCodeceptVersion: String? = nil,
         isESM: Bool = false,
         isTypeScript: Bool = false
@@ -86,6 +108,7 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
         self.helpers = helpers
         self.plugins = plugins
         self.includes = includes
+        self.multipleSuites = multipleSuites
         self.packageCodeceptVersion = packageCodeceptVersion
         self.isESM = isESM
         self.isTypeScript = isTypeScript

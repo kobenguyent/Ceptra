@@ -52,6 +52,12 @@ struct ConsoleLogEntry: Identifiable, Equatable {
     let isHighlight: Bool
 }
 
+enum ParallelRunTab: String, CaseIterable, Identifiable {
+    case workers = "Workers (run-workers)"
+    case multiple = "Multiple (run-multiple)"
+    var id: String { rawValue }
+}
+
 enum AppUpdateState: Equatable {
     case idle
     case checking
@@ -114,6 +120,11 @@ final class AppState: ObservableObject {
     @Published var settings: AppSettings
     @Published var showingNewFileSheet: Bool = false
     @Published var newFileInitialDirectory: String? = nil
+    @Published var showingNewFolderSheet: Bool = false
+    @Published var newFolderInitialDirectory: String? = nil
+    @Published var pendingRevealTreePath: String? = nil
+    @Published var showingParallelRunSheet: Bool = false
+    @Published var parallelRunSheetTab: ParallelRunTab = .workers
     @Published var showingUpdateSheet: Bool = false
     @Published var showingRunOptionsPopover: Bool = false
     @Published var bannerMessage: String? = nil
@@ -190,6 +201,21 @@ final class AppState: ObservableObject {
             customNodePath: settings.customNodePath,
             customCodeceptPath: settings.customCodeceptPath
         )
+    }
+
+    var workspaceRelativeDirectories: [String] {
+        guard let workspace else { return [] }
+        var dirs: [String] = []
+        for node in workspace.rootTree {
+            dirs.append(contentsOf: node.allDirectoryRelativePaths())
+        }
+        return Array(Set(dirs)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    var activeFileParentRelativeDirectory: String? {
+        guard let rel = activeTab?.relativePath, !rel.hasPrefix("/") else { return nil }
+        let dir = (rel as NSString).deletingLastPathComponent
+        return dir == "." ? "" : dir
     }
 
     // MARK: - Workspace Management
@@ -539,32 +565,73 @@ final class AppState: ObservableObject {
         showingNewFileSheet = true
     }
 
-    func createNewFile(kind: ScaffoldTemplateKind, name: String, directory: String) {
-        guard let root = workspace?.rootURL else { return }
-        let cleanDir = directory.trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetDir = cleanDir.isEmpty ? root : root.appendingPathComponent(cleanDir, isDirectory: true)
-        let baseName = ProjectScaffolder.sanitizeIdentifier(name)
-        let fileName: String
-        if name.contains(".") {
-            fileName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            let prefix = (kind == .pageObject) ? baseName : baseName.lowercased()
-            fileName = prefix + kind.defaultExtension
-        }
+    func presentNewFolderSheet(inDirectory relativeDirectory: String? = nil) {
+        newFolderInitialDirectory = relativeDirectory
+        showingNewFolderSheet = true
+    }
 
-        let fileURL = targetDir.appendingPathComponent(fileName)
-        let body = ProjectScaffolder.renderTemplate(kind: kind, name: name)
+    func presentParallelRunSheet(tab: ParallelRunTab) {
+        parallelRunSheetTab = tab
+        showingParallelRunSheet = true
+    }
+
+    @discardableResult
+    func createNewFile(kind: ScaffoldTemplateKind, name: String, directory: String) -> String? {
+        guard let root = workspace?.rootURL else { return "Open a workspace first." }
         do {
-            try FileManager.default.createDirectory(at: targetDir, withIntermediateDirectories: true)
-            try body.write(to: fileURL, atomically: true, encoding: .utf8)
+            let created = try ProjectScaffolder.createFile(
+                workspaceRoot: root,
+                relativeDirectory: directory,
+                name: name,
+                kind: kind
+            )
             rescanWorkspace()
-            if let newlyScanned = workspace?.files.first(where: { $0.path == fileURL.standardizedFileURL.path }) {
+            pendingRevealTreePath = created.url.path
+            if let newlyScanned = workspace?.files.first(where: { $0.path == created.url.path }) {
                 openFile(newlyScanned)
+            } else {
+                openFileByURL(created.url)
             }
-            showBanner("Created \(fileName)")
+            showBanner("Created \(created.relativePath)")
+            return nil
         } catch {
-            showBanner("Failed to create file: \(error.localizedDescription)", isError: true)
+            return error.localizedDescription
         }
+    }
+
+    @discardableResult
+    func createNewFolder(name: String, directory: String) -> String? {
+        guard let root = workspace?.rootURL else { return "Open a workspace first." }
+        do {
+            let created = try ProjectScaffolder.createFolder(
+                workspaceRoot: root,
+                relativeDirectory: directory,
+                folderName: name
+            )
+            rescanWorkspace()
+            pendingRevealTreePath = created.url.path
+            showBanner("Created folder \(created.relativePath)/")
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func runWorkersWithCurrentOptions() {
+        run(mode: .runWorkers(
+            count: runOptions.workerCount,
+            strategy: runOptions.workerStrategy,
+            selectedRuns: runOptions.workerSelectedRuns,
+            serialPattern: runOptions.workerSerialPattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : runOptions.workerSerialPattern,
+            lastFailed: runOptions.workerLastFailed
+        ))
+    }
+
+    func runMultipleWithCurrentOptions() {
+        run(mode: .runMultiple(
+            suites: runOptions.multipleSelectedSuites,
+            runAll: runOptions.multipleRunAll
+        ))
     }
 
     // MARK: - Execution Engine
@@ -604,9 +671,12 @@ final class AppState: ObservableObject {
         ]
         activeRunningScenarioKey = nil
 
-        if case .runAll = mode {
+        switch mode {
+        case .runAll, .runWorkers, .runMultiple:
             liveScenarioStatuses = [:]
             liveScenarioDurations = [:]
+        default:
+            break
         }
 
         let outputURL = workspace.config.resolvedOutputURL(rootURL: workspace.rootURL)
@@ -622,10 +692,12 @@ final class AppState: ObservableObject {
                     }
                 }
 
-                // Prefer rich CodeceptJS 4.x JUnit XML report if freshly generated during this run
+                // Prefer rich CodeceptJS 4.x JUnit XML reports if freshly generated during this run
+                // (merges multiple XML files produced by run-multiple browser forks)
                 var finalScenarios = result.parsedScenarios
-                if let freshXML = ArtifactScanner.newestJUnitXML(in: outputURL, modifiedAfter: result.startedAt) {
-                    let xmlRecords = JUnitReportParser.parse(fileURL: freshXML)
+                let freshXMLs = ArtifactScanner.freshJUnitXMLs(in: outputURL, modifiedAfter: result.startedAt)
+                if !freshXMLs.isEmpty {
+                    let xmlRecords = freshXMLs.flatMap { JUnitReportParser.parse(fileURL: $0) }
                     if !xmlRecords.isEmpty {
                         finalScenarios = xmlRecords
                         for rec in xmlRecords {
@@ -643,7 +715,7 @@ final class AppState: ObservableObject {
 
                 let shouldRecordHistory: Bool
                 switch mode {
-                case .runAll, .runFile, .runScenario, .runTag, .runLastFailed, .runWorkers:
+                case .runAll, .runFile, .runScenario, .runTag, .runLastFailed, .runWorkers, .runMultiple:
                     shouldRecordHistory = true
                 case .dryRun, .checkEnvironment, .generateDefinitions, .listActions:
                     shouldRecordHistory = false
