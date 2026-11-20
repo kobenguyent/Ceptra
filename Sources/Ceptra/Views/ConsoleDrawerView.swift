@@ -4,8 +4,11 @@ import SwiftUI
 
 struct ConsoleDrawerView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var filterMode: ConsoleFilterMode = .all
     @State private var searchText: String = ""
+    @State private var isFilterSearchHovered = false
+    @State private var isRecentHovered = false
     @FocusState private var isCommandFocused: Bool
 
     enum ConsoleFilterMode: String, CaseIterable, Identifiable {
@@ -42,20 +45,31 @@ struct ConsoleDrawerView: View {
                         .lineLimit(1)
                 }
 
-                Picker("", selection: $filterMode) {
-                    ForEach(ConsoleFilterMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 168)
+                CeptraGlassSegmentedControl(
+                    options: ConsoleFilterMode.allCases,
+                    selection: $filterMode,
+                    label: { $0.rawValue },
+                    horizontalPadding: 9,
+                    verticalPadding: 3.5,
+                    fontSize: 11
+                )
 
                 TextField("Filter logs…", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 11))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 5))
+                    .foregroundStyle(CeptraTheme.textPrimary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .ceptraGlassSurface(
+                        cornerRadius: 6,
+                        tint: CeptraTheme.panelBG,
+                        tintOpacity: 0.56,
+                        isHovered: isFilterSearchHovered
+                    )
+                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isFilterSearchHovered)
+                    .onHover { hovering in
+                        isFilterSearchHovered = hovering
+                    }
                     .frame(maxWidth: 160)
 
                 Spacer()
@@ -63,62 +77,91 @@ struct ConsoleDrawerView: View {
                 // Quick Dependencies & Scripts Menu (npm / pnpm / yarn / bun)
                 if let ws = appState.workspace {
                     let pm = ws.packageManager
-                    Menu {
-                        Section("Dependencies (\(pm.rawValue))") {
-                            Button("Install Dependencies (\(PackageManagerSupport.commandPreview(for: .install, packageManager: pm)))") {
-                                appState.runDependencyAction(.install)
-                            }
-                            Button("Update Dependencies (\(PackageManagerSupport.commandPreview(for: .update, packageManager: pm)))") {
-                                appState.runDependencyAction(.update)
-                            }
-                            Button("Clean Install (\(PackageManagerSupport.commandPreview(for: .cleanInstall, packageManager: pm)))") {
-                                appState.runDependencyAction(.cleanInstall)
-                            }
-                            Button("Check Outdated (\(PackageManagerSupport.commandPreview(for: .outdated, packageManager: pm)))") {
-                                appState.runDependencyAction(.outdated)
-                            }
+                    CeptraGlassDropdown(arrowEdge: .top, minWidth: 270, maxWidth: 350) { isOpen in
+                        CeptraMenuPillLabel(
+                            title: pm.rawValue,
+                            titleFont: .system(size: 10.5, weight: .semibold, design: .monospaced),
+                            titleColor: CeptraTheme.accentWarm,
+                            accentBorder: CeptraTheme.accentWarm,
+                            tint: CeptraTheme.accentWarm,
+                            tintOpacity: 0.14,
+                            horizontalPadding: 8,
+                            verticalPadding: 3.5,
+                            cornerRadius: 6,
+                            isOpen: isOpen
+                        ) {
+                            Image(systemName: "shippingbox")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(CeptraTheme.accentWarm)
+                        }
+                    } content: {
+                        CeptraDropdownSectionHeader(title: "Dependencies (\(pm.rawValue))")
+                        CeptraDropdownItem(
+                            title: "Install Dependencies",
+                            subtitle: PackageManagerSupport.commandPreview(for: .install, packageManager: pm),
+                            systemImage: "arrow.down.circle"
+                        ) {
+                            appState.runDependencyAction(.install)
+                        }
+                        CeptraDropdownItem(
+                            title: "Update Dependencies",
+                            subtitle: PackageManagerSupport.commandPreview(for: .update, packageManager: pm),
+                            systemImage: "arrow.triangle.2.circlepath"
+                        ) {
+                            appState.runDependencyAction(.update)
+                        }
+                        CeptraDropdownItem(
+                            title: "Clean Install",
+                            subtitle: PackageManagerSupport.commandPreview(for: .cleanInstall, packageManager: pm),
+                            systemImage: "sparkles"
+                        ) {
+                            appState.runDependencyAction(.cleanInstall)
+                        }
+                        CeptraDropdownItem(
+                            title: "Check Outdated",
+                            subtitle: PackageManagerSupport.commandPreview(for: .outdated, packageManager: pm),
+                            systemImage: "clock.badge.exclamationmark"
+                        ) {
+                            appState.runDependencyAction(.outdated)
                         }
 
-                        Divider()
-
-                        Section("CodeceptJS & Browsers") {
-                            Button("Update CodeceptJS (\(PackageManagerSupport.commandPreview(for: .upgradeCodeceptJS, packageManager: pm)))") {
-                                appState.runDependencyAction(.upgradeCodeceptJS)
-                            }
-                            Button("Install Playwright Browsers (\(PackageManagerSupport.commandPreview(for: .installPlaywrightBrowsers, packageManager: pm)))") {
-                                appState.runDependencyAction(.installPlaywrightBrowsers)
-                            }
+                        CeptraDropdownDivider()
+                        CeptraDropdownSectionHeader(title: "CodeceptJS & Browsers")
+                        CeptraDropdownItem(
+                            title: "Update CodeceptJS",
+                            subtitle: PackageManagerSupport.commandPreview(for: .upgradeCodeceptJS, packageManager: pm),
+                            systemImage: "arrow.up.circle",
+                            iconColor: CeptraTheme.accent
+                        ) {
+                            appState.runDependencyAction(.upgradeCodeceptJS)
+                        }
+                        CeptraDropdownItem(
+                            title: "Install Playwright Browsers",
+                            subtitle: PackageManagerSupport.commandPreview(for: .installPlaywrightBrowsers, packageManager: pm),
+                            systemImage: "globe"
+                        ) {
+                            appState.runDependencyAction(.installPlaywrightBrowsers)
                         }
 
                         if !ws.packageScripts.isEmpty {
-                            Divider()
-                            Menu("package.json Scripts (\(ws.packageScripts.count))") {
-                                ForEach(ws.packageScripts) { script in
-                                    Button("\(script.name)  —  \(script.command)") {
-                                        appState.runDependencyAction(.runScript(name: script.name))
-                                    }
+                            CeptraDropdownDivider()
+                            CeptraDropdownSectionHeader(title: "package.json Scripts (\(ws.packageScripts.count))")
+                            ForEach(ws.packageScripts) { script in
+                                CeptraDropdownItem(
+                                    title: script.name,
+                                    subtitle: script.command,
+                                    systemImage: "terminal",
+                                    isMonospaced: true
+                                ) {
+                                    appState.runDependencyAction(.runScript(name: script.name))
                                 }
                             }
                         }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "shippingbox")
-                                .font(.system(size: 10.5))
-                            Text(pm.rawValue)
-                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 8.5, weight: .semibold))
-                        }
-                        .foregroundStyle(CeptraTheme.accentWarm)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3.5)
-                        .background(CeptraTheme.accentWarm.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
-                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(CeptraTheme.accentWarm.opacity(0.28), lineWidth: 0.75))
                     }
-                    .menuStyle(.borderlessButton)
                     .fixedSize()
                     .disabled(appState.isRunning)
                     .help("Install / update dependencies or run package.json scripts")
+                    .accessibilityLabel("Package Manager and Scripts")
                 }
 
                 if !appState.consoleLogs.isEmpty {
@@ -131,8 +174,9 @@ struct ConsoleDrawerView: View {
                         Image(systemName: "doc.on.doc")
                             .font(.system(size: 11))
                             .foregroundStyle(CeptraTheme.textSecondary)
+                            .frame(width: 24, height: 22)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45))
                     .help("Copy Logs")
 
                     Button {
@@ -141,62 +185,67 @@ struct ConsoleDrawerView: View {
                         Image(systemName: "trash")
                             .font(.system(size: 11))
                             .foregroundStyle(CeptraTheme.textSecondary)
+                            .frame(width: 24, height: 22)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45))
                     .help("Clear Console")
                 }
 
                 Button {
-                    appState.isConsoleVisible = false
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        appState.isConsoleVisible.toggle()
+                    }
                 } label: {
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 11))
-                        .foregroundStyle(CeptraTheme.textMuted)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                        .rotationEffect(.degrees(appState.isConsoleVisible ? 0 : 180))
+                        .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: appState.isConsoleVisible)
+                        .frame(width: 24, height: 22)
                 }
-                .buttonStyle(.plain)
-                .help("Hide Console (⌘J)")
+                .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45))
+                .help(appState.isConsoleVisible ? "Hide Console (⌘J)" : "Show Console (⌘J)")
+                .accessibilityLabel(appState.isConsoleVisible ? "Hide Console" : "Show Console")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(CeptraTheme.sidebarBG)
+            .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.74, topHairline: true, bottomHairline: appState.isConsoleVisible)
 
-            Divider().overlay(CeptraTheme.border)
-
-            // Streaming Log Area
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        if filteredLogs.isEmpty {
-                            Text("Ready. Press ⌘R to run tests, use the \(appState.workspace?.packageManager.rawValue ?? "npm") menu to update dependencies, or run any shell command below.")
-                                .font(.system(size: 11.5, design: .monospaced))
-                                .foregroundStyle(CeptraTheme.textMuted)
-                                .padding(12)
-                        } else {
-                            ForEach(filteredLogs) { entry in
-                                Text(entry.text)
+            if appState.isConsoleVisible {
+                // Streaming Log Area
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            if filteredLogs.isEmpty {
+                                Text("Ready. Press ⌘R to run tests, use the \(appState.workspace?.packageManager.rawValue ?? "npm") menu to update dependencies, or run any shell command below.")
                                     .font(.system(size: 11.5, design: .monospaced))
-                                    .foregroundStyle(lineColor(for: entry))
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .id(entry.id)
+                                    .foregroundStyle(CeptraTheme.textMuted)
+                                    .padding(12)
+                            } else {
+                                ForEach(filteredLogs) { entry in
+                                    Text(entry.text)
+                                        .font(.system(size: 11.5, design: .monospaced))
+                                        .foregroundStyle(lineColor(for: entry))
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .id(entry.id)
+                                }
                             }
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                }
-                .onChange(of: appState.consoleLogs.count) { _, _ in
-                    if let last = filteredLogs.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                    .onChange(of: appState.consoleLogs.count) { _, _ in
+                        if let last = filteredLogs.last {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
                     }
                 }
+                .background(Color(red: 0.058, green: 0.064, blue: 0.080))
+
+                // Interactive Workspace Command Prompt (npm update, npm install <pkg>, npx ..., etc.)
+                commandInputBar
             }
-            .background(Color(red: 0.058, green: 0.064, blue: 0.080))
-
-            Divider().overlay(CeptraTheme.border)
-
-            // Interactive Workspace Command Prompt (npm update, npm install <pkg>, npx ..., etc.)
-            commandInputBar
         }
         .onChange(of: appState.focusCommandInputTrigger) { _, _ in
             isCommandFocused = true
@@ -221,22 +270,49 @@ struct ConsoleDrawerView: View {
                 }
 
             if !appState.commandHistory.isEmpty {
-                Menu {
+                CeptraGlassDropdown(arrowEdge: .top, minWidth: 260, maxWidth: 380) { isOpen in
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 10.5))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(isOpen || isRecentHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                            .rotationEffect(.degrees(isOpen ? 180 : 0))
+                            .offset(y: !isOpen && isRecentHovered && !reduceMotion ? 0.5 : 0)
+                            .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: isOpen)
+                    }
+                    .foregroundStyle(isOpen || isRecentHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .ceptraGlassSurface(
+                        cornerRadius: 6,
+                        tint: CeptraTheme.panelBG,
+                        tintOpacity: 0.56,
+                        isHovered: isRecentHovered,
+                        isActive: isOpen
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isRecentHovered)
+                    .onHover { hovering in
+                        isRecentHovered = hovering
+                    }
+                } content: {
+                    CeptraDropdownSectionHeader(title: "Recent Commands")
                     ForEach(appState.commandHistory.prefix(12), id: \.self) { cmd in
-                        Button(cmd) {
+                        CeptraDropdownItem(
+                            title: cmd,
+                            systemImage: "terminal",
+                            isMonospaced: true
+                        ) {
                             appState.commandInputText = cmd
                             appState.runDependencyAction(.customShell(command: cmd))
                         }
                     }
-                } label: {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 11))
-                        .foregroundStyle(CeptraTheme.textMuted)
                 }
-                .menuStyle(.borderlessButton)
                 .fixedSize()
                 .disabled(appState.isRunning)
                 .help("Recent Commands")
+                .accessibilityLabel("Recent Commands")
             }
 
             if appState.isRunning {
@@ -246,11 +322,15 @@ struct ConsoleDrawerView: View {
                     Text("Stop")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(CeptraTheme.failure, in: RoundedRectangle(cornerRadius: 5))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(CeptraTheme.failure, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.75)
+                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CeptraTactilePressStyle())
             } else {
                 Button {
                     submitCustomCommand()
@@ -262,17 +342,27 @@ struct ConsoleDrawerView: View {
                             .font(.system(size: 10.5, weight: .semibold))
                     }
                     .foregroundStyle(canRunInput ? .white : CeptraTheme.textMuted)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(canRunInput ? CeptraTheme.accent : CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 5))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(
+                        canRunInput ? CeptraTheme.accent : CeptraTheme.panelBG.opacity(0.65),
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(
+                                canRunInput ? Color.white.opacity(0.24) : CeptraTheme.border,
+                                lineWidth: 0.75
+                            )
+                    )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CeptraTactilePressStyle())
                 .disabled(!canRunInput)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(CeptraTheme.sidebarBG)
+        .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.74, topHairline: true, bottomHairline: true)
     }
 
     private var canRunInput: Bool {

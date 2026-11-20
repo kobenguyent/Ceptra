@@ -52,6 +52,7 @@ struct CodeEditorView: NSViewRepresentable {
         let fontChanged = abs(textView.editorFontSize - fontSize) > 0.1
 
         textView.editorFontSize = fontSize
+        container.lineLayoutDelegate.fontSize = fontSize
         textView.editorLanguage = language
         textView.tabWidth = 2
         textView.currentFileURL = URL(fileURLWithPath: documentID)
@@ -422,11 +423,25 @@ private final class FlippedClipView: NSClipView {
     override var isFlipped: Bool { true }
 }
 
-// MARK: - Non-Destructive Code Folding Layout Manager Delegate
+// MARK: - Unified TextKit 1 Layout Delegate (Centered Line Metrics + Non-Destructive Code Folding)
 
-private final class CodeFoldLayoutManagerDelegate: NSObject, NSLayoutManagerDelegate {
+/// Combines two TextKit 1 layout behaviors on a single `NSLayoutManagerDelegate`:
+/// 1. Vertically centers every visible line inside an integer-height line fragment box (`1.42x` line height)
+/// 2. Suppresses glyphs & control characters inside folded ranges without mutating `NSTextStorage`
+final class CeptraCenteredLineLayoutDelegate: NSObject, NSLayoutManagerDelegate {
+    var fontSize: CGFloat = 13.0
+    var lineHeightMultiple: CGFloat = 1.42
     /// Sorted, disjoint UTF-16 character ranges hidden when folded.
     var hiddenRanges: [NSRange] = []
+
+    static func metrics(fontSize: CGFloat, lineHeightMultiple: CGFloat = 1.42, in layoutManager: NSLayoutManager) -> (lineHeight: CGFloat, baseline: CGFloat) {
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let naturalH = layoutManager.defaultLineHeight(for: font)
+        let naturalBase = layoutManager.defaultBaselineOffset(for: font)
+        let targetH = round(naturalH * lineHeightMultiple)
+        let halfExtra = round(max(0, targetH - naturalH) * 0.5)
+        return (targetH, naturalBase + halfExtra)
+    }
 
     func isCharacterHidden(_ charIndex: Int) -> Bool {
         guard !hiddenRanges.isEmpty else { return false }
@@ -495,15 +510,28 @@ private final class CodeFoldLayoutManagerDelegate: NSObject, NSLayoutManagerDele
         }
         return action
     }
-}
 
-// MARK: - Container View (TextKit 1 + Sibling Line Number & Code Folding Gutter)
+    func layoutManager(
+        _ layoutManager: NSLayoutManager,
+        shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
+        lineFragmentUsedRect: UnsafeMutablePointer<NSRect>,
+        baselineOffset: UnsafeMutablePointer<CGFloat>,
+        in textContainer: NSTextContainer,
+        forGlyphRange glyphRange: NSRange
+    ) -> Bool {
+        let m = Self.metrics(fontSize: fontSize, lineHeightMultiple: lineHeightMultiple, in: layoutManager)
+        lineFragmentRect.pointee.size.height = m.lineHeight
+        lineFragmentUsedRect.pointee.size.height = m.lineHeight
+        baselineOffset.pointee = m.baseline
+        return true
+    }
+}
 
 final class CeptraEditorContainerView: NSView {
     let scrollView: NSScrollView
     let textView: CeptraCodeTextView
     let gutterView: LineNumberGutterView
-    private let foldLayoutDelegate = CodeFoldLayoutManagerDelegate()
+    let lineLayoutDelegate = CeptraCenteredLineLayoutDelegate()
     private var gutterWidthConstraint: NSLayoutConstraint?
 
     private(set) var lineIndex = LineIndexTable(text: "")
@@ -521,9 +549,11 @@ final class CeptraEditorContainerView: NSView {
         clipView.backgroundColor = NSColor(red: 0.075, green: 0.082, blue: 0.102, alpha: 1.0)
         self.scrollView.contentView = clipView
 
+        self.lineLayoutDelegate.fontSize = fontSize
+
         let textStorage = NSTextStorage()
         let layoutManager = NSLayoutManager()
-        layoutManager.delegate = foldLayoutDelegate
+        layoutManager.delegate = lineLayoutDelegate
         textStorage.addLayoutManager(layoutManager)
         let textContainer = NSTextContainer(containerSize: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
         textContainer.widthTracksTextView = false
@@ -626,7 +656,7 @@ final class CeptraEditorContainerView: NSView {
 
     func clearFoldsWithoutRelayout() {
         collapsedStartLines = []
-        foldLayoutDelegate.hiddenRanges = []
+        lineLayoutDelegate.hiddenRanges = []
     }
 
     func refreshFolds(restoringCollapsedStartLines previousCollapsed: Set<Int>) {
@@ -643,7 +673,7 @@ final class CeptraEditorContainerView: NSView {
         self.foldableRegions = newRegions
         self.collapsedStartLines = validCollapsed
 
-        applyFoldRangesToLayoutManager(previousRanges: foldLayoutDelegate.hiddenRanges)
+        applyFoldRangesToLayoutManager(previousRanges: lineLayoutDelegate.hiddenRanges)
         syncFoldStateToViews()
     }
 
@@ -654,7 +684,7 @@ final class CeptraEditorContainerView: NSView {
 
     func setFolded(_ collapsed: Bool, atStartLine startLine: Int) {
         guard let region = foldableRegions.first(where: { $0.startLine == startLine }) else { return }
-        let prevRanges = foldLayoutDelegate.hiddenRanges
+        let prevRanges = lineLayoutDelegate.hiddenRanges
         if collapsed {
             collapsedStartLines.insert(startLine)
             // Keep caret outside hidden range so editing remains intuitive
@@ -673,7 +703,7 @@ final class CeptraEditorContainerView: NSView {
 
     func unfold(startLines: Set<Int>) {
         guard !startLines.isEmpty else { return }
-        let prevRanges = foldLayoutDelegate.hiddenRanges
+        let prevRanges = lineLayoutDelegate.hiddenRanges
         collapsedStartLines.subtract(startLines)
         applyFoldRangesToLayoutManager(previousRanges: prevRanges)
         syncFoldStateToViews()
@@ -715,7 +745,7 @@ final class CeptraEditorContainerView: NSView {
             }
         case .collapseAll:
             guard !foldableRegions.isEmpty else { return }
-            let prevRanges = foldLayoutDelegate.hiddenRanges
+            let prevRanges = lineLayoutDelegate.hiddenRanges
             collapsedStartLines = Set(foldableRegions.map(\.startLine))
             applyFoldRangesToLayoutManager(previousRanges: prevRanges)
             syncFoldStateToViews()
@@ -723,7 +753,7 @@ final class CeptraEditorContainerView: NSView {
             scrollToClampedOrigin(scrollView.documentVisibleRect.origin)
         case .expandAll:
             guard !collapsedStartLines.isEmpty else { return }
-            let prevRanges = foldLayoutDelegate.hiddenRanges
+            let prevRanges = lineLayoutDelegate.hiddenRanges
             collapsedStartLines.removeAll()
             applyFoldRangesToLayoutManager(previousRanges: prevRanges)
             syncFoldStateToViews()
@@ -753,7 +783,7 @@ final class CeptraEditorContainerView: NSView {
             regions: foldableRegions,
             collapsedStartLines: collapsedStartLines
         )
-        foldLayoutDelegate.hiddenRanges = nextRanges
+        lineLayoutDelegate.hiddenRanges = nextRanges
 
         guard let layoutManager = textView.layoutManager,
               let storage = textView.textStorage else { return }
@@ -777,7 +807,7 @@ final class CeptraEditorContainerView: NSView {
 
         textView.lineIndex = lineIndex
         textView.collapsedRegions = foldableRegions.filter { collapsedStartLines.contains($0.startLine) }
-        textView.hiddenRanges = foldLayoutDelegate.hiddenRanges
+        textView.hiddenRanges = lineLayoutDelegate.hiddenRanges
         textView.needsDisplay = true
     }
 
@@ -820,8 +850,8 @@ final class CeptraEditorContainerView: NSView {
     func updateGutter() {
         let lineCount = max(1, lineIndex.lineCount)
         let digits = max(3, String(lineCount).count)
-        // Line numbers + right padding + dedicated 18pt fold chevron column
-        gutterWidthConstraint?.constant = CGFloat(digits * 8 + 34)
+        // Baseline-matched monospaced line numbers + right padding + dedicated 18pt fold chevron column
+        gutterWidthConstraint?.constant = CGFloat(digits * 9 + 38)
         gutterView.needsDisplay = true
     }
 
@@ -987,31 +1017,37 @@ final class LineNumberGutterView: NSView {
               let textContainer = textView.textContainer,
               let scrollView else { return }
 
-        let visibleRect = scrollView.documentVisibleRect
-        let containerOrigin = textView.textContainerOrigin
+        let docVisibleRect = scrollView.documentVisibleRect
+        let textOrigin = textView.textContainerOrigin
         let containerVisibleRect = NSRect(
-            x: max(0, visibleRect.origin.x - containerOrigin.x),
-            y: max(0, visibleRect.origin.y - containerOrigin.y),
-            width: visibleRect.width,
-            height: visibleRect.height + containerOrigin.y * 2
+            x: max(0, docVisibleRect.origin.x - textOrigin.x),
+            y: max(0, docVisibleRect.origin.y - textOrigin.y),
+            width: max(1, docVisibleRect.width),
+            height: max(1, docVisibleRect.height + textOrigin.y * 2)
         )
 
         let activeLineNumber = lineIndex.lineNumber(forUTF16Offset: textView.selectedRange().location)
 
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        let codeFontSize = (textView as? CeptraCodeTextView)?.editorFontSize ?? 13.0
+        let lineMetrics = CeptraCenteredLineLayoutDelegate.metrics(fontSize: codeFontSize, in: layoutManager)
+        let normalFont = NSFont.monospacedSystemFont(ofSize: codeFontSize, weight: .medium)
+        let activeFont = NSFont.monospacedSystemFont(ofSize: codeFontSize, weight: .semibold)
+        let normalBaselineOffset = layoutManager.defaultBaselineOffset(for: normalFont)
+        let activeBaselineOffset = layoutManager.defaultBaselineOffset(for: activeFont)
+
         let normalAttrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor(red: 0.45, green: 0.50, blue: 0.60, alpha: 1.0)
+            .font: normalFont,
+            .foregroundColor: NSColor(red: 0.52, green: 0.57, blue: 0.67, alpha: 0.92)
         ]
         let activeAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor(red: 0.84, green: 0.90, blue: 1.0, alpha: 1.0)
+            .font: activeFont,
+            .foregroundColor: NSColor(red: 0.88, green: 0.93, blue: 1.0, alpha: 1.0)
         ]
 
-        let numberRightEdge = bounds.width - foldColumnWidth - 2
+        let numberRightEdge = bounds.width - foldColumnWidth - 3
 
-        func drawRow(lineNumber: Int, y: CGFloat, height: CGFloat) {
-            let rowRect = NSRect(x: 0, y: y, width: bounds.width - 1, height: height)
+        func drawRow(lineNumber: Int, rectInGutter: NSRect) {
+            let rowRect = NSRect(x: 0, y: rectInGutter.minY, width: bounds.width - 1, height: rectInGutter.height)
             visibleLineItems.append(LineHitItem(lineNumber: lineNumber, rowRect: rowRect))
 
             let isActive = lineNumber == activeLineNumber
@@ -1020,12 +1056,15 @@ final class LineNumberGutterView: NSView {
                 rowRect.fill()
             }
 
-            let label = "\(lineNumber)" as NSString
             let attrs = isActive ? activeAttrs : normalAttrs
+            let baselineOffset = isActive ? activeBaselineOffset : normalBaselineOffset
+            let drawY = rectInGutter.minY + lineMetrics.baseline - baselineOffset
+
+            let label = "\(lineNumber)" as NSString
             let textSize = label.size(withAttributes: attrs)
             let drawPoint = NSPoint(
                 x: max(4, numberRightEdge - textSize.width),
-                y: y + (height - textSize.height) * 0.5
+                y: drawY
             )
             label.draw(at: drawPoint, withAttributes: attrs)
 
@@ -1033,9 +1072,9 @@ final class LineNumberGutterView: NSView {
                 let isCollapsed = collapsedStartLines.contains(lineNumber)
                 let chevronRect = NSRect(
                     x: bounds.width - foldColumnWidth - 1,
-                    y: y,
+                    y: rectInGutter.minY,
                     width: foldColumnWidth,
-                    height: height
+                    height: rectInGutter.height
                 )
                 visibleFoldItems.append(FoldHitItem(
                     region: region,
@@ -1055,8 +1094,14 @@ final class LineNumberGutterView: NSView {
         }
 
         if layoutManager.numberOfGlyphs == 0 {
-            let lineH = max(16, textView.font?.boundingRectForFont.height ?? 17)
-            drawRow(lineNumber: 1, y: containerOrigin.y - visibleRect.origin.y, height: lineH)
+            let extraRect = layoutManager.extraLineFragmentRect
+            let rectInTextView = NSRect(
+                x: textOrigin.x,
+                y: textOrigin.y + extraRect.minY,
+                width: max(1, extraRect.width),
+                height: lineMetrics.lineHeight
+            )
+            drawRow(lineNumber: 1, rectInGutter: convert(rectInTextView, from: textView))
             return
         }
 
@@ -1069,19 +1114,25 @@ final class LineNumberGutterView: NSView {
                 let lineNumber = self.lineIndex.lineNumber(forUTF16Offset: charIdx)
                 guard drawnLines.insert(lineNumber).inserted else { return }
 
-                let y = rect.origin.y + containerOrigin.y - visibleRect.origin.y
-                drawRow(lineNumber: lineNumber, y: y, height: rect.height)
+                var rectInTextView = rect
+                rectInTextView.origin.x += textOrigin.x
+                rectInTextView.origin.y += textOrigin.y
+                let rectInGutter = self.convert(rectInTextView, from: textView)
+                drawRow(lineNumber: lineNumber, rectInGutter: rectInGutter)
             }
         }
 
         // Draw trailing empty line number when document ends with a newline
         let extraRect = layoutManager.extraLineFragmentRect
         if extraRect.height > 0 {
-            let y = extraRect.origin.y + containerOrigin.y - visibleRect.origin.y
-            if y + extraRect.height >= dirtyRect.minY - 2 && y <= dirtyRect.maxY + 2 {
+            var rectInTextView = extraRect
+            rectInTextView.origin.x += textOrigin.x
+            rectInTextView.origin.y += textOrigin.y
+            let rectInGutter = convert(rectInTextView, from: textView)
+            if rectInGutter.maxY >= dirtyRect.minY - 2 && rectInGutter.minY <= dirtyRect.maxY + 2 {
                 let lastLine = lineIndex.lineCount
                 if drawnLines.insert(lastLine).inserted {
-                    drawRow(lineNumber: lastLine, y: y, height: extraRect.height)
+                    drawRow(lineNumber: lastLine, rectInGutter: rectInGutter)
                 }
             }
         }
@@ -1470,7 +1521,11 @@ final class CeptraCodeTextView: NSTextView {
         let font = NSFont.monospacedSystemFont(ofSize: editorFontSize, weight: .regular)
         let boldFont = NSFont.monospacedSystemFont(ofSize: editorFontSize, weight: .semibold)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineHeightMultiple = 1.32
+        if let lm = layoutManager {
+            let m = CeptraCenteredLineLayoutDelegate.metrics(fontSize: editorFontSize, in: lm)
+            paragraph.minimumLineHeight = m.lineHeight
+            paragraph.maximumLineHeight = m.lineHeight
+        }
 
         let baseColor = NSColor(red: 0.89, green: 0.91, blue: 0.96, alpha: 1.0)
         let keywordColor = NSColor(red: 0.76, green: 0.56, blue: 0.98, alpha: 1.0)
@@ -1584,12 +1639,15 @@ final class CompletionPopupController: NSObject, NSTableViewDataSource, NSTableV
         p.hidesOnDeactivate = true
         p.appearance = NSAppearance(named: .darkAqua)
 
-        let container = NSView(frame: p.contentRect(forFrameRect: p.frame))
+        let container = NSVisualEffectView(frame: p.contentRect(forFrameRect: p.frame))
+        container.material = .popover
+        container.blendingMode = .behindWindow
+        container.state = .active
+        container.appearance = NSAppearance(named: .darkAqua)
         container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor(red: 0.105, green: 0.116, blue: 0.148, alpha: 0.98).cgColor
-        container.layer?.cornerRadius = 8
+        container.layer?.cornerRadius = 10
         container.layer?.borderWidth = 1
-        container.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        container.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
         container.layer?.masksToBounds = true
 
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("completion"))
@@ -1656,11 +1714,22 @@ final class CompletionPopupController: NSObject, NSTableViewDataSource, NSTableV
             }
         }
 
+        let wasVisible = panel.isVisible
         panel.setFrame(NSRect(x: originX, y: originY, width: popupWidth, height: popupHeight), display: true)
         if panel.parent !== hostWindow {
             hostWindow.addChildWindow(panel, ordered: .above)
         }
-        panel.orderFront(nil)
+        if !wasVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            panel.alphaValue = 0
+            panel.orderFront(nil)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.14
+                panel.animator().alphaValue = 1
+            }
+        } else {
+            panel.alphaValue = 1
+            panel.orderFront(nil)
+        }
     }
 
     func dismiss() {

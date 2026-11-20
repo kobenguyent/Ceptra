@@ -100,6 +100,8 @@ struct NewFolderSheetView: View {
                     }
                 }
             }
+            .padding(14)
+            .ceptraGlassSurface(cornerRadius: 10, tint: CeptraTheme.panelBG, tintOpacity: 0.54)
 
             HStack {
                 Spacer()
@@ -120,7 +122,12 @@ struct NewFolderSheetView: View {
         }
         .padding(20)
         .frame(width: 440)
-        .background(CeptraTheme.sidebarBG)
+        .background {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                Rectangle().fill(CeptraTheme.sidebarBG.opacity(0.75))
+            }
+        }
         .onAppear {
             if let initial = appState.newFolderInitialDirectory {
                 directory = initial

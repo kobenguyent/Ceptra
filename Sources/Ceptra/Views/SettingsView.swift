@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var customConfigDraft: String = ""
 
     var body: some View {
@@ -13,7 +14,10 @@ struct SettingsView: View {
                     Slider(value: $appState.settings.editorFontSize, in: 10...20, step: 0.5)
                     Text("\(String(format: "%.1f", appState.settings.editorFontSize)) pt")
                         .font(.system(size: 11, design: .monospaced))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
                         .frame(width: 46, alignment: .trailing)
+                        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: appState.settings.editorFontSize)
                 }
             }
 
@@ -37,8 +41,10 @@ struct SettingsView: View {
                                 customConfigDraft = ""
                                 appState.setCustomConfigFile(path: nil)
                             }
+                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.92)))
                         }
                     }
+                    .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: ws.config.isCustomConfigOverride)
                     Text("Resolved: \(ws.config.configFilePath ?? "None detected")")
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -55,6 +61,7 @@ struct SettingsView: View {
                     Text("Resolved: \(tc.codeceptExecutable) (\(tc.resolutionSource))")
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(.secondary)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
                 }
             }
 
@@ -77,6 +84,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 560, height: 470)
+        .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: appState.resolvedToolchain?.codeceptExecutable)
         .onAppear {
             customConfigDraft = appState.activeWorkspaceCustomConfigSetting
         }

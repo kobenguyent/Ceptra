@@ -4,6 +4,7 @@ import SwiftUI
 struct NewFileSheetView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var selectedKind: ScaffoldTemplateKind = .blankFile
     @State private var name: String = ""
@@ -40,7 +41,9 @@ struct NewFileSheetView: View {
                 .onChange(of: selectedKind) { _, newValue in
                     errorMessage = nil
                     if !hasCustomDirectoryOverride {
-                        directory = newValue.suggestedDirectory
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                            directory = newValue.suggestedDirectory
+                        }
                     }
                 }
 
@@ -97,22 +100,25 @@ struct NewFileSheetView: View {
                         }
                 }
 
-                if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.turn.down.right")
-                            .font(.system(size: 10))
-                            .foregroundStyle(CeptraTheme.textMuted)
-                        Text(previewPath.isEmpty ? "—" : previewPath)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(CeptraTheme.cyan)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 6))
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.system(size: 10))
+                        .foregroundStyle(CeptraTheme.accent)
+                    Text(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                         ? "\(directory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "." : directory.trimmingCharacters(in: .whitespacesAndNewlines))/…"
+                         : previewPath)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? CeptraTheme.textSecondary : CeptraTheme.cyan)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .contentTransition(.opacity)
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(CeptraTheme.canvasBG.opacity(0.45), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: directory)
+                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: name)
 
                 if let errorMessage {
                     HStack(spacing: 6) {
@@ -125,6 +131,8 @@ struct NewFileSheetView: View {
                     }
                 }
             }
+            .padding(14)
+            .ceptraGlassSurface(cornerRadius: 10, tint: CeptraTheme.panelBG, tintOpacity: 0.54)
 
             HStack {
                 Spacer()
@@ -145,7 +153,12 @@ struct NewFileSheetView: View {
         }
         .padding(20)
         .frame(width: 460)
-        .background(CeptraTheme.sidebarBG)
+        .background {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                Rectangle().fill(CeptraTheme.sidebarBG.opacity(0.75))
+            }
+        }
         .onAppear {
             let isTS = appState.workspace?.config.isTypeScript ?? false
             if let initial = appState.newFileInitialDirectory {

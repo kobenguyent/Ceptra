@@ -5,6 +5,7 @@ import SwiftUI
 struct UpdateSheetView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -27,7 +28,12 @@ struct UpdateSheetView: View {
 
             Divider().overlay(CeptraTheme.border)
 
-            stateBody
+            ZStack(alignment: .leading) {
+                stateBody
+                    .id(updateStatePhase)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.98)))
+            }
+            .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: updateStatePhase)
 
             Divider().overlay(CeptraTheme.border)
 
@@ -45,7 +51,25 @@ struct UpdateSheetView: View {
         }
         .padding(20)
         .frame(width: 500)
-        .background(CeptraTheme.sidebarBG)
+        .background {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                Rectangle().fill(CeptraTheme.sidebarBG.opacity(0.75))
+            }
+        }
+    }
+
+    private var updateStatePhase: String {
+        switch appState.updateState {
+        case .idle: return "idle"
+        case .checking: return "checking"
+        case .upToDate: return "upToDate"
+        case .available: return "available"
+        case .downloading: return "downloading"
+        case .readyToInstall: return "readyToInstall"
+        case .installing: return "installing"
+        case .failed: return "failed"
+        }
     }
 
     private var isBusy: Bool {
@@ -109,8 +133,7 @@ struct UpdateSheetView: View {
                             .padding(10)
                     }
                     .frame(height: 140)
-                    .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CeptraTheme.border, lineWidth: 0.75))
+                    .ceptraGlassSurface(cornerRadius: 8, tint: CeptraTheme.canvasBG, tintOpacity: 0.62)
                 }
 
                 HStack(spacing: 10) {
@@ -130,15 +153,22 @@ struct UpdateSheetView: View {
             }
 
         case .downloading(let release, let asset, let progress):
+            let percent = Int((progress * 100).rounded())
             VStack(alignment: .leading, spacing: 8) {
                 Text("Downloading \(release.tagName) — \(asset.name)")
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(CeptraTheme.textPrimary)
                 ProgressView(value: progress, total: 1.0)
                     .tint(CeptraTheme.accent)
-                Text("\(Int((progress * 100).rounded()))% complete · Verifying SHA-256 after download")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(CeptraTheme.textMuted)
+                HStack(spacing: 4) {
+                    Text("\(percent)%")
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: percent)
+                    Text("complete · Verifying SHA-256 after download")
+                }
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(CeptraTheme.textMuted)
             }
             .padding(.vertical, 8)
 

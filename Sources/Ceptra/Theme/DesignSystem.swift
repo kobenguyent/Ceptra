@@ -11,6 +11,29 @@ enum CeptraTheme {
     static let border = Color.white.opacity(0.085)
     static let subtleBorder = Color.white.opacity(0.05)
 
+    // Apple Liquid Glass specular rims & tints
+    static let glassTopHighlight = Color.white.opacity(0.20)
+    static let glassMidHighlight = Color.white.opacity(0.06)
+    static let glassBottomEdge = Color.white.opacity(0.02)
+    static let glassHoverOverlay = Color.white.opacity(0.055)
+    static let glassActiveOverlay = Color.white.opacity(0.09)
+
+    static var specularRimGradient: LinearGradient {
+        LinearGradient(
+            colors: [glassTopHighlight, glassMidHighlight, glassBottomEdge],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    static func accentSpecularRim(_ tint: Color) -> LinearGradient {
+        LinearGradient(
+            colors: [tint.opacity(0.55), tint.opacity(0.22), tint.opacity(0.10)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
     // Typography colors
     static let textPrimary = Color(red: 0.94, green: 0.95, blue: 0.98)
     static let textSecondary = Color(red: 0.62, green: 0.66, blue: 0.74)
@@ -180,5 +203,594 @@ enum CeptraAppIconRenderer {
         ctx.strokePath()
 
         return image
+    }
+}
+
+// MARK: - Apple Liquid Glass Motion & Surface Primitives
+
+enum CeptraMotion {
+    static let micro: Animation = .spring(response: 0.20, dampingFraction: 0.86)
+    static let snappy: Animation = .spring(response: 0.28, dampingFraction: 0.84)
+    static let smooth: Animation = .spring(response: 0.36, dampingFraction: 0.86)
+    static let gentle: Animation = .spring(response: 0.44, dampingFraction: 0.88)
+
+    static func resolve(_ animation: Animation, reduceMotion: Bool) -> Animation? {
+        reduceMotion ? .easeOut(duration: 0.14) : animation
+    }
+}
+
+struct CeptraGlassSurfaceModifier: ViewModifier {
+    var cornerRadius: CGFloat = 10
+    var tint: Color = CeptraTheme.panelBG
+    var tintOpacity: Double = 0.58
+    var accentBorder: Color? = nil
+    var isHovered: Bool = false
+    var isActive: Bool = false
+    var elevatedShadow: Bool = false
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background {
+                ZStack {
+                    shape.fill(.ultraThinMaterial)
+                    shape.fill(tint.opacity(tintOpacity))
+                    if isActive {
+                        shape.fill(CeptraTheme.glassActiveOverlay)
+                    } else if isHovered {
+                        shape.fill(CeptraTheme.glassHoverOverlay)
+                    }
+                }
+            }
+            .overlay {
+                if let accentBorder {
+                    shape.strokeBorder(CeptraTheme.accentSpecularRim(accentBorder), lineWidth: 0.9)
+                } else {
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(isHovered || isActive ? 0.26 : 0.16),
+                                Color.white.opacity(isHovered || isActive ? 0.09 : 0.05),
+                                Color.white.opacity(0.025)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.8
+                    )
+                }
+            }
+            .shadow(
+                color: .black.opacity(elevatedShadow ? 0.28 : (isHovered ? 0.18 : 0.10)),
+                radius: elevatedShadow ? 14 : (isHovered ? 8 : 4),
+                y: elevatedShadow ? 6 : 2
+            )
+    }
+}
+
+struct CeptraGlassBarModifier: ViewModifier {
+    var tint: Color = CeptraTheme.sidebarBG
+    var tintOpacity: Double = 0.72
+    var topHairline: Bool = false
+    var bottomHairline: Bool = false
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial)
+                    Rectangle().fill(tint.opacity(tintOpacity))
+                }
+            }
+            .overlay(alignment: .top) {
+                if topHairline {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.09))
+                        .frame(height: 0.5)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if bottomHairline {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.08))
+                        .frame(height: 0.5)
+                }
+            }
+    }
+}
+
+struct CeptraGlassButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat = 8
+    var tint: Color = CeptraTheme.panelBG
+    var tintOpacity: Double = 0.58
+    var accentBorder: Color? = nil
+    var isActive: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        GlassButtonBody(
+            configuration: configuration,
+            cornerRadius: cornerRadius,
+            tint: tint,
+            tintOpacity: tintOpacity,
+            accentBorder: accentBorder,
+            isActive: isActive
+        )
+    }
+
+    private struct GlassButtonBody: View {
+        let configuration: Configuration
+        let cornerRadius: CGFloat
+        let tint: Color
+        let tintOpacity: Double
+        let accentBorder: Color?
+        let isActive: Bool
+
+        @State private var isHovered = false
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        var body: some View {
+            configuration.label
+                .modifier(
+                    CeptraGlassSurfaceModifier(
+                        cornerRadius: cornerRadius,
+                        tint: tint,
+                        tintOpacity: tintOpacity,
+                        accentBorder: accentBorder,
+                        isHovered: isHovered,
+                        isActive: isActive || configuration.isPressed
+                    )
+                )
+                .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .scaleEffect(configuration.isPressed && !reduceMotion ? 0.975 : 1.0)
+                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+                .onHover { hovering in
+                    isHovered = hovering
+                }
+        }
+    }
+}
+
+struct CeptraTactilePressStyle: ButtonStyle {
+    var pressedScale: CGFloat = 0.97
+
+    func makeBody(configuration: Configuration) -> some View {
+        TactilePressBody(configuration: configuration, pressedScale: pressedScale)
+    }
+
+    private struct TactilePressBody: View {
+        let configuration: Configuration
+        let pressedScale: CGFloat
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        var body: some View {
+            configuration.label
+                .scaleEffect(configuration.isPressed && !reduceMotion ? pressedScale : 1.0)
+                .brightness(configuration.isPressed ? -0.04 : 0)
+                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+        }
+    }
+}
+
+/// Unified Apple Liquid Glass dropdown pill trigger.
+/// Pair with `CeptraGlassDropdown` so the custom glass pill, hover glow, and animated
+/// trailing chevron render natively on macOS without `NSPopUpButton` stripping custom views.
+struct CeptraMenuPillLabel<Leading: View>: View {
+    let title: String
+    var subtitle: String? = nil
+    var titleFont: Font = .system(size: 12.5, weight: .semibold)
+    var titleColor: Color = CeptraTheme.textPrimary
+    var maxTitleWidth: CGFloat? = nil
+    var accentBorder: Color? = nil
+    var tint: Color = CeptraTheme.panelBG
+    var tintOpacity: Double = 0.56
+    var horizontalPadding: CGFloat = 10
+    var verticalPadding: CGFloat = 5
+    var cornerRadius: CGFloat = 8
+    var showChevron: Bool = true
+    var isOpen: Bool = false
+    @ViewBuilder let leading: () -> Leading
+
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 6) {
+            leading()
+
+            Text(title)
+                .font(titleFont)
+                .foregroundStyle(titleColor)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: maxTitleWidth, alignment: .leading)
+
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(CeptraTheme.textMuted)
+                    .lineLimit(1)
+            }
+
+            if showChevron {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(isOpen || isHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                    .rotationEffect(.degrees(isOpen ? 180 : 0))
+                    .offset(y: !isOpen && isHovered && !reduceMotion ? 0.5 : 0)
+                    .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: isOpen)
+            }
+        }
+        .padding(.horizontal, horizontalPadding)
+        .padding(.vertical, verticalPadding)
+        .modifier(
+            CeptraGlassSurfaceModifier(
+                cornerRadius: cornerRadius,
+                tint: tint,
+                tintOpacity: tintOpacity,
+                accentBorder: accentBorder,
+                isHovered: isHovered,
+                isActive: isOpen
+            )
+        )
+        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isOpen)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
+private struct CeptraDropdownDismissKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var ceptraDropdownDismiss: () -> Void {
+        get { self[CeptraDropdownDismissKey.self] }
+        set { self[CeptraDropdownDismissKey.self] = newValue }
+    }
+}
+
+/// True Apple Liquid Glass dropdown menu for macOS.
+/// Uses a real SwiftUI `Button` trigger (preserving full glass pill styling & animated chevron)
+/// and a native translucent `.popover` surface with smooth hover-highlighted glass rows.
+struct CeptraGlassDropdown<Trigger: View, MenuContent: View>: View {
+    var arrowEdge: Edge = .bottom
+    var minWidth: CGFloat = 230
+    var maxWidth: CGFloat = 320
+    var maxHeight: CGFloat = 380
+    @ViewBuilder let trigger: (_ isOpen: Bool) -> Trigger
+    @ViewBuilder let content: () -> MenuContent
+
+    @State private var isOpen = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button {
+            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                isOpen.toggle()
+            }
+        } label: {
+            trigger(isOpen)
+        }
+        .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.975))
+        .popover(isPresented: $isOpen, arrowEdge: arrowEdge) {
+            ViewThatFits(in: .vertical) {
+                menuStack
+                ScrollView(.vertical, showsIndicators: true) {
+                    menuStack
+                }
+                .frame(maxHeight: maxHeight)
+            }
+            .frame(minWidth: minWidth, maxWidth: maxWidth)
+            .background(CeptraTheme.panelBG.opacity(0.42))
+            .presentationBackground(.ultraThinMaterial)
+            .environment(\.ceptraDropdownDismiss) {
+                withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
+                    isOpen = false
+                }
+            }
+        }
+    }
+
+    private var menuStack: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            content()
+        }
+        .padding(6)
+    }
+}
+
+struct CeptraDropdownItem: View {
+    let title: String
+    var subtitle: String? = nil
+    var systemImage: String? = nil
+    var iconColor: Color? = nil
+    var shortcut: String? = nil
+    var isSelected: Bool = false
+    var isMonospaced: Bool = false
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @Environment(\.ceptraDropdownDismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button {
+            dismiss()
+            action()
+        } label: {
+            HStack(spacing: 8) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(
+                            iconColor ?? (isSelected ? CeptraTheme.accent : (isHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary))
+                        )
+                        .frame(width: 16, alignment: .center)
+                }
+
+                VStack(alignment: .leading, spacing: 1.5) {
+                    Text(title)
+                        .font(
+                            isMonospaced
+                                ? .system(size: 11.5, weight: isSelected ? .semibold : .regular, design: .monospaced)
+                                : .system(size: 12, weight: isSelected ? .semibold : .medium)
+                        )
+                        .foregroundStyle(isHovered || isSelected ? CeptraTheme.textPrimary : CeptraTheme.textPrimary.opacity(0.92))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(isHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
+                Spacer(minLength: 10)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(CeptraTheme.accent)
+                } else if let shortcut, !shortcut.isEmpty {
+                    Text(shortcut)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(CeptraTheme.textMuted)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(Color.white.opacity(isHovered ? 0.09 : 0.05), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, subtitle == nil ? 6 : 6.5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                if isHovered {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.white.opacity(0.09))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.65)
+                        )
+                } else if isSelected {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(CeptraTheme.accent.opacity(0.12))
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.985))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
+struct CeptraDropdownSectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(.system(size: 9.5, weight: .semibold))
+            .tracking(0.6)
+            .foregroundStyle(CeptraTheme.textMuted)
+            .padding(.horizontal, 9)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+    }
+}
+
+struct CeptraDropdownDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.09))
+            .frame(height: 0.5)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+    }
+}
+
+/// Native AppKit titlebar interaction layer for `.windowStyle(.hiddenTitleBar)` toolbars.
+/// Restores standard macOS titlebar window dragging and double-click-to-zoom/fill
+/// (respecting `AppleActionOnDoubleClick`) on empty toolbar space without intercepting buttons.
+struct CeptraWindowTitlebarDragArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        WindowTitlebarDragNSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class WindowTitlebarDragNSView: NSView {
+        private var didStartDrag = false
+
+        override var mouseDownCanMoveWindow: Bool { true }
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            true
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            didStartDrag = false
+            if event.clickCount == 2 {
+                performTitlebarDoubleClick()
+                return
+            }
+            super.mouseDown(with: event)
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard !didStartDrag, let window else {
+                super.mouseDragged(with: event)
+                return
+            }
+            didStartDrag = true
+            window.performDrag(with: event)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            didStartDrag = false
+            super.mouseUp(with: event)
+        }
+
+        private func performTitlebarDoubleClick() {
+            guard let window else { return }
+            let action = UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") ?? "Maximize"
+            switch action {
+            case "Minimize":
+                window.performMiniaturize(nil)
+            case "None":
+                break
+            default:
+                window.zoom(nil)
+            }
+        }
+    }
+}
+
+/// Reusable Apple Liquid Glass segmented control with a smooth `@Namespace` sliding pill.
+struct CeptraGlassSegmentedControl<Option: Identifiable & Hashable>: View {
+    let options: [Option]
+    @Binding var selection: Option
+    var label: (Option) -> String
+    var symbol: ((Option) -> String?)? = nil
+    var badgeCount: ((Option) -> Int?)? = nil
+    var horizontalPadding: CGFloat = 10
+    var verticalPadding: CGFloat = 5
+    var fontSize: CGFloat = 11.5
+
+    @Namespace private var pillNamespace
+    @State private var hoveredOption: Option?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options) { option in
+                let isSelected = selection == option
+                let isHovered = hoveredOption == option
+                Button {
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        selection = option
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        if let icon = symbol?(option) {
+                            Image(systemName: icon)
+                                .font(.system(size: fontSize - 0.5, weight: isSelected ? .semibold : .regular))
+                        }
+                        Text(label(option))
+                            .font(.system(size: fontSize, weight: isSelected ? .semibold : .medium))
+                        if let count = badgeCount?(option) {
+                            Text("\(count)")
+                                .font(.system(size: max(9.5, fontSize - 1.5), weight: .semibold, design: .monospaced))
+                                .monospacedDigit()
+                                .contentTransition(.numericText())
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(
+                                    (isSelected ? CeptraTheme.accent : CeptraTheme.textMuted).opacity(isSelected ? 0.22 : 0.14),
+                                    in: Capsule()
+                                )
+                                .foregroundStyle(isSelected ? CeptraTheme.accent : CeptraTheme.textSecondary)
+                        }
+                    }
+                    .foregroundStyle(isSelected ? CeptraTheme.textPrimary : (isHovered ? CeptraTheme.textPrimary.opacity(0.88) : CeptraTheme.textSecondary))
+                    .padding(.horizontal, horizontalPadding)
+                    .padding(.vertical, verticalPadding)
+                    .background {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                                .fill(CeptraTheme.elevatedBG.opacity(0.92))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                                        .strokeBorder(CeptraTheme.specularRimGradient, lineWidth: 0.75)
+                                )
+                                .shadow(color: .black.opacity(0.22), radius: 4, y: 1.5)
+                                .matchedGeometryEffect(id: "active-glass-pill", in: pillNamespace)
+                        } else if isHovered {
+                            RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                                .fill(Color.white.opacity(0.045))
+                        }
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 6.5, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .onHover { hovering in
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
+                        hoveredOption = hovering ? option : (hoveredOption == option ? nil : hoveredOption)
+                    }
+                }
+            }
+        }
+        .padding(3)
+        .ceptraGlassSurface(cornerRadius: 9, tint: CeptraTheme.panelBG, tintOpacity: 0.55)
+    }
+}
+
+extension View {
+    func ceptraGlassSurface(
+        cornerRadius: CGFloat = 10,
+        tint: Color = CeptraTheme.panelBG,
+        tintOpacity: Double = 0.58,
+        accentBorder: Color? = nil,
+        isHovered: Bool = false,
+        isActive: Bool = false,
+        elevatedShadow: Bool = false
+    ) -> some View {
+        modifier(
+            CeptraGlassSurfaceModifier(
+                cornerRadius: cornerRadius,
+                tint: tint,
+                tintOpacity: tintOpacity,
+                accentBorder: accentBorder,
+                isHovered: isHovered,
+                isActive: isActive,
+                elevatedShadow: elevatedShadow
+            )
+        )
+    }
+
+    func ceptraGlassBar(
+        tint: Color = CeptraTheme.sidebarBG,
+        tintOpacity: Double = 0.72,
+        topHairline: Bool = false,
+        bottomHairline: Bool = false
+    ) -> some View {
+        modifier(
+            CeptraGlassBarModifier(
+                tint: tint,
+                tintOpacity: tintOpacity,
+                topHairline: topHairline,
+                bottomHairline: bottomHairline
+            )
+        )
     }
 }

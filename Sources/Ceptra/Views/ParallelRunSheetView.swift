@@ -74,12 +74,11 @@ struct ParallelRunSheetView: View {
                 Spacer()
             }
 
-            Picker("", selection: $appState.parallelRunSheetTab) {
-                ForEach(ParallelRunTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
+            CeptraGlassSegmentedControl(
+                options: ParallelRunTab.allCases,
+                selection: $appState.parallelRunSheetTab,
+                label: { $0.rawValue }
+            )
 
             Divider().overlay(CeptraTheme.border)
 
@@ -141,7 +140,12 @@ struct ParallelRunSheetView: View {
         }
         .padding(20)
         .frame(width: 540)
-        .background(CeptraTheme.sidebarBG)
+        .background {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                Rectangle().fill(CeptraTheme.sidebarBG.opacity(0.78))
+            }
+        }
     }
 
     // MARK: - Workers Tab
