@@ -4,6 +4,7 @@ import SwiftUI
 struct NewFileSheetView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var selectedKind: ScaffoldTemplateKind = .jsTest
     @State private var name: String = ""
@@ -24,7 +25,9 @@ struct NewFileSheetView: View {
                 }
                 .onChange(of: selectedKind) { _, newValue in
                     if !hasCustomDirectoryOverride {
-                        directory = newValue.suggestedDirectory
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                            directory = newValue.suggestedDirectory
+                        }
                     }
                 }
 
@@ -33,7 +36,24 @@ struct NewFileSheetView: View {
 
                 TextField("Relative Folder (e.g. tests, pages, features)", text: $directory)
                     .textFieldStyle(.roundedBorder)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(CeptraTheme.accent)
+                    Text("\(directory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "." : directory.trimmingCharacters(in: .whitespacesAndNewlines))/\(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "…" : name.trimmingCharacters(in: .whitespacesAndNewlines))")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .contentTransition(.opacity)
+                }
+                .padding(.top, 2)
+                .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: directory)
+                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: name)
             }
+            .padding(14)
+            .ceptraGlassSurface(cornerRadius: 10, tint: CeptraTheme.panelBG, tintOpacity: 0.54)
 
             HStack {
                 Spacer()
@@ -51,7 +71,12 @@ struct NewFileSheetView: View {
         }
         .padding(20)
         .frame(width: 420)
-        .background(CeptraTheme.sidebarBG)
+        .background {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                Rectangle().fill(CeptraTheme.sidebarBG.opacity(0.75))
+            }
+        }
         .onAppear {
             if let initial = appState.newFileInitialDirectory {
                 directory = initial

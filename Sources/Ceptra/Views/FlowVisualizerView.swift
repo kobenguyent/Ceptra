@@ -25,6 +25,11 @@ struct FlowVisualizerView: View {
 
 private struct FeatureFlowCard: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHeaderHovered = false
+    @State private var isRunFeatureHovered = false
+    @State private var hoveredHookLine: Int? = nil
+
     let feature: ParsedFeature
     let file: WorkspaceFile?
 
@@ -32,30 +37,47 @@ private struct FeatureFlowCard: View {
         VStack(alignment: .leading, spacing: 14) {
             // Feature Header
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: file?.category == .gherkinFeature ? "doc.text.magnifyingglass" : "sparkles")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(CeptraTheme.accent)
-                    .frame(width: 30, height: 30)
-                    .background(CeptraTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+                Button {
+                    appState.pendingJumpToLine = feature.lineNumber
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: file?.category == .gherkinFeature ? "doc.text.magnifyingglass" : "sparkles")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(CeptraTheme.accent)
+                            .frame(width: 30, height: 30)
+                            .background(CeptraTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("FEATURE")
-                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                        .foregroundStyle(CeptraTheme.textMuted)
-                    Text(feature.title)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(CeptraTheme.textPrimary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("FEATURE")
+                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(CeptraTheme.textMuted)
+                            Text(feature.title)
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(CeptraTheme.textPrimary)
 
-                    if !feature.tags.isEmpty {
-                        HStack(spacing: 6) {
-                            ForEach(feature.tags, id: \.self) { tag in
-                                CeptraBadge(text: tag, color: CeptraTheme.violet)
+                            if !feature.tags.isEmpty {
+                                HStack(spacing: 6) {
+                                    ForEach(feature.tags, id: \.self) { tag in
+                                        CeptraBadge(text: tag, color: CeptraTheme.violet)
+                                    }
+                                }
                             }
                         }
-                    }
-                }
 
-                Spacer()
+                        Spacer(minLength: 0)
+                    }
+                    .padding(6)
+                    .background(
+                        isHeaderHovered ? CeptraTheme.glassHoverOverlay : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.99))
+                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHeaderHovered)
+                .onHover { hovering in
+                    isHeaderHovered = hovering
+                }
 
                 if let file, file.isExecutableTestFile {
                     Button {
@@ -66,15 +88,21 @@ private struct FeatureFlowCard: View {
                             .foregroundStyle(.white)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
-                            .background(CeptraTheme.success.opacity(0.9), in: Capsule())
+                            .background(
+                                CeptraTheme.success.opacity(isRunFeatureHovered ? 1.0 : 0.88),
+                                in: Capsule()
+                            )
+                            .overlay(
+                                Capsule().strokeBorder(Color.white.opacity(isRunFeatureHovered ? 0.28 : 0.14), lineWidth: 0.75)
+                            )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraTactilePressStyle())
                     .disabled(appState.isRunning)
+                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isRunFeatureHovered)
+                    .onHover { hovering in
+                        isRunFeatureHovered = hovering
+                    }
                 }
-            }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                appState.pendingJumpToLine = feature.lineNumber
             }
 
             // Lifecycle Hooks strip
@@ -84,6 +112,7 @@ private struct FeatureFlowCard: View {
                         .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                         .foregroundStyle(CeptraTheme.textMuted)
                     ForEach(feature.hooks) { hook in
+                        let isHookHovered = hoveredHookLine == hook.lineNumber
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 6) {
                                 CeptraBadge(text: hook.kind, color: CeptraTheme.accentWarm, icon: "arrow.triangle.2.circlepath")
@@ -97,8 +126,17 @@ private struct FeatureFlowCard: View {
                             }
                         }
                         .padding(10)
-                        .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CeptraTheme.border, lineWidth: 0.75))
+                        .ceptraGlassSurface(
+                            cornerRadius: 11,
+                            tint: CeptraTheme.panelBG,
+                            tintOpacity: 0.56,
+                            isHovered: isHookHovered
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHookHovered)
+                        .onHover { hovering in
+                            hoveredHookLine = hovering ? hook.lineNumber : (hoveredHookLine == hook.lineNumber ? nil : hoveredHookLine)
+                        }
                         .onTapGesture {
                             appState.pendingJumpToLine = hook.lineNumber
                         }
@@ -114,48 +152,79 @@ private struct FeatureFlowCard: View {
             }
         }
         .padding(16)
-        .background(CeptraTheme.sidebarBG.opacity(0.75), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(CeptraTheme.border, lineWidth: 1))
+        .ceptraGlassSurface(
+            cornerRadius: 11,
+            tint: CeptraTheme.panelBG,
+            tintOpacity: 0.56,
+            elevatedShadow: true
+        )
     }
 }
 
 private struct ScenarioFlowCard: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isCardHovered = false
+    @State private var isHeaderHovered = false
+    @State private var isJumpHovered = false
+    @State private var isPlayHovered = false
+
     let scenario: ParsedScenario
     let file: WorkspaceFile?
 
     var body: some View {
         let status = appState.statusForScenario(scenario)
         let durationMs = appState.durationForScenario(scenario)
+        let accentBorder: Color? = status == .failed
+            ? CeptraTheme.failure
+            : (status == .passed ? CeptraTheme.success : nil)
 
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                StatusDotView(status: status, size: 10)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(scenario.cleanTitle)
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(scenario.modifier == .skip ? CeptraTheme.textMuted : CeptraTheme.textPrimary)
-                            .strikethrough(scenario.modifier == .skip)
-
-                        if scenario.modifier != .standard {
-                            CeptraBadge(text: scenario.modifier.rawValue.uppercased(), color: CeptraTheme.warning)
-                        }
-                    }
+                Button {
+                    appState.pendingJumpToLine = scenario.lineNumber
+                } label: {
                     HStack(spacing: 8) {
-                        Text("L\(scenario.lineNumber)–\(scenario.endLineNumber) · \(scenario.steps.count) steps")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(CeptraTheme.textMuted)
-                        ForEach(scenario.tags, id: \.self) { tag in
-                            Text(tag)
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                .foregroundStyle(CeptraTheme.violet)
-                        }
-                    }
-                }
+                        StatusDotView(status: status, size: 10)
 
-                Spacer()
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(scenario.cleanTitle)
+                                    .font(.system(size: 13.5, weight: .semibold))
+                                    .foregroundStyle(scenario.modifier == .skip ? CeptraTheme.textMuted : CeptraTheme.textPrimary)
+                                    .strikethrough(scenario.modifier == .skip)
+
+                                if scenario.modifier != .standard {
+                                    CeptraBadge(text: scenario.modifier.rawValue.uppercased(), color: CeptraTheme.warning)
+                                }
+                            }
+                            HStack(spacing: 8) {
+                                Text("L\(scenario.lineNumber)–\(scenario.endLineNumber) · \(scenario.steps.count) steps")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(CeptraTheme.textMuted)
+                                ForEach(scenario.tags, id: \.self) { tag in
+                                    Text(tag)
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(CeptraTheme.violet)
+                                }
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(
+                        isHeaderHovered ? CeptraTheme.glassHoverOverlay : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.99))
+                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHeaderHovered)
+                .onHover { hovering in
+                    isHeaderHovered = hovering
+                }
 
                 if let durationMs {
                     CeptraBadge(text: ReportExporter.formatDuration(ms: durationMs), color: CeptraTheme.color(for: status))
@@ -166,9 +235,18 @@ private struct ScenarioFlowCard: View {
                 } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                         .font(.system(size: 10))
-                        .foregroundStyle(CeptraTheme.textMuted)
+                        .foregroundStyle(isJumpHovered ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
+                        .frame(width: 22, height: 22)
+                        .background(
+                            isJumpHovered ? CeptraTheme.glassHoverOverlay : Color.clear,
+                            in: Circle()
+                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CeptraTactilePressStyle())
+                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isJumpHovered)
+                .onHover { hovering in
+                    isJumpHovered = hovering
+                }
                 .help("Jump to Line \(scenario.lineNumber)")
 
                 if file?.isExecutableTestFile == true {
@@ -179,10 +257,20 @@ private struct ScenarioFlowCard: View {
                             .font(.system(size: 10))
                             .foregroundStyle(CeptraTheme.success)
                             .frame(width: 24, height: 24)
-                            .background(CeptraTheme.success.opacity(0.14), in: Circle())
+                            .background(
+                                CeptraTheme.success.opacity(isPlayHovered ? 0.28 : 0.14),
+                                in: Circle()
+                            )
+                            .overlay(
+                                Circle().strokeBorder(CeptraTheme.success.opacity(isPlayHovered ? 0.55 : 0.22), lineWidth: 0.75)
+                            )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraTactilePressStyle())
                     .disabled(appState.isRunning)
+                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isPlayHovered)
+                    .onHover { hovering in
+                        isPlayHovered = hovering
+                    }
                     .help("Run only this scenario")
                 }
             }
@@ -193,64 +281,85 @@ private struct ScenarioFlowCard: View {
             }
         }
         .padding(12)
-        .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(status == .failed ? CeptraTheme.failure.opacity(0.6) : (status == .passed ? CeptraTheme.success.opacity(0.35) : CeptraTheme.border), lineWidth: 1)
+        .ceptraGlassSurface(
+            cornerRadius: 11,
+            tint: CeptraTheme.panelBG,
+            tintOpacity: 0.56,
+            accentBorder: accentBorder,
+            isHovered: isCardHovered
         )
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isCardHovered)
+        .onHover { hovering in
+            isCardHovered = hovering
+        }
     }
 }
 
 private struct StepPipelineView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hoveredStepIndex: Int? = nil
+
     let steps: [ParsedStep]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
                 let color = CeptraTheme.color(for: step.category)
-                HStack(alignment: .top, spacing: 10) {
-                    // Vertical connector node
-                    VStack(spacing: 0) {
-                        ZStack {
-                            Circle()
-                                .fill(color.opacity(0.18))
-                                .frame(width: 22, height: 22)
-                            Image(systemName: step.category.symbolName)
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(color)
-                        }
-                        if index < steps.count - 1 {
-                            Rectangle()
-                                .fill(CeptraTheme.border)
-                                .frame(width: 1.5, height: 14)
-                        }
-                    }
-
-                    // Step details
-                    HStack(spacing: 6) {
-                        Text(step.actor)
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundStyle(color)
-                        Text(step.action)
-                            .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(CeptraTheme.textPrimary)
-                        if !step.argumentsSummary.isEmpty {
-                            Text(step.argumentsSummary)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(CeptraTheme.textSecondary)
-                                .lineLimit(1)
-                        }
-                        Spacer()
-                        Text(":\(step.lineNumber)")
-                            .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(CeptraTheme.textMuted)
-                    }
-                    .padding(.vertical, 3)
-                }
-                .contentShape(Rectangle())
-                .onTapGesture {
+                let isHovered = hoveredStepIndex == index
+                Button {
                     appState.pendingJumpToLine = step.lineNumber
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        // Vertical connector node
+                        VStack(spacing: 0) {
+                            ZStack {
+                                Circle()
+                                    .fill(color.opacity(isHovered ? 0.28 : 0.18))
+                                    .frame(width: 22, height: 22)
+                                Image(systemName: step.category.symbolName)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(color)
+                            }
+                            if index < steps.count - 1 {
+                                Rectangle()
+                                    .fill(CeptraTheme.border)
+                                    .frame(width: 1.5, height: 14)
+                            }
+                        }
+
+                        // Step details
+                        HStack(spacing: 6) {
+                            Text(step.actor)
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundStyle(color)
+                            Text(step.action)
+                                .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(CeptraTheme.textPrimary)
+                            if !step.argumentsSummary.isEmpty {
+                                Text(step.argumentsSummary)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(isHovered ? CeptraTheme.textPrimary.opacity(0.85) : CeptraTheme.textSecondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Text(":\(step.lineNumber)")
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(isHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                        }
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, 6)
+                        .background(
+                            isHovered ? CeptraTheme.glassHoverOverlay : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.99))
+                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+                .onHover { hovering in
+                    hoveredStepIndex = hovering ? index : (hoveredStepIndex == index ? nil : hoveredStepIndex)
                 }
             }
         }
@@ -319,7 +428,11 @@ private struct ProjectArchitectureView: View {
                                 }
                             }
                             .padding(10)
-                            .background(CeptraTheme.elevatedBG.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                            .ceptraGlassSurface(
+                                cornerRadius: 8,
+                                tint: CeptraTheme.elevatedBG,
+                                tintOpacity: 0.48
+                            )
                         }
                     }
                 }
@@ -391,7 +504,10 @@ private struct ProjectArchitectureView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CeptraTheme.border, lineWidth: 0.75))
+        .ceptraGlassSurface(
+            cornerRadius: 11,
+            tint: CeptraTheme.panelBG,
+            tintOpacity: 0.56
+        )
     }
 }

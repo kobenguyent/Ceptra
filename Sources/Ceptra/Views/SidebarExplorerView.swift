@@ -4,11 +4,14 @@ import SwiftUI
 
 struct SidebarExplorerView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var explorerMode: ExplorerMode = .projectTree
     @State private var expandedFolders: Set<String> = []
     @State private var expandedTestFiles: Set<String> = []
     @State private var showHiddenEntries: Bool = true
     @State private var lastInitializedRootPath: String = ""
+    @State private var hoveredTag: String?
+    @State private var isSearchHovered = false
 
     enum ExplorerMode: String, CaseIterable, Identifiable {
         case projectTree = "Project"
@@ -27,67 +30,57 @@ struct SidebarExplorerView: View {
         VStack(spacing: 0) {
             // Top Mode Switcher + Tree Controls
             HStack(spacing: 6) {
-                HStack(spacing: 2) {
-                    ForEach(ExplorerMode.allCases) { mode in
-                        Button {
-                            explorerMode = mode
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: mode.icon)
-                                    .font(.system(size: 10))
-                                Text(mode.rawValue)
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .foregroundStyle(explorerMode == mode ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(
-                                explorerMode == mode ? CeptraTheme.elevatedBG : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 5)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(2)
-                .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(CeptraTheme.border, lineWidth: 0.75))
+                CeptraGlassSegmentedControl(
+                    options: ExplorerMode.allCases,
+                    selection: $explorerMode,
+                    label: { $0.rawValue },
+                    symbol: { $0.icon },
+                    horizontalPadding: 8,
+                    verticalPadding: 4,
+                    fontSize: 11
+                )
 
                 Spacer(minLength: 4)
 
                 if explorerMode == .projectTree {
                     Button {
-                        revealActiveFileInTree()
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                            revealActiveFileInTree()
+                        }
                     } label: {
                         Image(systemName: "scope")
                             .font(.system(size: 11))
                             .foregroundStyle(CeptraTheme.textSecondary)
-                            .frame(width: 22, height: 22)
+                            .frame(width: 24, height: 24)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45))
                     .disabled(appState.activeTabPath == nil)
                     .help("Reveal Active File in Tree")
 
                     Button {
-                        toggleExpandCollapseAll()
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                            toggleExpandCollapseAll()
+                        }
                     } label: {
                         Image(systemName: expandedFolders.isEmpty ? "chevron.down.square" : "chevron.up.square")
                             .font(.system(size: 11))
                             .foregroundStyle(CeptraTheme.textSecondary)
-                            .frame(width: 22, height: 22)
+                            .frame(width: 24, height: 24)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45))
                     .help(expandedFolders.isEmpty ? "Expand All Folders" : "Collapse All Folders")
 
                     Button {
-                        showHiddenEntries.toggle()
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                            showHiddenEntries.toggle()
+                        }
                     } label: {
                         Image(systemName: showHiddenEntries ? "eye" : "eye.slash")
                             .font(.system(size: 10.5))
                             .foregroundStyle(showHiddenEntries ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
-                            .frame(width: 22, height: 22)
+                            .frame(width: 24, height: 24)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45, isActive: showHiddenEntries))
                     .help(showHiddenEntries ? "Hide Dotfiles" : "Show Dotfiles (.github, .env, etc.)")
                 }
 
@@ -97,11 +90,9 @@ struct SidebarExplorerView: View {
                     Image(systemName: "plus")
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(CeptraTheme.textSecondary)
-                        .frame(width: 22, height: 22)
-                        .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(CeptraTheme.border, lineWidth: 0.75))
+                        .frame(width: 24, height: 24)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.58))
                 .help("New CodeceptJS File (⌘N)")
             }
             .padding(.horizontal, 10)
@@ -112,26 +103,37 @@ struct SidebarExplorerView: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11))
-                    .foregroundStyle(CeptraTheme.textMuted)
+                    .foregroundStyle(isSearchHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
                 TextField("Filter files, folders, scenarios…", text: $appState.sidebarFilterText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 11.5))
                     .foregroundStyle(CeptraTheme.textPrimary)
                 if !appState.sidebarFilterText.isEmpty {
                     Button {
-                        appState.sidebarFilterText = ""
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
+                            appState.sidebarFilterText = ""
+                        }
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 11))
                             .foregroundStyle(CeptraTheme.textMuted)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraTactilePressStyle())
+                    .accessibilityLabel("Clear filter")
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(CeptraTheme.border, lineWidth: 0.75))
+            .ceptraGlassSurface(
+                cornerRadius: 7,
+                tint: CeptraTheme.panelBG,
+                tintOpacity: 0.56,
+                isHovered: isSearchHovered
+            )
+            .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isSearchHovered)
+            .onHover { hovering in
+                isSearchHovered = hovering
+            }
             .padding(.horizontal, 10)
             .padding(.bottom, 8)
 
@@ -141,17 +143,37 @@ struct SidebarExplorerView: View {
                     HStack(spacing: 5) {
                         ForEach(tags, id: \.self) { tag in
                             let selected = appState.selectedTagFilter == tag
+                            let isHovered = hoveredTag == tag
                             Button {
-                                appState.selectedTagFilter = selected ? nil : tag
+                                withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
+                                    appState.selectedTagFilter = selected ? nil : tag
+                                }
                             } label: {
                                 Text(tag)
                                     .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                                     .foregroundStyle(selected ? .white : CeptraTheme.violet)
                                     .padding(.horizontal, 7)
                                     .padding(.vertical, 3)
-                                    .background(selected ? CeptraTheme.violet : CeptraTheme.violet.opacity(0.14), in: Capsule())
+                                    .background(
+                                        selected
+                                            ? CeptraTheme.violet
+                                            : CeptraTheme.violet.opacity(isHovered ? 0.24 : 0.14),
+                                        in: Capsule()
+                                    )
+                                    .overlay(
+                                        Capsule().strokeBorder(
+                                            selected
+                                                ? Color.white.opacity(0.28)
+                                                : CeptraTheme.violet.opacity(isHovered ? 0.48 : 0.22),
+                                            lineWidth: 0.75
+                                        )
+                                    )
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(CeptraTactilePressStyle())
+                            .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+                            .onHover { hovering in
+                                hoveredTag = hovering ? tag : (hoveredTag == tag ? nil : hoveredTag)
+                            }
                             .contextMenu {
                                 Button("Run tests with \(tag)") {
                                     appState.run(mode: .runTag(tag: tag))
@@ -178,8 +200,6 @@ struct SidebarExplorerView: View {
                 }
             }
 
-            Divider().overlay(CeptraTheme.border)
-
             // Minimalist Workspace Footer
             if let ws = appState.workspace {
                 HStack(spacing: 8) {
@@ -201,17 +221,18 @@ struct SidebarExplorerView: View {
                     } label: {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 11))
-                            .foregroundStyle(CeptraTheme.textMuted)
+                            .foregroundStyle(CeptraTheme.textSecondary)
+                            .frame(width: 24, height: 24)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.48))
                     .help("Rescan Workspace")
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
-                .background(CeptraTheme.panelBG.opacity(0.6))
+                .ceptraGlassBar(tint: CeptraTheme.panelBG, tintOpacity: 0.52, topHairline: true)
             }
         }
-        .background(CeptraTheme.sidebarBG)
+        .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.72)
         .onAppear {
             initializeDefaultExpansionIfNeeded()
         }
@@ -260,7 +281,7 @@ struct SidebarExplorerView: View {
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(CeptraTheme.success)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraTactilePressStyle())
                     .disabled(appState.isRunning)
                 }
             }
@@ -444,12 +465,14 @@ struct SidebarExplorerView: View {
 
 private struct ProjectTreeNodeView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let node: WorkspaceTreeNode
     let depth: Int
     let forceExpand: Bool
     let showHiddenEntries: Bool
     @Binding var expandedFolders: Set<String>
     @Binding var expandedTestFiles: Set<String>
+    @State private var isHovered = false
 
     private var isFolderExpanded: Bool {
         forceExpand || expandedFolders.contains(node.path)
@@ -476,18 +499,22 @@ private struct ProjectTreeNodeView: View {
         let visibleChildren = node.children.filter { showHiddenEntries || !$0.isHidden || forceExpand }
         return VStack(alignment: .leading, spacing: 1) {
             Button {
-                if expandedFolders.contains(node.path) {
-                    expandedFolders.remove(node.path)
-                } else {
-                    expandedFolders.insert(node.path)
+                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                    if expandedFolders.contains(node.path) {
+                        expandedFolders.remove(node.path)
+                    } else {
+                        expandedFolders.insert(node.path)
+                    }
                 }
             } label: {
                 HStack(spacing: 5) {
                     TreeIndentGuides(depth: depth)
 
-                    Image(systemName: isFolderExpanded ? "chevron.down" : "chevron.right")
+                    Image(systemName: "chevron.right")
                         .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundStyle(CeptraTheme.textMuted)
+                        .foregroundStyle(isHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                        .rotationEffect(.degrees(isFolderExpanded ? 90 : 0))
+                        .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: isFolderExpanded)
                         .frame(width: 11)
 
                     Image(systemName: isFolderExpanded ? "folder.fill" : "folder")
@@ -496,7 +523,11 @@ private struct ProjectTreeNodeView: View {
 
                     Text(node.name)
                         .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(node.isHidden || isOutputFolder(node.name) ? CeptraTheme.textMuted : CeptraTheme.textPrimary.opacity(0.9))
+                        .foregroundStyle(
+                            node.isHidden || isOutputFolder(node.name)
+                                ? CeptraTheme.textMuted
+                                : (isHovered ? CeptraTheme.textPrimary : CeptraTheme.textPrimary.opacity(0.9))
+                        )
                         .lineLimit(1)
 
                     Spacer(minLength: 4)
@@ -517,19 +548,37 @@ private struct ProjectTreeNodeView: View {
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
-                .contentShape(Rectangle())
+                .background {
+                    if isHovered {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(CeptraTheme.glassHoverOverlay)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.6)
+                            )
+                    }
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             .buttonStyle(.plain)
+            .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+            .onHover { hovering in
+                isHovered = hovering
+            }
             .contextMenu {
                 Button("New File in \"\(node.name)\"…") {
                     appState.presentNewFileSheet(inDirectory: node.relativePath)
                 }
                 Divider()
                 Button("Expand Subtree") {
-                    for p in node.allDirectoryPaths() { expandedFolders.insert(p) }
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        for p in node.allDirectoryPaths() { expandedFolders.insert(p) }
+                    }
                 }
                 Button("Collapse Subtree") {
-                    for p in node.allDirectoryPaths() { expandedFolders.remove(p) }
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        for p in node.allDirectoryPaths() { expandedFolders.remove(p) }
+                    }
                 }
                 Divider()
                 Button("Copy Relative Path") {
@@ -542,16 +591,19 @@ private struct ProjectTreeNodeView: View {
             }
 
             if isFolderExpanded {
-                ForEach(visibleChildren) { child in
-                    ProjectTreeNodeView(
-                        node: child,
-                        depth: depth + 1,
-                        forceExpand: forceExpand,
-                        showHiddenEntries: showHiddenEntries,
-                        expandedFolders: $expandedFolders,
-                        expandedTestFiles: $expandedTestFiles
-                    )
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(visibleChildren) { child in
+                        ProjectTreeNodeView(
+                            node: child,
+                            depth: depth + 1,
+                            forceExpand: forceExpand,
+                            showHiddenEntries: showHiddenEntries,
+                            expandedFolders: $expandedFolders,
+                            expandedTestFiles: $expandedTestFiles
+                        )
+                    }
                 }
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -574,7 +626,7 @@ private struct ProjectTreeNodeView: View {
                 Text(file.name)
                     .font(.system(size: 11.5, weight: isActive || isActiveConfig ? .semibold : .regular))
                     .foregroundStyle(
-                        isActive ? CeptraTheme.textPrimary :
+                        isActive || isHovered ? CeptraTheme.textPrimary :
                         (node.isHidden ? CeptraTheme.textMuted : CeptraTheme.textSecondary)
                     )
                     .lineLimit(1)
@@ -593,10 +645,25 @@ private struct ProjectTreeNodeView: View {
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
-            .background(isActive ? CeptraTheme.elevatedBG : Color.clear, in: RoundedRectangle(cornerRadius: 6))
-            .contentShape(Rectangle())
+            .background {
+                let rowShape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+                if isActive {
+                    rowShape
+                        .fill(CeptraTheme.elevatedBG.opacity(0.88))
+                        .overlay(rowShape.strokeBorder(CeptraTheme.specularRimGradient, lineWidth: 0.7))
+                } else if isHovered {
+                    rowShape
+                        .fill(CeptraTheme.glassHoverOverlay)
+                        .overlay(rowShape.strokeBorder(Color.white.opacity(0.08), lineWidth: 0.6))
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .buttonStyle(.plain)
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
         .help(file.relativePath)
         .contextMenu {
             if ConfigParser.supportedConfigExtensions.contains(file.fileExtension.lowercased()) {
@@ -666,10 +733,14 @@ private struct ProjectTreeNodeView: View {
 
 private struct SuiteFileTreeRow: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let file: WorkspaceFile
     let depth: Int
     let forceExpand: Bool
     @Binding var expandedTestFiles: Set<String>
+
+    @State private var isRowHovered = false
+    @State private var hoveredScenarioID: ParsedScenario.ID?
 
     var body: some View {
         let isExpanded = forceExpand || expandedTestFiles.contains(file.path)
@@ -682,18 +753,25 @@ private struct SuiteFileTreeRow: View {
                 TreeIndentGuides(depth: depth)
 
                 Button {
-                    if expandedTestFiles.contains(file.path) {
-                        expandedTestFiles.remove(file.path)
-                    } else {
-                        expandedTestFiles.insert(file.path)
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        if expandedTestFiles.contains(file.path) {
+                            expandedTestFiles.remove(file.path)
+                        } else {
+                            expandedTestFiles.insert(file.path)
+                        }
                     }
                 } label: {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    Image(systemName: "chevron.right")
                         .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundStyle(CeptraTheme.textMuted)
-                        .frame(width: 11)
+                        .foregroundStyle(isRowHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: isExpanded)
+                        .frame(width: 14, height: 18)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help(isExpanded ? "Collapse Scenarios" : "Expand Scenarios")
+                .accessibilityLabel(isExpanded ? "Collapse \(file.name)" : "Expand \(file.name)")
 
                 Button {
                     appState.openFile(file)
@@ -705,7 +783,7 @@ private struct SuiteFileTreeRow: View {
 
                         Text(file.name)
                             .font(.system(size: 11.5, weight: isActive ? .semibold : .medium))
-                            .foregroundStyle(isActive ? CeptraTheme.textPrimary : CeptraTheme.textPrimary.opacity(0.88))
+                            .foregroundStyle(isActive || isRowHovered ? CeptraTheme.textPrimary : CeptraTheme.textPrimary.opacity(0.88))
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 4)
@@ -719,7 +797,7 @@ private struct SuiteFileTreeRow: View {
                     .foregroundStyle(CeptraTheme.textMuted)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
-                    .background(CeptraTheme.elevatedBG, in: Capsule())
+                    .background(CeptraTheme.elevatedBG.opacity(0.85), in: Capsule())
 
                 Button {
                     appState.run(mode: .runFile(relativePath: file.relativePath))
@@ -729,13 +807,29 @@ private struct SuiteFileTreeRow: View {
                         .foregroundStyle(CeptraTheme.success)
                         .frame(width: 18, height: 18)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CeptraTactilePressStyle())
                 .disabled(appState.isRunning)
                 .help("Run \(file.name)")
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
-            .background(isActive ? CeptraTheme.elevatedBG : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            .background {
+                let rowShape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+                if isActive {
+                    rowShape
+                        .fill(CeptraTheme.elevatedBG.opacity(0.88))
+                        .overlay(rowShape.strokeBorder(CeptraTheme.specularRimGradient, lineWidth: 0.7))
+                } else if isRowHovered {
+                    rowShape
+                        .fill(CeptraTheme.glassHoverOverlay)
+                        .overlay(rowShape.strokeBorder(Color.white.opacity(0.08), lineWidth: 0.6))
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isRowHovered)
+            .onHover { hovering in
+                isRowHovered = hovering
+            }
             .contextMenu {
                 Button("Run Test File") {
                     appState.run(mode: .runFile(relativePath: file.relativePath))
@@ -752,49 +846,72 @@ private struct SuiteFileTreeRow: View {
             }
 
             if isExpanded {
-                ForEach(matchingScenarios) { scenario in
-                    let status = appState.statusForScenario(scenario)
-                    HStack(spacing: 5) {
-                        TreeIndentGuides(depth: depth + 1)
-                        Color.clear.frame(width: 8, height: 1)
-                        StatusDotView(status: status, size: 6.5)
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(matchingScenarios) { scenario in
+                        let status = appState.statusForScenario(scenario)
+                        let isScenarioHovered = hoveredScenarioID == scenario.id
+                        HStack(spacing: 5) {
+                            TreeIndentGuides(depth: depth + 1)
+                            Color.clear.frame(width: 8, height: 1)
+                            StatusDotView(status: status, size: 6.5)
 
-                        Button {
-                            appState.openFile(file, jumpToLine: scenario.lineNumber)
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text(scenario.cleanTitle)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(scenario.modifier == .skip ? CeptraTheme.textMuted : CeptraTheme.textSecondary)
-                                    .strikethrough(scenario.modifier == .skip)
-                                    .lineLimit(1)
-                                Spacer(minLength: 4)
+                            Button {
+                                appState.openFile(file, jumpToLine: scenario.lineNumber)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(scenario.cleanTitle)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(
+                                            scenario.modifier == .skip
+                                                ? CeptraTheme.textMuted
+                                                : (isScenarioHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
+                                        )
+                                        .strikethrough(scenario.modifier == .skip)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 4)
+                                }
+                                .contentShape(Rectangle())
                             }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                            .buttonStyle(.plain)
 
-                        if let ms = appState.durationForScenario(scenario) {
-                            Text(ReportExporter.formatDuration(ms: ms))
-                                .font(.system(size: 9, design: .monospaced))
-                                .foregroundStyle(CeptraTheme.textMuted)
-                        }
+                            if let ms = appState.durationForScenario(scenario) {
+                                Text(ReportExporter.formatDuration(ms: ms))
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(CeptraTheme.textMuted)
+                            }
 
-                        Button {
-                            appState.run(mode: .runScenario(relativePath: file.relativePath, scenarioTitle: scenario.cleanTitle))
-                        } label: {
-                            Image(systemName: "play")
-                                .font(.system(size: 8.5))
-                                .foregroundStyle(CeptraTheme.textSecondary)
-                                .frame(width: 16, height: 16)
+                            Button {
+                                appState.run(mode: .runScenario(relativePath: file.relativePath, scenarioTitle: scenario.cleanTitle))
+                            } label: {
+                                Image(systemName: "play")
+                                    .font(.system(size: 8.5))
+                                    .foregroundStyle(isScenarioHovered ? CeptraTheme.success : CeptraTheme.textSecondary)
+                                    .frame(width: 16, height: 16)
+                            }
+                            .buttonStyle(CeptraTactilePressStyle())
+                            .disabled(appState.isRunning)
+                            .help("Run scenario \"\(scenario.cleanTitle)\"")
                         }
-                        .buttonStyle(.plain)
-                        .disabled(appState.isRunning)
-                        .help("Run scenario \"\(scenario.cleanTitle)\"")
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background {
+                            if isScenarioHovered {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(CeptraTheme.glassHoverOverlay)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.6)
+                                    )
+                            }
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isScenarioHovered)
+                        .onHover { hovering in
+                            hoveredScenarioID = hovering ? scenario.id : (hoveredScenarioID == scenario.id ? nil : hoveredScenarioID)
+                        }
                     }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
                 }
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
         }
     }

@@ -4,15 +4,19 @@ import SwiftUI
 
 struct ReportsDashboardView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedSection: ReportTab = .scenarios
     @State private var statusFilter: ExecutionStatus? = nil
     @State private var selectedArtifact: ReportArtifact? = nil
+    @State private var hoveredRunID: UUID? = nil
+    @State private var hoveredTrendRunID: UUID? = nil
+    @State private var hoveredArtifactID: ReportArtifact.ID? = nil
 
     enum ReportTab: String, CaseIterable, Identifiable {
         case scenarios = "Scenarios & Steps"
         case artifacts = "Artifacts"
         case rawLog = "Raw Output"
-        var id: String { rawValue }
+        var id: Self { self }
     }
 
     var body: some View {
@@ -74,10 +78,22 @@ struct ReportsDashboardView: View {
                     HStack(alignment: .bottom, spacing: 4) {
                         ForEach(appState.runHistory.prefix(14).reversed()) { run in
                             let barHeight = max(6, CGFloat(run.passRate) * 32)
-                            RoundedRectangle(cornerRadius: 2.5)
+                            let isTrendHovered = hoveredTrendRunID == run.id
+                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                                 .fill(CeptraTheme.color(for: run.overallStatus))
+                                .brightness(isTrendHovered ? 0.14 : 0)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: barHeight)
+                                .scaleEffect(y: isTrendHovered && !reduceMotion ? 1.08 : 1.0, anchor: .bottom)
+                                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isTrendHovered)
+                                .onHover { hovering in
+                                    hoveredTrendRunID = hovering ? run.id : (hoveredTrendRunID == run.id ? nil : hoveredTrendRunID)
+                                }
+                                .onTapGesture {
+                                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                                        appState.selectedReportID = run.id
+                                    }
+                                }
                                 .help("\(run.label): \(Int(run.passRate * 100))% passed")
                         }
                     }
@@ -92,6 +108,7 @@ struct ReportsDashboardView: View {
                 LazyVStack(spacing: 4) {
                     ForEach(appState.runHistory) { report in
                         let selected = appState.selectedReport?.id == report.id
+                        let isHovered = hoveredRunID == report.id
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 6) {
                                 StatusDotView(status: report.overallStatus, size: 8)
@@ -115,17 +132,39 @@ struct ReportsDashboardView: View {
                                 .foregroundStyle(CeptraTheme.textMuted)
                         }
                         .padding(9)
-                        .background(selected ? CeptraTheme.elevatedBG : Color.clear, in: RoundedRectangle(cornerRadius: 7))
-                        .contentShape(Rectangle())
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color.clear)
+                                    .ceptraGlassSurface(
+                                        cornerRadius: 8,
+                                        tint: CeptraTheme.elevatedBG,
+                                        tintOpacity: 0.65,
+                                        isHovered: isHovered,
+                                        isActive: true
+                                    )
+                            } else if isHovered {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(CeptraTheme.glassHoverOverlay)
+                            }
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+                        .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: selected)
+                        .onHover { hovering in
+                            hoveredRunID = hovering ? report.id : (hoveredRunID == report.id ? nil : hoveredRunID)
+                        }
                         .onTapGesture {
-                            appState.selectedReportID = report.id
+                            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                                appState.selectedReportID = report.id
+                            }
                         }
                     }
                 }
                 .padding(8)
             }
         }
-        .background(CeptraTheme.sidebarBG)
+        .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.72)
     }
 
     private func reportHeader(_ report: TestRunReport) -> some View {
@@ -169,26 +208,23 @@ struct ReportsDashboardView: View {
 
             // KPI Cards
             HStack(spacing: 10) {
-                kpiCard(title: "PASS RATE", value: "\(Int((report.passRate * 100).rounded()))%", color: CeptraTheme.color(for: report.overallStatus))
-                kpiCard(title: "PASSED", value: "\(report.passedCount)", color: CeptraTheme.success)
-                kpiCard(title: "FAILED", value: "\(report.failedCount)", color: CeptraTheme.failure)
-                kpiCard(title: "SKIPPED", value: "\(report.skippedCount)", color: CeptraTheme.warning)
-                kpiCard(title: "DURATION", value: ReportExporter.formatDuration(ms: report.durationMs), color: CeptraTheme.accent)
+                ReportKPICard(title: "PASS RATE", value: "\(Int((report.passRate * 100).rounded()))%", color: CeptraTheme.color(for: report.overallStatus))
+                ReportKPICard(title: "PASSED", value: "\(report.passedCount)", color: CeptraTheme.success)
+                ReportKPICard(title: "FAILED", value: "\(report.failedCount)", color: CeptraTheme.failure)
+                ReportKPICard(title: "SKIPPED", value: "\(report.skippedCount)", color: CeptraTheme.warning)
+                ReportKPICard(title: "DURATION", value: ReportExporter.formatDuration(ms: report.durationMs), color: CeptraTheme.accent)
             }
 
             // Section Picker
             HStack {
-                Picker("", selection: $selectedSection) {
-                    ForEach(ReportTab.allCases) { tab in
-                        if tab == .artifacts {
-                            Text("\(tab.rawValue) (\(appState.artifacts.count))").tag(tab)
-                        } else {
-                            Text(tab.rawValue).tag(tab)
-                        }
+                CeptraGlassSegmentedControl(
+                    options: ReportTab.allCases,
+                    selection: $selectedSection,
+                    label: { $0.rawValue },
+                    badgeCount: { tab in
+                        tab == .artifacts ? appState.artifacts.count : nil
                     }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 420)
+                )
 
                 Spacer()
 
@@ -199,39 +235,39 @@ struct ReportsDashboardView: View {
                         Label("Rescan output/", systemImage: "arrow.clockwise")
                             .font(.system(size: 11))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CeptraTactilePressStyle())
                     .foregroundStyle(CeptraTheme.textSecondary)
                 }
             }
         }
         .padding(16)
-        .background(CeptraTheme.sidebarBG.opacity(0.6))
-    }
-
-    private func kpiCard(title: String, value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                .foregroundStyle(CeptraTheme.textMuted)
-            Text(value)
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundStyle(color)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(CeptraTheme.border, lineWidth: 0.75))
+        .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.62, bottomHairline: true)
     }
 
     private func scenariosDetail(_ report: TestRunReport) -> some View {
         let filtered = report.scenarios.filter { statusFilter == nil || $0.status == statusFilter }
         return VStack(spacing: 0) {
             HStack(spacing: 8) {
-                filterChip(label: "All (\(report.scenarios.count))", target: nil)
-                filterChip(label: "Passed (\(report.passedCount))", target: .passed)
-                filterChip(label: "Failed (\(report.failedCount))", target: .failed)
-                filterChip(label: "Skipped (\(report.skippedCount))", target: .skipped)
+                ReportFilterChip(label: "All (\(report.scenarios.count))", isActive: statusFilter == nil) {
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        statusFilter = nil
+                    }
+                }
+                ReportFilterChip(label: "Passed (\(report.passedCount))", isActive: statusFilter == .passed) {
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        statusFilter = .passed
+                    }
+                }
+                ReportFilterChip(label: "Failed (\(report.failedCount))", isActive: statusFilter == .failed) {
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        statusFilter = .failed
+                    }
+                }
+                ReportFilterChip(label: "Skipped (\(report.skippedCount))", isActive: statusFilter == .skipped) {
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        statusFilter = .skipped
+                    }
+                }
                 Spacer()
             }
             .padding(.horizontal, 16)
@@ -251,21 +287,9 @@ struct ReportsDashboardView: View {
                     }
                 }
                 .padding(16)
+                .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: statusFilter)
             }
         }
-    }
-
-    private func filterChip(label: String, target: ExecutionStatus?) -> some View {
-        let active = statusFilter == target
-        return Button(label) {
-            statusFilter = target
-        }
-        .buttonStyle(.plain)
-        .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(active ? .white : CeptraTheme.textSecondary)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(active ? CeptraTheme.accent : CeptraTheme.panelBG, in: Capsule())
     }
 
     private var artifactsBrowser: some View {
@@ -290,6 +314,7 @@ struct ReportsDashboardView: View {
                     } else {
                         ForEach(appState.artifacts) { item in
                             let selected = selectedArtifact?.id == item.id
+                            let isHovered = hoveredArtifactID == item.id
                             HStack(spacing: 8) {
                                 Image(systemName: item.kind.symbolName)
                                     .font(.system(size: 12))
@@ -307,10 +332,24 @@ struct ReportsDashboardView: View {
                                 Spacer()
                             }
                             .padding(8)
-                            .background(selected ? CeptraTheme.elevatedBG : Color.clear, in: RoundedRectangle(cornerRadius: 6))
-                            .contentShape(Rectangle())
+                            .ceptraGlassSurface(
+                                cornerRadius: 8,
+                                tint: selected ? CeptraTheme.elevatedBG : CeptraTheme.panelBG,
+                                tintOpacity: selected ? 0.68 : 0.45,
+                                accentBorder: selected ? CeptraTheme.accent : nil,
+                                isHovered: isHovered,
+                                isActive: selected
+                            )
+                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+                            .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: selected)
+                            .onHover { hovering in
+                                hoveredArtifactID = hovering ? item.id : (hoveredArtifactID == item.id ? nil : hoveredArtifactID)
+                            }
                             .onTapGesture {
-                                selectedArtifact = item
+                                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                                    selectedArtifact = item
+                                }
                             }
                         }
                     }
@@ -318,7 +357,7 @@ struct ReportsDashboardView: View {
                 .padding(10)
             }
             .frame(minWidth: 220, idealWidth: 260)
-            .background(CeptraTheme.sidebarBG.opacity(0.4))
+            .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.55)
 
             artifactPreviewPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -346,7 +385,7 @@ struct ReportsDashboardView: View {
                     .controlSize(.mini)
                 }
                 .padding(10)
-                .background(CeptraTheme.sidebarBG)
+                .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.72, bottomHairline: true)
 
                 Divider().overlay(CeptraTheme.border)
 
@@ -426,9 +465,99 @@ struct ReportsDashboardView: View {
     }
 }
 
+private struct ReportKPICard: View {
+    let title: String
+    let value: String
+    let color: Color
+
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(CeptraTheme.textMuted)
+            Text(value)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .contentTransition(.numericText())
+                .foregroundStyle(color)
+                .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: value)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .ceptraGlassSurface(
+            cornerRadius: 10,
+            tint: CeptraTheme.panelBG,
+            tintOpacity: 0.56,
+            isHovered: isHovered
+        )
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
+private struct ReportFilterChip: View {
+    let label: String
+    let isActive: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 11, weight: isActive ? .semibold : .medium))
+                .foregroundStyle(isActive ? .white : (isHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4.5)
+                .background {
+                    if isActive {
+                        Capsule()
+                            .fill(CeptraTheme.accent.opacity(isHovered ? 1.0 : 0.92))
+                            .overlay(
+                                Capsule().strokeBorder(Color.white.opacity(0.24), lineWidth: 0.75)
+                            )
+                    } else {
+                        Capsule()
+                            .fill(.ultraThinMaterial)
+                            .overlay(
+                                Capsule().fill(CeptraTheme.panelBG.opacity(isHovered ? 0.72 : 0.56))
+                            )
+                            .overlay(
+                                Capsule().strokeBorder(
+                                    Color.white.opacity(isHovered ? 0.20 : 0.10),
+                                    lineWidth: 0.75
+                                )
+                            )
+                    }
+                }
+        }
+        .buttonStyle(CeptraTactilePressStyle())
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+        .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: isActive)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
 private struct ScenarioResultRow: View {
     let record: ExecutedScenarioRecord
-    @State private var isExpanded: Bool = false
+    @State private var isExpanded: Bool
+    @State private var isHovered: Bool = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(record: ExecutedScenarioRecord) {
+        self.record = record
+        self._isExpanded = State(initialValue: record.status == .failed)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -446,51 +575,68 @@ private struct ScenarioResultRow: View {
                 Text(ReportExporter.formatDuration(ms: record.durationMs))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(CeptraTheme.textSecondary)
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 10))
-                    .foregroundStyle(CeptraTheme.textMuted)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
             }
             .contentShape(Rectangle())
-            .onTapGesture { isExpanded.toggle() }
+            .onTapGesture {
+                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                    isExpanded.toggle()
+                }
+            }
 
-            if isExpanded || record.status == .failed {
-                if !record.steps.isEmpty {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(record.steps) { step in
-                            HStack(spacing: 6) {
-                                Image(systemName: step.status == .failed ? "xmark.circle.fill" : "checkmark.circle")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(step.status == .failed ? CeptraTheme.failure : CeptraTheme.success)
-                                Text(step.text)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(step.status == .failed ? CeptraTheme.failure : CeptraTheme.textSecondary)
-                                Spacer()
-                                if let ms = step.durationMs {
-                                    Text("\(ms)ms")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(CeptraTheme.textMuted)
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !record.steps.isEmpty {
+                        VStack(alignment: .leading, spacing: 3) {
+                            ForEach(record.steps) { step in
+                                HStack(spacing: 6) {
+                                    Image(systemName: step.status == .failed ? "xmark.circle.fill" : "checkmark.circle")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(step.status == .failed ? CeptraTheme.failure : CeptraTheme.success)
+                                    Text(step.text)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(step.status == .failed ? CeptraTheme.failure : CeptraTheme.textSecondary)
+                                    Spacer()
+                                    if let ms = step.durationMs {
+                                        Text("\(ms)ms")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(CeptraTheme.textMuted)
+                                    }
                                 }
+                                .padding(.leading, CGFloat(step.depth * 14))
                             }
-                            .padding(.leading, CGFloat(step.depth * 14))
                         }
+                        .padding(.top, 4)
                     }
-                    .padding(.top, 4)
-                }
 
-                if let err = record.errorMessage {
-                    Text(record.errorStack ?? err)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Color(red: 0.99, green: 0.68, blue: 0.70))
-                        .textSelection(.enabled)
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(CeptraTheme.failure.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(CeptraTheme.failure.opacity(0.35), lineWidth: 0.75))
+                    if let err = record.errorMessage {
+                        Text(record.errorStack ?? err)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Color(red: 0.99, green: 0.68, blue: 0.70))
+                            .textSelection(.enabled)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(CeptraTheme.failure.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(CeptraTheme.failure.opacity(0.35), lineWidth: 0.75))
+                    }
                 }
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(12)
-        .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(CeptraTheme.border, lineWidth: 0.75))
+        .ceptraGlassSurface(
+            cornerRadius: 10,
+            tint: CeptraTheme.panelBG,
+            tintOpacity: 0.56,
+            accentBorder: record.status == .failed ? CeptraTheme.failure : nil,
+            isHovered: isHovered
+        )
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
