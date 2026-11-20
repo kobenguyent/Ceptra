@@ -8,7 +8,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-VERSION="1.0.0"
+LATEST_TAG="$(git describe --tags --abbrev=0 --match 'v*.*.*' 2>/dev/null || echo 'v1.0.0')"
+VERSION="${LATEST_TAG#v}"
 INSTALL_DIR="/Applications"
 LAUNCH_AFTER="true"
 GITHUB_REPO="kobenguyent/Ceptra"

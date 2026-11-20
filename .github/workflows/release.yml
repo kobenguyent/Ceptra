@@ -1,14 +1,30 @@
 name: Release
 
 on:
+  # Automatic release on every push/merge to main (doc-only commits are skipped by next-version.sh)
   push:
+    branches:
+      - main
     tags:
       - "v*.*.*"
+
+  # Manual release trigger with optional version bump or explicit tag
   workflow_dispatch:
     inputs:
+      bump:
+        description: "Automatic SemVer bump strategy (ignored if explicit tag is set)"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
       tag:
-        description: "Release version tag (e.g. v1.0.0)"
-        required: true
+        description: "Optional explicit version tag override (e.g. v1.2.0 or v2.0.0-beta.1)"
+        required: false
+        default: ""
         type: string
       prerelease:
         description: "Mark as pre-release"
@@ -24,30 +40,62 @@ on:
 permissions:
   contents: write
 
+# Never cancel an active release halfway through tagging/publishing; queue safely instead.
+concurrency:
+  group: ceptra-release-pipeline
+  cancel-in-progress: false
+
 jobs:
   release:
-    name: Build & Publish Native macOS Release
+    name: Auto-Version, Build & Publish Native macOS Release
     runs-on: macos-15
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Full History & Tags
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Resolve Release Metadata
+      - name: Resolve Release Version & Tag
         id: meta
         shell: bash
         run: |
+          chmod +x scripts/next-version.sh
+          SHOULD_RELEASE="true"
+          CREATE_TAG="false"
+          PREV_TAG=""
+          BUMP_KIND="manual"
+          UNIVERSAL="true"
+          PRERELEASE="false"
+
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TAG="${{ inputs.tag }}"
             UNIVERSAL="${{ inputs.universal }}"
             PRERELEASE="${{ inputs.prerelease }}"
-          else
+            EXPLICIT_TAG="${{ inputs.tag }}"
+            if [[ -n "$EXPLICIT_TAG" ]]; then
+              TAG="$EXPLICIT_TAG"
+              [[ "$TAG" == v* ]] || TAG="v${TAG}"
+              if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+                CREATE_TAG="true"
+              fi
+            else
+              eval "$(./scripts/next-version.sh --bump "${{ inputs.bump }}")"
+              TAG="$NEXT_TAG"
+              CREATE_TAG="true"
+            fi
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF_NAME}"
-            UNIVERSAL="true"
+            CREATE_TAG="false"
             if [[ "$TAG" == *-* ]]; then
               PRERELEASE="true"
-            else
-              PRERELEASE="false"
+            fi
+          else
+            # Automatic release triggered by push to main
+            eval "$(./scripts/next-version.sh --bump auto)"
+            TAG="$NEXT_TAG"
+            if [[ "$SHOULD_RELEASE" == "true" ]]; then
+              CREATE_TAG="true"
             fi
           fi
 
@@ -60,17 +108,24 @@ jobs:
             ARCH_LABEL="$(uname -m)"
           fi
 
+          echo "should_release=${SHOULD_RELEASE}" >> "$GITHUB_OUTPUT"
+          echo "create_tag=${CREATE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "arch_mode=${ARCH_MODE}" >> "$GITHUB_OUTPUT"
           echo "arch_label=${ARCH_LABEL}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
-          echo "Resolved Release: ${TAG} (version=${VERSION}, arch=${ARCH_MODE}, prerelease=${PRERELEASE})"
+          echo "bump_kind=${BUMP_KIND}" >> "$GITHUB_OUTPUT"
+
+          echo "Release decision: should_release=${SHOULD_RELEASE}, tag=${TAG}, create_tag=${CREATE_TAG}, bump=${BUMP_KIND}, arch=${ARCH_MODE}"
 
       - name: Run Unit Test Suite
+        if: steps.meta.outputs.should_release == 'true'
         run: swift test --parallel
 
       - name: Package Ceptra.app, DMG, ZIP & Checksums
+        if: steps.meta.outputs.should_release == 'true'
         env:
           CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
         run: |
@@ -82,6 +137,7 @@ jobs:
             --arch "${{ steps.meta.outputs.arch_mode }}"
 
       - name: Verify Release Artifacts
+        if: steps.meta.outputs.should_release == 'true'
         run: |
           VERSION="${{ steps.meta.outputs.version }}"
           ARCH="${{ steps.meta.outputs.arch_label }}"
@@ -90,14 +146,37 @@ jobs:
           test -f "build/SHA256SUMS.txt"
           (cd build && shasum -a 256 -c SHA256SUMS.txt)
 
-      - name: Compose Release Notes
+      - name: Create & Push Release Tag (Automatic Release)
+        if: steps.meta.outputs.should_release == 'true' && steps.meta.outputs.create_tag == 'true'
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            git tag -a "${TAG}" -m "Release ${TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - name: Compose Release Notes & Changelog
+        if: steps.meta.outputs.should_release == 'true'
         run: |
           VERSION="${{ steps.meta.outputs.version }}"
           ARCH="${{ steps.meta.outputs.arch_label }}"
+          PREV_TAG="${{ steps.meta.outputs.prev_tag }}"
+
+          if [[ -n "$PREV_TAG" ]]; then
+            COMMIT_LOG="$(git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:'- %s (%h)')"
+          else
+            COMMIT_LOG="$(git log -n 20 --no-merges --pretty=format:'- %s (%h)')"
+          fi
+
           cat << EOF > build/RELEASE_NOTES.md
           ## Ceptra v${VERSION}
 
-          Minimalist native macOS IDE built specifically for **CodeceptJS 4.x** — visualize scenario pipelines, edit tests with syntax highlighting, execute single scenarios or parallel workers, inspect JUnit/AI Trace/Screenshot reports, and self-update directly from GitHub Releases.
+          Minimalist native macOS IDE built specifically for **CodeceptJS 4.x** — full project tree & suites explorer, IntelliSense autocomplete, symlink-aware import navigation, visual scenario pipelines, dependency command runner, rich reports, and one-click GitHub Releases self-updates.
+
+          ### Changes
+          ${COMMIT_LOG}
 
           ### Downloads
           - **macOS Disk Image:** \`Ceptra-${VERSION}-macOS-${ARCH}.dmg\` (drag \`Ceptra.app\` into \`/Applications\`)
@@ -119,13 +198,14 @@ jobs:
           EOF
 
       - name: Publish GitHub Release
+        if: steps.meta.outputs.should_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: Ceptra ${{ steps.meta.outputs.tag }}
           body_path: build/RELEASE_NOTES.md
           prerelease: ${{ steps.meta.outputs.prerelease }}
-          generate_release_notes: true
+          generate_release_notes: false
           files: |
             build/Ceptra-*.dmg
             build/Ceptra-*.zip

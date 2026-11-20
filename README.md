@@ -44,15 +44,13 @@ To build distribution artifacts (`.dmg`, `.zip`, `SHA256SUMS.txt`) locally:
 
 ---
 
-## GitHub Actions Releases & Auto-Update
+## GitHub Actions Automatic Releases & Auto-Update
 
 - **CI (`.github/workflows/ci.yml`)**: Runs `swift test --parallel`, release build, native `.app`/`.dmg`/`.zip` packaging, and `SHA256SUMS.txt` verification on `macos-15`.
-- **Release (`.github/workflows/release.yml`)**: Push a semantic tag (e.g. `git tag v1.0.0 && git push origin v1.0.0`) or trigger manually via **Actions → Release → Run workflow** to publish a GitHub Release with:
-  - `Ceptra-<version>-macOS-universal.dmg`
-  - `Ceptra-<version>-macOS-universal.zip`
-  - `SHA256SUMS.txt`
-
-In-app updates check `Ceptra → Check for Updates…` (or automatically on launch), verify the SHA-256 digest, quit Ceptra cleanly, replace the bundle, clear quarantine, and relaunch the updated app.
+- **Automatic Release (`.github/workflows/release.yml`)**:
+  - **Automatic on push/merge to `main`**: Automatically calculates the next Semantic Version via `scripts/next-version.sh` (`v1.0.0` initially, then `major` for `BREAKING CHANGE`/`!:`/`[major]`, `minor` for `feat:`/`Add`/`Support`/`Redesign`/`[minor]`, `patch` otherwise; add `[skip release]` to skip), runs `swift test --parallel`, builds universal (`arm64` + `x86_64`) `.dmg`, `.zip`, and `SHA256SUMS.txt`, creates & pushes the annotated tag, and publishes a GitHub Release with changelog.
+  - **Manual tag or workflow dispatch**: Still supports pushing `v*.*.*` tags or running **Actions → Release → Run workflow** with explicit bump (`auto`/`patch`/`minor`/`major`) or custom tag override.
+  - **In-app Auto-Update**: Every published GitHub Release is automatically picked up by **Ceptra → Check for Updates…**, which verifies `SHA256SUMS.txt`, quits Ceptra cleanly, replaces `Ceptra.app`, clears quarantine, and relaunches the new version.
 
 ---
 

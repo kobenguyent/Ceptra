@@ -159,4 +159,95 @@ final class AutoUpdateTests: XCTestCase {
         let replacedVersion = try String(contentsOf: installedApp.appendingPathComponent("Contents/MacOS/Ceptra"), encoding: .utf8)
         XCTAssertEqual(replacedVersion, "v2.0.0")
     }
+
+    func testNextVersionScriptComputesAutomaticSemVerBumps() throws {
+        let fm = FileManager.default
+        let scriptPath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("scripts/next-version.sh").path
+        guard fm.fileExists(atPath: scriptPath) else {
+            throw XCTSkip("next-version.sh not found at \(scriptPath)")
+        }
+
+        let repo = fm.temporaryDirectory.appendingPathComponent("ceptra-semver-repo-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: repo) }
+
+        @discardableResult
+        func run(_ executable: String, _ args: [String]) throws -> String {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: executable)
+            p.arguments = args
+            p.currentDirectoryURL = repo
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = pipe
+            try p.run()
+            p.waitUntilExit()
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            XCTAssertEqual(p.terminationStatus, 0, "Command failed (\(executable) \(args)): \(out)")
+            return out
+        }
+
+        func parseKV(_ output: String) -> [String: String] {
+            var dict: [String: String] = [:]
+            for line in output.components(separatedBy: .newlines) {
+                guard let eq = line.firstIndex(of: "=") else { continue }
+                dict[String(line[..<eq])] = String(line[line.index(after: eq)...])
+            }
+            return dict
+        }
+
+        try run("/usr/bin/git", ["init", "-b", "main"])
+        try run("/usr/bin/git", ["config", "user.name", "Test"])
+        try run("/usr/bin/git", ["config", "user.email", "test@example.com"])
+
+        // 1. Initial release with no tags -> v1.0.0
+        try "a".write(to: repo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try run("/usr/bin/git", ["add", "-A"])
+        try run("/usr/bin/git", ["commit", "-m", "Initial commit"])
+        var out = parseKV(try run("/bin/bash", [scriptPath]))
+        XCTAssertEqual(out["SHOULD_RELEASE"], "true")
+        XCTAssertEqual(out["NEXT_TAG"], "v1.0.0")
+        XCTAssertEqual(out["BUMP_KIND"], "initial")
+
+        // 2. Tag HEAD as v1.0.0 -> auto should skip releasing duplicate tag
+        try run("/usr/bin/git", ["tag", "-a", "v1.0.0", "-m", "Release v1.0.0"])
+        out = parseKV(try run("/bin/bash", [scriptPath]))
+        XCTAssertEqual(out["SHOULD_RELEASE"], "false")
+
+        // 3. Patch commit -> v1.0.1
+        try "b".write(to: repo.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        try run("/usr/bin/git", ["add", "-A"])
+        try run("/usr/bin/git", ["commit", "-m", "fix: handle empty test file"])
+        out = parseKV(try run("/bin/bash", [scriptPath]))
+        XCTAssertEqual(out["SHOULD_RELEASE"], "true")
+        XCTAssertEqual(out["NEXT_TAG"], "v1.0.1")
+        XCTAssertEqual(out["BUMP_KIND"], "patch")
+
+        // 4. Feature commit -> v1.1.0
+        try "c".write(to: repo.appendingPathComponent("c.txt"), atomically: true, encoding: .utf8)
+        try run("/usr/bin/git", ["add", "-A"])
+        try run("/usr/bin/git", ["commit", "-m", "feat: add full project tree"])
+        out = parseKV(try run("/bin/bash", [scriptPath]))
+        XCTAssertEqual(out["NEXT_TAG"], "v1.1.0")
+        XCTAssertEqual(out["BUMP_KIND"], "minor")
+
+        // 5. Breaking commit -> v2.0.0
+        try "d".write(to: repo.appendingPathComponent("d.txt"), atomically: true, encoding: .utf8)
+        try run("/usr/bin/git", ["add", "-A"])
+        try run("/usr/bin/git", ["commit", "-m", "feat!: overhaul storage schema"])
+        out = parseKV(try run("/bin/bash", [scriptPath]))
+        XCTAssertEqual(out["NEXT_TAG"], "v2.0.0")
+        XCTAssertEqual(out["BUMP_KIND"], "major")
+
+        // 6. [skip release] -> skips automatic release
+        try "e".write(to: repo.appendingPathComponent("e.txt"), atomically: true, encoding: .utf8)
+        try run("/usr/bin/git", ["add", "-A"])
+        try run("/usr/bin/git", ["commit", "-m", "chore: internal note [skip release]"])
+        out = parseKV(try run("/bin/bash", [scriptPath]))
+        XCTAssertEqual(out["SHOULD_RELEASE"], "false")
+    }
 }
