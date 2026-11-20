@@ -154,10 +154,11 @@ final class AppState: ObservableObject {
     }
 
     var isActiveTabExecutableTestFile: Bool {
-        if let wsFile = activeWorkspaceFile {
-            return wsFile.isExecutableTestFile
+        guard let tab = activeTab else { return false }
+        if tab.category == .config || tab.category == .helper || tab.category == .pageObject || tab.category == .stepDefinition {
+            return false
         }
-        return activeTab?.isExecutableTestFile ?? false
+        return !activeFeaturesForCurrentTab.isEmpty
     }
 
     var canNavigateBack: Bool { !navigationBackStack.isEmpty }
@@ -449,12 +450,16 @@ final class AppState: ObservableObject {
             relPath = stdURL.path
         }
         let ext = stdURL.pathExtension.lowercased()
-        let lowerName = stdURL.lastPathComponent.lowercased()
+        let content = (try? String(contentsOf: stdURL, encoding: .utf8)) ?? ""
+        let parsedFeatures: [ParsedFeature]
+        if ["js", "ts", "mjs", "cjs", "mts", "cts", "feature"].contains(ext) {
+            parsedFeatures = TestFileParser.parse(content: content, filePath: stdURL.path)
+        } else {
+            parsedFeatures = []
+        }
         let inferredCategory: WorkspaceFileCategory
-        if ext == "feature" {
-            inferredCategory = .gherkinFeature
-        } else if lowerName.contains("_test.") || lowerName.contains(".test.") || lowerName.contains("_spec.") || lowerName.contains(".spec.") {
-            inferredCategory = .testSuite
+        if !parsedFeatures.isEmpty {
+            inferredCategory = (ext == "feature") ? .gherkinFeature : .testSuite
         } else {
             inferredCategory = .other
         }
@@ -463,7 +468,8 @@ final class AppState: ObservableObject {
             relativePath: relPath,
             name: stdURL.lastPathComponent,
             fileExtension: ext,
-            category: inferredCategory
+            category: inferredCategory,
+            features: parsedFeatures
         )
         openFile(synthetic, jumpToLine: jumpToLine)
     }
@@ -473,8 +479,12 @@ final class AppState: ObservableObject {
         guard openTabs[idx].content != newText else { return }
         openTabs[idx].content = newText
 
-        if openTabs[idx].isExecutableTestFile {
-            liveParsedFeaturesByPath[filePath] = TestFileParser.parse(content: newText, filePath: filePath)
+        let cat = openTabs[idx].category
+        if cat == .testSuite || cat == .gherkinFeature || cat == .other {
+            let ext = URL(fileURLWithPath: filePath).pathExtension.lowercased()
+            if ["js", "ts", "mjs", "cjs", "mts", "cts", "feature"].contains(ext) {
+                liveParsedFeaturesByPath[filePath] = TestFileParser.parse(content: newText, filePath: filePath)
+            }
         }
     }
 
@@ -677,11 +687,12 @@ final class AppState: ObservableObject {
     }
 
     func runActiveFile() {
-        guard let file = activeWorkspaceFile, file.isExecutableTestFile else {
-            showBanner("Select a CodeceptJS test suite or Gherkin .feature file to run.", isError: true)
+        guard isActiveTabExecutableTestFile, let tab = activeTab else {
+            showBanner("Select a CodeceptJS test file containing Feature() or Scenario() to run.", isError: true)
             return
         }
-        run(mode: .runFile(relativePath: file.relativePath))
+        let targetRel = activeWorkspaceFile?.relativePath ?? tab.relativePath
+        run(mode: .runFile(relativePath: targetRel))
     }
 
     func stopActiveRun() {

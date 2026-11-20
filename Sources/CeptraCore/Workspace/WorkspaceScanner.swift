@@ -46,7 +46,7 @@ public enum WorkspaceScanner {
 
         guard let enumerator = fm.enumerator(
             at: standardizedRoot,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey],
             options: [.skipsHiddenFiles]
         ) else {
             return CodeceptWorkspace(
@@ -63,7 +63,7 @@ public enum WorkspaceScanner {
             : standardizedRoot.path + "/"
 
         for case let fileURL as URL in enumerator {
-            let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey])
             let fileName = fileURL.lastPathComponent
             let fullPath = fileURL.standardizedFileURL.path
 
@@ -91,7 +91,7 @@ public enum WorkspaceScanner {
                 continue
             }
 
-            let category = classify(
+            let initialCategory = classifyNonTestCategory(
                 fileName: fileName,
                 relativePath: normalizedRel,
                 ext: ext,
@@ -106,20 +106,35 @@ public enum WorkspaceScanner {
             // Keep JSON files if they are standard project manifests OR a discovered/selected CodeceptJS config
             if ext == "json"
                 && !["package.json", "tsconfig.json", "jsconfig.json"].contains(fileName)
-                && category != .config {
+                && initialCategory != .config {
                 continue
             }
 
+            // Content-verify CodeceptJS tests: a file (even named `*.TEST.ts` or `*_spec.js`) is ONLY
+            // classified as `.testSuite` / `.gherkinFeature` if its content actually declares
+            // CodeceptJS `Feature(...)` / `Scenario(...)` (or Gherkin `Feature:` / `Scenario:`).
+            var category = initialCategory
             var features: [ParsedFeature] = []
-            if category == .testSuite || category == .gherkinFeature {
-                if let content = try? String(contentsOf: fileURL, encoding: .utf8) {
-                    features = TestFileParser.parse(content: content, filePath: fullPath)
+            let fileSize = values?.fileSize ?? 0
+            let canContainTests = ext == "feature"
+                || (initialCategory == .other
+                    && !fileName.lowercased().hasSuffix(".d.ts")
+                    && ["js", "ts", "mjs", "cjs", "mts", "cts"].contains(ext)
+                    && fileSize <= 512_000)
+
+            if canContainTests, let content = try? String(contentsOf: fileURL, encoding: .utf8) {
+                let parsed = TestFileParser.parse(content: content, filePath: fullPath)
+                if !parsed.isEmpty {
+                    features = parsed
+                    category = (ext == "feature") ? .gherkinFeature : .testSuite
                     for feature in features {
                         allTags.formUnion(feature.tags)
                         for scenario in feature.scenarios {
                             allTags.formUnion(scenario.tags)
                         }
                     }
+                } else if ext == "feature" {
+                    category = .other
                 }
             }
 
@@ -167,7 +182,7 @@ public enum WorkspaceScanner {
         )
     }
 
-    private static func classify(
+    private static func classifyNonTestCategory(
         fileName: String,
         relativePath: String,
         ext: String,
@@ -187,15 +202,9 @@ public enum WorkspaceScanner {
             || fileName == "steps.d.ts" {
             return .config
         }
-        if ext == "feature" {
-            return .gherkinFeature
-        }
         let lowerName = fileName.lowercased()
         let lowerPath = relativePath.lowercased()
 
-        if lowerName.contains("_test.") || lowerName.contains(".test.") || lowerName.contains("_spec.") || lowerName.contains(".spec.") {
-            return .testSuite
-        }
         if helperAbsolutePaths.contains(fullPath) || lowerPath.contains("helper") || lowerPath.hasPrefix("helpers/") {
             return .helper
         }

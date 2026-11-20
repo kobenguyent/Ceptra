@@ -9,13 +9,25 @@ public enum TestFileParser {
         return parseJavaScriptOrTypeScript(content: content, filePath: filePath)
     }
 
+    /// Returns `true` only if the file actually declares at least one CodeceptJS `Feature(...)` /
+    /// `Scenario(...)` / `xScenario(...)` / `Data(...).Scenario(...)` (or Gherkin `Feature:` / `Scenario:`).
+    public static func containsCodeceptTests(content: String, filePath: String) -> Bool {
+        !parse(content: content, filePath: filePath).isEmpty
+    }
+
     // MARK: - CodeceptJS JS / TS Parser
 
     private static let featureRegex = try! NSRegularExpression(
         pattern: #"^\s*Feature\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1"#
     )
+    private static let dynamicFeatureRegex = try! NSRegularExpression(
+        pattern: #"^\s*Feature\s*\(\s*([^,)\n]+)\s*(?:,|\))(?!\s*[:{])"#
+    )
     private static let scenarioRegex = try! NSRegularExpression(
         pattern: #"^\s*(?:(Data\s*\([^)]*\)\s*\.)?\s*)?(xScenario|Scenario(?:\.(only|skip|todo))?)\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4"#
+    )
+    private static let dynamicScenarioRegex = try! NSRegularExpression(
+        pattern: #"^\s*(?:(Data\s*\([^)]*\)\s*\.)?\s*)?(xScenario|Scenario(?:\.(only|skip|todo))?)\s*\(\s*([^,)\n]+)\s*,"#
     )
     private static let hookRegex = try! NSRegularExpression(
         pattern: #"^\s*(BeforeSuite|AfterSuite|Before|After)\s*\("#
@@ -50,6 +62,7 @@ public enum TestFileParser {
 
         var activeBlock: ActiveBlock? = nil
         var inMultilineComment = false
+        var sawExplicitFeatureOrScenario = false
 
         func flushActiveBlock(at endLine: Int) {
             guard let block = activeBlock else { return }
@@ -101,12 +114,22 @@ public enum TestFileParser {
 
             // Check Feature(...)
             if let match = featureRegex.firstMatch(in: cleanedLine, range: fullRange) {
+                sawExplicitFeatureOrScenario = true
                 flushActiveBlock(at: lineNumber - 1)
                 flushFeature()
                 let title = nsLine.substring(with: match.range(at: 2))
                 currentFeatureTitle = title
                 currentFeatureLine = lineNumber
                 currentFeatureTags = extractTags(fromTitle: title, line: cleanedLine)
+                continue
+            } else if let match = dynamicFeatureRegex.firstMatch(in: cleanedLine, range: fullRange) {
+                sawExplicitFeatureOrScenario = true
+                flushActiveBlock(at: lineNumber - 1)
+                flushFeature()
+                let expr = nsLine.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespaces)
+                currentFeatureTitle = expr.isEmpty ? "Feature" : expr
+                currentFeatureLine = lineNumber
+                currentFeatureTags = extractMethodTags(from: cleanedLine)
                 continue
             }
 
@@ -118,7 +141,12 @@ public enum TestFileParser {
             }
 
             // Check Scenario(...) / xScenario(...) / Data(...).Scenario(...)
-            if let match = scenarioRegex.firstMatch(in: cleanedLine, range: fullRange) {
+            let matchedScenario = scenarioRegex.firstMatch(in: cleanedLine, range: fullRange)
+            let matchedDynamicScenario = matchedScenario == nil
+                ? dynamicScenarioRegex.firstMatch(in: cleanedLine, range: fullRange)
+                : nil
+            if let match = matchedScenario ?? matchedDynamicScenario {
+                sawExplicitFeatureOrScenario = true
                 flushActiveBlock(at: lineNumber - 1)
                 if currentFeatureTitle == nil {
                     currentFeatureTitle = URL(fileURLWithPath: filePath).deletingPathExtension().lastPathComponent
@@ -127,7 +155,12 @@ public enum TestFileParser {
                 let hasDataPrefix = match.range(at: 1).location != NSNotFound
                 let callName = nsLine.substring(with: match.range(at: 2))
                 let subModifier = match.range(at: 3).location != NSNotFound ? nsLine.substring(with: match.range(at: 3)) : nil
-                let title = nsLine.substring(with: match.range(at: 5))
+                let title: String
+                if matchedScenario != nil {
+                    title = nsLine.substring(with: match.range(at: 5))
+                } else {
+                    title = nsLine.substring(with: match.range(at: 4)).trimmingCharacters(in: .whitespaces)
+                }
 
                 let modifier: ScenarioModifier
                 if callName == "xScenario" || subModifier == "skip" {
@@ -230,6 +263,9 @@ public enum TestFileParser {
         }
 
         flushActiveBlock(at: lines.count)
+        guard sawExplicitFeatureOrScenario else {
+            return []
+        }
         flushFeature()
 
         // If scenarios exist without explicit Feature(...)

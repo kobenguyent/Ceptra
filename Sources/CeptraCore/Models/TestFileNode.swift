@@ -235,9 +235,10 @@ public struct WorkspaceFile: Identifiable, Codable, Equatable, Hashable, Sendabl
         URL(fileURLWithPath: path)
     }
 
-    /// Only CodeceptJS JS/TS test suites and Gherkin `.feature` files should show execution buttons.
+    /// Only CodeceptJS JS/TS test suites and Gherkin `.feature` files that actually declare
+    /// `Feature(...)` / `Scenario(...)` (or Gherkin `Feature:` / `Scenario:`) are executable.
     public var isExecutableTestFile: Bool {
-        category == .testSuite || category == .gherkinFeature
+        (category == .testSuite || category == .gherkinFeature) && !features.isEmpty
     }
 
     public var languageHint: String {

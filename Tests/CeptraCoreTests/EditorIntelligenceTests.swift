@@ -219,19 +219,60 @@ final class EditorIntelligenceTests: XCTestCase {
         XCTAssertEqual(memberHit?.target.lineNumber, 1)
     }
 
-    func testExecutableTestFileFlagOnlyMatchesTestAndFeatureFiles() {
-        let testFile = WorkspaceFile(path: "/a/login_test.ts", relativePath: "login_test.ts", name: "login_test.ts", fileExtension: "ts", category: .testSuite)
-        let featureFile = WorkspaceFile(path: "/a/login.feature", relativePath: "login.feature", name: "login.feature", fileExtension: "feature", category: .gherkinFeature)
+    func testExecutableTestFileFlagOnlyMatchesTestAndFeatureFilesWithDeclarations() throws {
+        let sampleFeature = ParsedFeature(title: "Login", filePath: "/a/login_test.ts", lineNumber: 1, scenarios: [])
+        let testFile = WorkspaceFile(path: "/a/login_test.ts", relativePath: "login_test.ts", name: "login_test.ts", fileExtension: "ts", category: .testSuite, features: [sampleFeature])
+        let emptyTestFile = WorkspaceFile(path: "/a/empty.TEST.ts", relativePath: "empty.TEST.ts", name: "empty.TEST.ts", fileExtension: "ts", category: .testSuite, features: [])
+        let featureFile = WorkspaceFile(path: "/a/login.feature", relativePath: "login.feature", name: "login.feature", fileExtension: "feature", category: .gherkinFeature, features: [sampleFeature])
         let pageFile = WorkspaceFile(path: "/a/LoginPage.ts", relativePath: "LoginPage.ts", name: "LoginPage.ts", fileExtension: "ts", category: .pageObject)
         let configFile = WorkspaceFile(path: "/a/codecept.conf.ts", relativePath: "codecept.conf.ts", name: "codecept.conf.ts", fileExtension: "ts", category: .config)
         let helperFile = WorkspaceFile(path: "/a/custom_helper.ts", relativePath: "custom_helper.ts", name: "custom_helper.ts", fileExtension: "ts", category: .helper)
         let otherFile = WorkspaceFile(path: "/a/constants.ts", relativePath: "constants.ts", name: "constants.ts", fileExtension: "ts", category: .other)
 
         XCTAssertTrue(testFile.isExecutableTestFile)
+        XCTAssertFalse(emptyTestFile.isExecutableTestFile)
         XCTAssertTrue(featureFile.isExecutableTestFile)
         XCTAssertFalse(pageFile.isExecutableTestFile)
         XCTAssertFalse(configFile.isExecutableTestFile)
         XCTAssertFalse(helperFile.isExecutableTestFile)
         XCTAssertFalse(otherFile.isExecutableTestFile)
+
+        // End-to-end WorkspaceScanner check: `*.TEST.ts` without Feature()/Scenario() MUST NOT be classified as testSuite
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ceptra-test-content-check-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let fakeTestContent = """
+        // Feature('Commented out feature should be ignored')
+        /* Scenario('Commented out scenario') */
+        export const mockPayload = { status: 'ok' };
+        describe('unit test', () => {
+          it('is not codeceptjs', () => {});
+        });
+        """
+        try fakeTestContent.write(to: root.appendingPathComponent("payload.TEST.ts"), atomically: true, encoding: .utf8)
+
+        let realTestContent = """
+        Feature('Real Suite');
+        Scenario('runs properly', ({ I }) => {
+          I.amOnPage('/');
+        });
+        """
+        try realTestContent.write(to: root.appendingPathComponent("real.TEST.ts"), atomically: true, encoding: .utf8)
+
+        let ws = WorkspaceScanner.scan(rootURL: root)
+        let fakeFile = ws.files.first { $0.name == "payload.TEST.ts" }
+        let realFile = ws.files.first { $0.name == "real.TEST.ts" }
+
+        XCTAssertNotNil(fakeFile)
+        XCTAssertEqual(fakeFile?.category, .other)
+        XCTAssertEqual(fakeFile?.isExecutableTestFile, false)
+        XCTAssertFalse(ws.testFiles.contains { $0.name == "payload.TEST.ts" })
+
+        XCTAssertNotNil(realFile)
+        XCTAssertEqual(realFile?.category, .testSuite)
+        XCTAssertEqual(realFile?.isExecutableTestFile, true)
+        XCTAssertTrue(ws.testFiles.contains { $0.name == "real.TEST.ts" })
     }
 }
