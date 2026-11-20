@@ -82,4 +82,112 @@ final class ConfigParserTests: XCTestCase {
         XCTAssertEqual(ws.config.includes.first?.alias, "I")
         XCTAssertEqual(ws.totalScenarioCount, 1)
     }
+
+    func testDiscoversCustomConfigNamesNestedPathsPackageScriptsAndJSON() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ceptra-custom-cfg-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot.appendingPathComponent("e2e/configs"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tempRoot.appendingPathComponent("e2e/pages"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        // Non-codecept config that must be ignored
+        try "export default { rules: {} };".write(
+            to: tempRoot.appendingPathComponent("eslint.config.mjs"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        // package.json pointing -c to a completely custom filename & JSON config
+        let pkg = """
+        {
+          "name": "custom-config-monorepo",
+          "scripts": {
+            "test:staging": "codeceptjs run -c e2e/configs/staging-runner.json"
+          },
+          "devDependencies": {
+            "codeceptjs": "^4.0.3"
+          }
+        }
+        """
+        try pkg.write(to: tempRoot.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+
+        let jsonConfig = """
+        {
+          "name": "staging-json-suite",
+          "tests": "../tests/*_test.js",
+          "output": "../artifacts",
+          "helpers": {
+            "REST": { "endpoint": "https://staging.example.com" }
+          },
+          "include": {
+            "loginPage": "../pages/Login.js"
+          },
+          "plugins": {
+            "junitReporter": { "enabled": true }
+          }
+        }
+        """
+        let jsonConfigURL = tempRoot.appendingPathComponent("e2e/configs/staging-runner.json")
+        try jsonConfig.write(to: jsonConfigURL, atomically: true, encoding: .utf8)
+
+        let altConfig = """
+        export const config = {
+          name: 'mobile-custom-suite',
+          tests: '../tests/*_test.ts',
+          output: '../mobile-output',
+          helpers: {
+            Playwright: { browser: 'webkit', url: 'https://m.example.com' }
+          }
+        };
+        """
+        let altConfigURL = tempRoot.appendingPathComponent("e2e/configs/mobile.conf.ts")
+        try altConfig.write(to: altConfigURL, atomically: true, encoding: .utf8)
+        try "export default {};".write(to: tempRoot.appendingPathComponent("e2e/pages/Login.js"), atomically: true, encoding: .utf8)
+
+        // 1. Auto-discovery should find both staging-runner.json (via package.json -c) and mobile.conf.ts (via heuristic), ignoring eslint.config.mjs
+        let discovered = ConfigParser.discoverConfigFiles(in: tempRoot)
+        let discoveredNames = discovered.map(\.lastPathComponent)
+        XCTAssertTrue(discoveredNames.contains("staging-runner.json"))
+        XCTAssertTrue(discoveredNames.contains("mobile.conf.ts"))
+        XCTAssertFalse(discoveredNames.contains("eslint.config.mjs"))
+
+        // Primary auto-detected config is staging-runner.json (referenced via package.json -c)
+        let autoWorkspace = WorkspaceScanner.scan(rootURL: tempRoot)
+        XCTAssertEqual(autoWorkspace.config.projectName, "staging-json-suite")
+        XCTAssertEqual(autoWorkspace.config.configFilePath, jsonConfigURL.standardizedFileURL.path)
+        XCTAssertFalse(autoWorkspace.config.isCustomConfigOverride)
+        // Output directory resolves relative to dirname(configFile) = e2e/configs/../artifacts -> e2e/artifacts
+        XCTAssertEqual(
+            autoWorkspace.config.resolvedOutputURL(rootURL: tempRoot).path,
+            tempRoot.appendingPathComponent("e2e/artifacts").standardizedFileURL.path
+        )
+        // Page object include resolved relative to config directory
+        XCTAssertEqual(autoWorkspace.supportFiles.first?.name, "Login.js")
+
+        // 2. Explicit relative custom config override switches active config cleanly
+        let overrideWorkspace = WorkspaceScanner.scan(rootURL: tempRoot, customConfigPath: "e2e/configs/mobile.conf.ts")
+        XCTAssertTrue(overrideWorkspace.config.isCustomConfigOverride)
+        XCTAssertEqual(overrideWorkspace.config.projectName, "mobile-custom-suite")
+        XCTAssertEqual(overrideWorkspace.config.helpers.first?.name, "Playwright")
+        XCTAssertEqual(
+            overrideWorkspace.config.resolvedOutputURL(rootURL: tempRoot).path,
+            tempRoot.appendingPathComponent("e2e/mobile-output").standardizedFileURL.path
+        )
+
+        // 3. Explicit external absolute config outside workspace root still works & surfaces in sidebar
+        let externalDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ceptra-ext-cfg-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: externalDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: externalDir) }
+
+        let externalConfigURL = externalDir.appendingPathComponent("shared-ci.js")
+        try "exports.config = { name: 'external-ci', output: './ci-out', helpers: { REST: {} } };"
+            .write(to: externalConfigURL, atomically: true, encoding: .utf8)
+
+        let extWorkspace = WorkspaceScanner.scan(rootURL: tempRoot, customConfigPath: externalConfigURL.path)
+        XCTAssertTrue(extWorkspace.config.isCustomConfigOverride)
+        XCTAssertEqual(extWorkspace.config.projectName, "external-ci")
+        XCTAssertEqual(extWorkspace.config.configFilePath, externalConfigURL.standardizedFileURL.path)
+        XCTAssertTrue(extWorkspace.files.contains { $0.path == externalConfigURL.standardizedFileURL.path && $0.category == .config })
+    }
 }

@@ -192,6 +192,73 @@ private struct TopStudioBar: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
 
+            // Active Config File Switcher (supports custom names, nested paths, and external paths)
+            if let ws = appState.workspace {
+                let activeLabel = ws.config.displayConfigPath(relativeTo: ws.rootURL) ?? "Select Config…"
+                Menu {
+                    if !ws.discoveredConfigPaths.isEmpty {
+                        Section("Detected Configs") {
+                            ForEach(ws.discoveredConfigPaths, id: \.self) { path in
+                                let isActive = path == ws.config.configFilePath
+                                let label = displayPath(path, relativeTo: ws.rootURL)
+                                Button {
+                                    appState.setCustomConfigFile(path: path)
+                                } label: {
+                                    if isActive {
+                                        Label(label, systemImage: "checkmark")
+                                    } else {
+                                        Text(label)
+                                    }
+                                }
+                            }
+                        }
+                        Divider()
+                    }
+
+                    Button("Choose Custom Config File…") {
+                        appState.selectCustomConfigPanel()
+                    }
+
+                    if ws.config.configFilePath != nil {
+                        Button("Open Active Config in Editor") {
+                            appState.openActiveConfigFile()
+                        }
+                    }
+
+                    if ws.config.isCustomConfigOverride {
+                        Divider()
+                        Button("Reset to Auto-Detect") {
+                            appState.setCustomConfigFile(path: nil)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: ws.config.configFilePath == nil ? "exclamationmark.triangle" : "gearshape")
+                            .font(.system(size: 10))
+                            .foregroundStyle(ws.config.configFilePath == nil ? CeptraTheme.warning : (ws.config.isCustomConfigOverride ? CeptraTheme.accentWarm : CeptraTheme.textMuted))
+                        Text(activeLabel)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(ws.config.configFilePath == nil ? CeptraTheme.warning : CeptraTheme.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 190, alignment: .leading)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(CeptraTheme.textMuted)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(ws.config.isCustomConfigOverride ? CeptraTheme.accentWarm.opacity(0.45) : CeptraTheme.border, lineWidth: 0.75)
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help(ws.config.configFilePath ?? "Choose a custom CodeceptJS config file (-c)")
+            }
+
             Spacer()
 
             // Center Segmented Workspace Switcher
@@ -346,6 +413,16 @@ private struct TopStudioBar: View {
         .padding(.trailing, 14)
         .frame(height: 44)
         .background(CeptraTheme.sidebarBG)
+    }
+
+    private func displayPath(_ path: String, relativeTo root: URL) -> String {
+        let stdPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        let stdRoot = root.standardizedFileURL.path
+        let prefix = stdRoot.hasSuffix("/") ? stdRoot : stdRoot + "/"
+        if stdPath.hasPrefix(prefix) {
+            return String(stdPath.dropFirst(prefix.count))
+        }
+        return stdPath
     }
 }
 

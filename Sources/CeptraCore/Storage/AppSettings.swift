@@ -2,6 +2,7 @@ import Foundation
 
 public struct AppSettings: Codable, Equatable, Sendable {
     public var recentProjectPaths: [String]
+    public var workspaceConfigPaths: [String: String]
     public var editorFontSize: Double
     public var autoCheckForUpdates: Bool
     public var includePrereleaseUpdates: Bool
@@ -12,6 +13,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public init(
         recentProjectPaths: [String] = [],
+        workspaceConfigPaths: [String: String] = [:],
         editorFontSize: Double = 13.0,
         autoCheckForUpdates: Bool = true,
         includePrereleaseUpdates: Bool = false,
@@ -21,6 +23,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         defaultRunOptions: RunOptions = RunOptions()
     ) {
         self.recentProjectPaths = recentProjectPaths
+        self.workspaceConfigPaths = workspaceConfigPaths
         self.editorFontSize = editorFontSize
         self.autoCheckForUpdates = autoCheckForUpdates
         self.includePrereleaseUpdates = includePrereleaseUpdates
@@ -30,12 +33,40 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.defaultRunOptions = defaultRunOptions
     }
 
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.recentProjectPaths = try c.decodeIfPresent([String].self, forKey: .recentProjectPaths) ?? []
+        self.workspaceConfigPaths = try c.decodeIfPresent([String: String].self, forKey: .workspaceConfigPaths) ?? [:]
+        self.editorFontSize = try c.decodeIfPresent(Double.self, forKey: .editorFontSize) ?? 13.0
+        self.autoCheckForUpdates = try c.decodeIfPresent(Bool.self, forKey: .autoCheckForUpdates) ?? true
+        self.includePrereleaseUpdates = try c.decodeIfPresent(Bool.self, forKey: .includePrereleaseUpdates) ?? false
+        self.gitHubRepository = try c.decodeIfPresent(String.self, forKey: .gitHubRepository) ?? AppMetadata.configuredGitHubRepo
+        self.customNodePath = try c.decodeIfPresent(String.self, forKey: .customNodePath) ?? ""
+        self.customCodeceptPath = try c.decodeIfPresent(String.self, forKey: .customCodeceptPath) ?? ""
+        self.defaultRunOptions = try c.decodeIfPresent(RunOptions.self, forKey: .defaultRunOptions) ?? RunOptions()
+    }
+
     public mutating func recordRecentProject(_ path: String) {
         let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
         recentProjectPaths.removeAll { $0 == normalized }
         recentProjectPaths.insert(normalized, at: 0)
         if recentProjectPaths.count > 12 {
             recentProjectPaths = Array(recentProjectPaths.prefix(12))
+        }
+    }
+
+    public func customConfigPath(forWorkspaceRoot rootPath: String) -> String? {
+        let normalized = URL(fileURLWithPath: rootPath).standardizedFileURL.path
+        let val = workspaceConfigPaths[normalized]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (val?.isEmpty == false) ? val : nil
+    }
+
+    public mutating func setCustomConfigPath(_ configPath: String?, forWorkspaceRoot rootPath: String) {
+        let normalized = URL(fileURLWithPath: rootPath).standardizedFileURL.path
+        if let trimmed = configPath?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+            workspaceConfigPaths[normalized] = trimmed
+        } else {
+            workspaceConfigPaths.removeValue(forKey: normalized)
         }
     }
 }

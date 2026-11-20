@@ -10,18 +10,35 @@ public enum WorkspaceScanner {
         "js", "ts", "mjs", "cjs", "mts", "cts", "feature", "json"
     ]
 
-    public static func scan(rootURL: URL) -> CodeceptWorkspace {
+    public static func scan(
+        rootURL: URL,
+        customConfigPath: String? = nil
+    ) -> CodeceptWorkspace {
         let standardizedRoot = rootURL.standardizedFileURL
-        let config = ConfigParser.parseWorkspaceConfig(rootURL: standardizedRoot)
-        let includePaths = Set(config.includes.map { normalizeRelativePath($0.relativePath) })
-        let helperRequirePaths = Set(config.helpers.compactMap { $0.requirePath }.map { normalizeRelativePath($0) })
-        let stepDefPaths = Set(config.gherkinStepsPaths.map { normalizeRelativePath($0) })
-        let outputDirName = URL(fileURLWithPath: config.outputDirectory).lastPathComponent
+        let discoveredConfigURLs = ConfigParser.discoverConfigFiles(in: standardizedRoot)
+        let config = ConfigParser.parseWorkspaceConfig(
+            rootURL: standardizedRoot,
+            explicitConfigPath: customConfigPath
+        )
 
-        var ignored = ignoredDirectories
-        if !outputDirName.isEmpty && outputDirName != "." {
-            ignored.insert(outputDirName)
+        var discoveredConfigPaths = discoveredConfigURLs.map { $0.standardizedFileURL.path }
+        if let activeConfigPath = config.configFilePath,
+           !discoveredConfigPaths.contains(activeConfigPath) {
+            discoveredConfigPaths.insert(activeConfigPath, at: 0)
         }
+        let knownConfigPathSet = Set(discoveredConfigPaths)
+
+        let testRoot = config.resolvedTestRootURL(workspaceRoot: standardizedRoot)
+        let includeAbsolutePaths = Set(config.includes.map {
+            resolveAbsolutePath($0.relativePath, base: testRoot)
+        })
+        let helperAbsolutePaths = Set(config.helpers.compactMap { $0.requirePath }.map {
+            resolveAbsolutePath($0, base: testRoot)
+        })
+        let stepDefAbsolutePaths = Set(config.gherkinStepsPaths.map {
+            resolveAbsolutePath($0, base: testRoot)
+        })
+        let resolvedOutputPath = config.resolvedOutputURL(rootURL: standardizedRoot).path
 
         let fm = FileManager.default
         var discovered: [WorkspaceFile] = []
@@ -32,7 +49,13 @@ public enum WorkspaceScanner {
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
-            return CodeceptWorkspace(rootURL: standardizedRoot, config: config, files: [], allTags: [])
+            return CodeceptWorkspace(
+                rootURL: standardizedRoot,
+                config: config,
+                discoveredConfigPaths: discoveredConfigPaths,
+                files: [],
+                allTags: []
+            )
         }
 
         let rootPathWithSlash = standardizedRoot.path.hasSuffix("/")
@@ -42,9 +65,10 @@ public enum WorkspaceScanner {
         for case let fileURL as URL in enumerator {
             let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
             let fileName = fileURL.lastPathComponent
+            let fullPath = fileURL.standardizedFileURL.path
 
             if values?.isDirectory == true {
-                if ignored.contains(fileName) {
+                if ignoredDirectories.contains(fileName) || fullPath == resolvedOutputPath {
                     enumerator.skipDescendants()
                 }
                 continue
@@ -54,18 +78,15 @@ public enum WorkspaceScanner {
             let ext = fileURL.pathExtension.lowercased()
             guard supportedExtensions.contains(ext) else { continue }
 
-            // Skip noisy lockfiles
             if fileName == "package-lock.json" || fileName == "tsconfig.tsbuildinfo" {
                 continue
             }
 
-            let fullPath = fileURL.standardizedFileURL.path
             let relPath = fullPath.hasPrefix(rootPathWithSlash)
                 ? String(fullPath.dropFirst(rootPathWithSlash.count))
                 : fileName
             let normalizedRel = normalizeRelativePath(relPath)
 
-            // Skip deeply nested files beyond depth 6 for fast minimalist UX
             if relPath.split(separator: "/").count > 6 {
                 continue
             }
@@ -74,15 +95,18 @@ public enum WorkspaceScanner {
                 fileName: fileName,
                 relativePath: normalizedRel,
                 ext: ext,
-                configPath: config.configFilePath,
                 fullPath: fullPath,
-                includePaths: includePaths,
-                helperPaths: helperRequirePaths,
-                stepDefPaths: stepDefPaths
+                activeConfigPath: config.configFilePath,
+                knownConfigPaths: knownConfigPathSet,
+                includeAbsolutePaths: includeAbsolutePaths,
+                helperAbsolutePaths: helperAbsolutePaths,
+                stepDefAbsolutePaths: stepDefAbsolutePaths
             )
 
-            // Keep JSON only for package.json / jsconfig.json / tsconfig.json
-            if ext == "json" && !["package.json", "tsconfig.json", "jsconfig.json"].contains(fileName) {
+            // Keep JSON files if they are standard project manifests OR a discovered/selected CodeceptJS config
+            if ext == "json"
+                && !["package.json", "tsconfig.json", "jsconfig.json"].contains(fileName)
+                && category != .config {
                 continue
             }
 
@@ -109,16 +133,35 @@ public enum WorkspaceScanner {
             ))
         }
 
+        // If the user selected an external custom config file outside `rootURL`, still surface it in the sidebar
+        if let activeConfigPath = config.configFilePath,
+           !discovered.contains(where: { $0.path == activeConfigPath }),
+           fm.fileExists(atPath: activeConfigPath) {
+            let extURL = URL(fileURLWithPath: activeConfigPath).standardizedFileURL
+            discovered.append(WorkspaceFile(
+                path: extURL.path,
+                relativePath: extURL.path,
+                name: extURL.lastPathComponent,
+                fileExtension: extURL.pathExtension.lowercased(),
+                category: .config,
+                features: []
+            ))
+        }
+
         discovered.sort { lhs, rhs in
             if lhs.category != rhs.category {
                 return categorySortOrder(lhs.category) < categorySortOrder(rhs.category)
             }
+            // Pin active config at top of config group
+            if lhs.path == config.configFilePath && rhs.path != config.configFilePath { return true }
+            if rhs.path == config.configFilePath && lhs.path != config.configFilePath { return false }
             return lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
         }
 
         return CodeceptWorkspace(
             rootURL: standardizedRoot,
             config: config,
+            discoveredConfigPaths: discoveredConfigPaths,
             files: discovered,
             allTags: allTags.sorted()
         )
@@ -128,13 +171,20 @@ public enum WorkspaceScanner {
         fileName: String,
         relativePath: String,
         ext: String,
-        configPath: String?,
         fullPath: String,
-        includePaths: Set<String>,
-        helperPaths: Set<String>,
-        stepDefPaths: Set<String>
+        activeConfigPath: String?,
+        knownConfigPaths: Set<String>,
+        includeAbsolutePaths: Set<String>,
+        helperAbsolutePaths: Set<String>,
+        stepDefAbsolutePaths: Set<String>
     ) -> WorkspaceFileCategory {
-        if fullPath == configPath || ConfigParser.configFileNames.contains(fileName) || fileName == "package.json" || fileName == "tsconfig.json" || fileName == "jsconfig.json" || fileName == "steps.d.ts" {
+        if fullPath == activeConfigPath
+            || knownConfigPaths.contains(fullPath)
+            || ConfigParser.configFileNames.contains(fileName)
+            || fileName == "package.json"
+            || fileName == "tsconfig.json"
+            || fileName == "jsconfig.json"
+            || fileName == "steps.d.ts" {
             return .config
         }
         if ext == "feature" {
@@ -146,13 +196,13 @@ public enum WorkspaceScanner {
         if lowerName.contains("_test.") || lowerName.contains(".test.") || lowerName.contains("_spec.") || lowerName.contains(".spec.") {
             return .testSuite
         }
-        if helperPaths.contains(relativePath) || lowerPath.contains("helper") || lowerPath.hasPrefix("helpers/") {
+        if helperAbsolutePaths.contains(fullPath) || lowerPath.contains("helper") || lowerPath.hasPrefix("helpers/") {
             return .helper
         }
-        if stepDefPaths.contains(relativePath) || lowerPath.contains("step_definitions/") || lowerPath.contains("stepdefinitions/") {
+        if stepDefAbsolutePaths.contains(fullPath) || lowerPath.contains("step_definitions/") || lowerPath.contains("stepdefinitions/") {
             return .stepDefinition
         }
-        if includePaths.contains(relativePath)
+        if includeAbsolutePaths.contains(fullPath)
             || lowerPath.contains("pages/")
             || lowerPath.contains("fragments/")
             || lowerPath.contains("stepobjects/")
@@ -162,6 +212,14 @@ public enum WorkspaceScanner {
             return .pageObject
         }
         return .other
+    }
+
+    private static func resolveAbsolutePath(_ path: String, base: URL) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("/") {
+            return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        }
+        return base.appendingPathComponent(trimmed).standardizedFileURL.path
     }
 
     private static func normalizeRelativePath(_ raw: String) -> String {

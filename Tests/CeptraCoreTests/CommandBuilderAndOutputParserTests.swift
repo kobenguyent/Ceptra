@@ -44,6 +44,18 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
             toolchain: toolchain
         )
         XCTAssertEqual(Array(workersCmd.arguments.prefix(4)), ["run-workers", "4", "--by", "pool"])
+
+        // When config is in a custom nested subdirectory, test file path resolves to absolute so CodeceptJS
+        // finds it even though store.codeceptDir = dirname(configFile)
+        let nestedConfigCmd = CommandBuilder.build(
+            mode: .runFile(relativePath: "tests/checkout_test.ts"),
+            options: options,
+            workspaceRoot: root,
+            configFilePath: "/tmp/demo/configs/staging.conf.ts",
+            toolchain: toolchain
+        )
+        XCTAssertEqual(nestedConfigCmd.arguments[1], "/tmp/demo/tests/checkout_test.ts")
+        XCTAssertTrue(nestedConfigCmd.arguments.contains("/tmp/demo/configs/staging.conf.ts"))
     }
 
     func testParsesLiveStepsAndCompactCodeceptOutput() {

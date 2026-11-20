@@ -4,7 +4,7 @@
 
 ## Key Capabilities
 
-- **CodeceptJS 4.x Workspace Explorer**: Automatically detects `codecept.conf.{ts,js,cjs,mjs}` / `codecept.config.*`, `package.json`, Helpers (`Playwright`, `Puppeteer`, `WebDriver`, `CDPBrowser`, `REST`, `GraphQL`, `Appium`, custom helpers), `include` Page/Step objects, Plugins (`screenshot`, `screencast`, `aiTrace`, `junitReporter`, `heal`, `retryFailedStep`), JS/TS suites, and Gherkin `.feature` files.
+- **CodeceptJS 4.x Workspace Explorer**: Automatically detects standard (`codecept.conf.{ts,js,cjs,mjs}`, `codecept.config.*`, `codecept.json`) AND custom-named or nested configs (via filename, `package.json` `-c/--config` scripts, or manual selection anywhere on disk), `package.json`, Helpers (`Playwright`, `Puppeteer`, `WebDriver`, `CDPBrowser`, `REST`, `GraphQL`, `Appium`, custom helpers), `include` Page/Step objects, Plugins (`screenshot`, `screencast`, `aiTrace`, `junitReporter`, `heal`, `retryFailedStep`), JS/TS suites, and Gherkin `.feature` files.
 - **Visual Scenario & Step Pipeline**: Interactive side-by-side **Split** or **Visual** mode rendering `Feature`, lifecycle hooks (`BeforeSuite`, `Before`, `After`, `AfterSuite`, `Background`), `Scenario` / `xScenario` / `Data(...).Scenario`, `@tags`, and color-coded `I.*` step flows. Clicking any node jumps straight to that line in the code editor.
 - **Native macOS Code Editor**: Explicit TextKit 1 `NSTextView` with a sibling line-number gutter, CodeceptJS 4.x / TypeScript / JavaScript / Gherkin syntax highlighting, Find & Replace (`⌘F`), quick CodeceptJS snippet insertion, and template scaffolding (`⌘N`).
 - **Focused Test Execution**: Run all tests (`⌘R`), current file (`⌘⇧R`), single scenario, `@tag`, `--last-failed`, `dry-run`, `run-workers <N> --by pool`, `check`, `def`, and `list` with live streaming console logs and real-time scenario status updates.
@@ -66,6 +66,7 @@ In-app updates check `Ceptra → Check for Updates…` (or automatically on laun
 | `⌘R` | Run all tests |
 | `⌘⇧R` | Run current file |
 | `⌘⇧D` | Dry run (validate & discover) |
+| `⌘⇧C` | Select custom CodeceptJS config file (`-c`) |
 | `⌘.` | Stop active run |
 | `⌘B` | Toggle sidebar |
 | `⌘J` | Toggle execution console |

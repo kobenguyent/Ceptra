@@ -271,6 +271,16 @@ private struct ProjectArchitectureView: View {
                     Text(workspace.config.projectName)
                         .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(CeptraTheme.textPrimary)
+                    HStack(spacing: 8) {
+                        Text(workspace.config.displayConfigPath(relativeTo: workspace.rootURL) ?? "No config file detected")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(CeptraTheme.textMuted)
+                        Button("Change Config…") {
+                            appState.selectCustomConfigPanel()
+                        }
+                        .buttonStyle(.link)
+                        .font(.system(size: 11))
+                    }
                 }
                 Spacer()
                 HStack(spacing: 6) {

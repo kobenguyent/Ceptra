@@ -48,6 +48,7 @@ public struct CodeceptIncludeEntry: Identifiable, Codable, Equatable, Hashable, 
 
 public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
     public let configFilePath: String?
+    public let isCustomConfigOverride: Bool
     public let projectName: String
     public let testsPattern: String
     public let outputDirectory: String
@@ -62,6 +63,7 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
 
     public init(
         configFilePath: String? = nil,
+        isCustomConfigOverride: Bool = false,
         projectName: String,
         testsPattern: String = "./*_test.js",
         outputDirectory: String = "./output",
@@ -75,6 +77,7 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
         isTypeScript: Bool = false
     ) {
         self.configFilePath = configFilePath
+        self.isCustomConfigOverride = isCustomConfigOverride
         self.projectName = projectName
         self.testsPattern = testsPattern
         self.outputDirectory = outputDirectory
@@ -88,21 +91,48 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
         self.isTypeScript = isTypeScript
     }
 
+    /// Matches CodeceptJS `getTestRoot(configFile)`: the directory containing the active config file,
+    /// falling back to the workspace root when no config file is active.
+    public func resolvedTestRootURL(workspaceRoot: URL) -> URL {
+        guard let configFilePath, !configFilePath.isEmpty else {
+            return workspaceRoot.standardizedFileURL
+        }
+        return URL(fileURLWithPath: configFilePath)
+            .deletingLastPathComponent()
+            .standardizedFileURL
+    }
+
+    /// Matches CodeceptJS `createOutputDir(config, testRoot)`: resolves relative `output` against the
+    /// active config file's directory (`testRoot`).
     public func resolvedOutputURL(rootURL: URL) -> URL {
+        let baseURL = resolvedTestRootURL(workspaceRoot: rootURL)
         let trimmed = outputDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            return rootURL.appendingPathComponent("output", isDirectory: true)
+            return baseURL.appendingPathComponent("output", isDirectory: true)
         }
         if trimmed.hasPrefix("/") {
-            return URL(fileURLWithPath: trimmed, isDirectory: true)
+            return URL(fileURLWithPath: trimmed, isDirectory: true).standardizedFileURL
         }
-        return rootURL.appendingPathComponent(trimmed, isDirectory: true).standardizedFileURL
+        return baseURL.appendingPathComponent(trimmed, isDirectory: true).standardizedFileURL
+    }
+
+    /// Human-readable path for the active config (relative to workspace root when inside it, otherwise shortened path).
+    public func displayConfigPath(relativeTo workspaceRoot: URL) -> String? {
+        guard let configFilePath else { return nil }
+        let stdConfig = URL(fileURLWithPath: configFilePath).standardizedFileURL.path
+        let stdRoot = workspaceRoot.standardizedFileURL.path
+        let prefix = stdRoot.hasSuffix("/") ? stdRoot : stdRoot + "/"
+        if stdConfig.hasPrefix(prefix) {
+            return String(stdConfig.dropFirst(prefix.count))
+        }
+        return stdConfig
     }
 }
 
 public struct CodeceptWorkspace: Equatable, Sendable {
     public let rootURL: URL
     public let config: CodeceptConfigSummary
+    public let discoveredConfigPaths: [String]
     public let files: [WorkspaceFile]
     public let allTags: [String]
     public let scannedAt: Date
@@ -110,12 +140,14 @@ public struct CodeceptWorkspace: Equatable, Sendable {
     public init(
         rootURL: URL,
         config: CodeceptConfigSummary,
+        discoveredConfigPaths: [String] = [],
         files: [WorkspaceFile],
         allTags: [String],
         scannedAt: Date = Date()
     ) {
         self.rootURL = rootURL
         self.config = config
+        self.discoveredConfigPaths = discoveredConfigPaths
         self.files = files
         self.allTags = allTags
         self.scannedAt = scannedAt

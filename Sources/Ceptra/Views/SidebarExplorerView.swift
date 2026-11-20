@@ -297,15 +297,25 @@ struct SidebarExplorerView: View {
 
             ForEach(files) { file in
                 let isActive = appState.activeTabPath == file.path
+                let isActiveConfig = appState.workspace?.config.configFilePath == file.path
                 HStack(spacing: 7) {
-                    Image(systemName: file.category.symbolName)
+                    Image(systemName: isActiveConfig ? "gearshape.fill" : file.category.symbolName)
                         .font(.system(size: 11))
-                        .foregroundStyle(file.category == .config ? CeptraTheme.accentWarm : CeptraTheme.textMuted)
+                        .foregroundStyle(isActiveConfig ? CeptraTheme.accentWarm : (file.category == .config ? CeptraTheme.accentWarm.opacity(0.7) : CeptraTheme.textMuted))
                     Text(file.relativePath)
-                        .font(.system(size: 11.5, weight: isActive ? .semibold : .regular))
+                        .font(.system(size: 11.5, weight: isActive || isActiveConfig ? .semibold : .regular))
                         .foregroundStyle(isActive ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                     Spacer()
+                    if isActiveConfig {
+                        Text("ACTIVE")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(CeptraTheme.accentWarm)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(CeptraTheme.accentWarm.opacity(0.14), in: Capsule())
+                    }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
@@ -313,6 +323,13 @@ struct SidebarExplorerView: View {
                 .contentShape(Rectangle())
                 .onTapGesture {
                     appState.openFile(file)
+                }
+                .contextMenu {
+                    if ConfigParser.supportedConfigExtensions.contains(file.fileExtension.lowercased()) {
+                        Button("Use as Active CodeceptJS Config") {
+                            appState.setCustomConfigFile(path: file.path)
+                        }
+                    }
                 }
             }
         }

@@ -196,7 +196,8 @@ final class AppState: ObservableObject {
     }
 
     func openWorkspace(at rootURL: URL) {
-        let scanned = WorkspaceScanner.scan(rootURL: rootURL)
+        let savedConfigPath = settings.customConfigPath(forWorkspaceRoot: rootURL.path)
+        let scanned = WorkspaceScanner.scan(rootURL: rootURL, customConfigPath: savedConfigPath)
         workspace = scanned
         openTabs = []
         activeTabPath = nil
@@ -223,8 +224,83 @@ final class AppState: ObservableObject {
 
     func rescanWorkspace() {
         guard let root = workspace?.rootURL else { return }
-        workspace = WorkspaceScanner.scan(rootURL: root)
+        let savedConfigPath = settings.customConfigPath(forWorkspaceRoot: root.path)
+        workspace = WorkspaceScanner.scan(rootURL: root, customConfigPath: savedConfigPath)
         refreshArtifacts()
+    }
+
+    func selectCustomConfigPanel() {
+        guard let root = workspace?.rootURL else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = root
+        panel.prompt = "Use CodeceptJS Config"
+        panel.message = "Select any CodeceptJS configuration file (.ts, .js, .cjs, .mjs, .json)."
+        panel.allowedContentTypes = [
+            .javaScript,
+            .json,
+            UTType(filenameExtension: "ts") ?? .sourceCode,
+            UTType(filenameExtension: "cjs") ?? .sourceCode,
+            UTType(filenameExtension: "mjs") ?? .sourceCode,
+            UTType(filenameExtension: "mts") ?? .sourceCode,
+            UTType(filenameExtension: "cts") ?? .sourceCode
+        ]
+        if panel.runModal() == .OK, let url = panel.url {
+            setCustomConfigFile(path: url.path)
+        }
+    }
+
+    func setCustomConfigFile(path: String?) {
+        guard let root = workspace?.rootURL else { return }
+        if let path, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let resolved = ConfigParser.resolveConfigURL(customPath: path, relativeTo: root) else {
+                showBanner("Config file not found: \(path)", isError: true)
+                return
+            }
+            let storedValue: String
+            let rootPrefix = root.standardizedFileURL.path.hasSuffix("/")
+                ? root.standardizedFileURL.path
+                : root.standardizedFileURL.path + "/"
+            if resolved.path.hasPrefix(rootPrefix) {
+                storedValue = String(resolved.path.dropFirst(rootPrefix.count))
+            } else {
+                storedValue = resolved.path
+            }
+            settings.setCustomConfigPath(storedValue, forWorkspaceRoot: root.path)
+            settingsStore.save(settings)
+            rescanWorkspace()
+            showBanner("Active config: \(storedValue)")
+        } else {
+            settings.setCustomConfigPath(nil, forWorkspaceRoot: root.path)
+            settingsStore.save(settings)
+            rescanWorkspace()
+            let detected = workspace?.config.displayConfigPath(relativeTo: root) ?? "none"
+            showBanner("Reset config to auto-detect (\(detected))")
+        }
+    }
+
+    func openActiveConfigFile() {
+        guard let configPath = workspace?.config.configFilePath else { return }
+        if let file = workspace?.files.first(where: { $0.path == configPath }) {
+            openFile(file)
+            return
+        }
+        let url = URL(fileURLWithPath: configPath).standardizedFileURL
+        let file = WorkspaceFile(
+            path: url.path,
+            relativePath: url.path,
+            name: url.lastPathComponent,
+            fileExtension: url.pathExtension.lowercased(),
+            category: .config
+        )
+        openFile(file)
+    }
+
+    var activeWorkspaceCustomConfigSetting: String {
+        guard let root = workspace?.rootURL else { return "" }
+        return settings.customConfigPath(forWorkspaceRoot: root.path) ?? ""
     }
 
     func refreshArtifacts() {

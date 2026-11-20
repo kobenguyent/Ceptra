@@ -100,6 +100,12 @@ struct CeptraApp: App {
                 }
                 .disabled(appState.workspace == nil || appState.isRunning)
 
+                Button("Select Custom Config File…") {
+                    appState.selectCustomConfigPanel()
+                }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(appState.workspace == nil)
+
                 Divider()
 
                 Button("Toggle Sidebar") {

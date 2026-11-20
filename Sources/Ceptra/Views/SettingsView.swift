@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @State private var customConfigDraft: String = ""
 
     var body: some View {
         Form {
@@ -13,6 +14,35 @@ struct SettingsView: View {
                     Text("\(String(format: "%.1f", appState.settings.editorFontSize)) pt")
                         .font(.system(size: 11, design: .monospaced))
                         .frame(width: 46, alignment: .trailing)
+                }
+            }
+
+            if let ws = appState.workspace {
+                Section("Active Workspace Config (\(ws.config.projectName))") {
+                    HStack(spacing: 8) {
+                        TextField("Custom config path (relative or absolute, e.g. configs/e2e.conf.ts)", text: $customConfigDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit {
+                                appState.setCustomConfigFile(path: customConfigDraft)
+                            }
+                        Button("Apply") {
+                            appState.setCustomConfigFile(path: customConfigDraft)
+                        }
+                        Button("Browse…") {
+                            appState.selectCustomConfigPanel()
+                            customConfigDraft = appState.activeWorkspaceCustomConfigSetting
+                        }
+                        if ws.config.isCustomConfigOverride {
+                            Button("Auto") {
+                                customConfigDraft = ""
+                                appState.setCustomConfigFile(path: nil)
+                            }
+                        }
+                    }
+                    Text("Resolved: \(ws.config.configFilePath ?? "None detected")")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
             }
 
@@ -46,7 +76,13 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 390)
+        .frame(width: 560, height: 470)
+        .onAppear {
+            customConfigDraft = appState.activeWorkspaceCustomConfigSetting
+        }
+        .onChange(of: appState.workspace?.config.configFilePath) { _, _ in
+            customConfigDraft = appState.activeWorkspaceCustomConfigSetting
+        }
         .onDisappear {
             appState.saveSettings()
         }

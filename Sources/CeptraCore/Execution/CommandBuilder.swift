@@ -39,13 +39,13 @@ public enum CommandBuilder {
 
         case .runFile(let relativePath):
             args.append("run")
-            args.append(relativePath)
+            args.append(resolveTestArgument(relativePath, workspaceRoot: workspaceRoot, configFilePath: configFilePath))
             appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: true)
 
         case .runScenario(let relativePath, let scenarioTitle):
             args.append("run")
             if let relativePath, !relativePath.isEmpty {
-                args.append(relativePath)
+                args.append(resolveTestArgument(relativePath, workspaceRoot: workspaceRoot, configFilePath: configFilePath))
             }
             appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: true, overrideGrep: escapeRegExp(scenarioTitle))
 
@@ -82,7 +82,7 @@ public enum CommandBuilder {
         case .dryRun(let relativePath):
             args.append("dry-run")
             if let relativePath, !relativePath.isEmpty {
-                args.append(relativePath)
+                args.append(resolveTestArgument(relativePath, workspaceRoot: workspaceRoot, configFilePath: configFilePath))
             }
             if let configFilePath, !configFilePath.isEmpty {
                 args.append(contentsOf: ["-c", configFilePath])
@@ -161,6 +161,27 @@ public enum CommandBuilder {
         if !options.enabledPlugins.isEmpty {
             args.append(contentsOf: ["-p", options.enabledPlugins.joined(separator: ",")])
         }
+    }
+
+    /// Resolves a test file argument so CodeceptJS finds it even when `-c <config>` resides in a
+    /// nested subdirectory or external directory (where CodeceptJS sets `store.codeceptDir = dirname(config)`).
+    private static func resolveTestArgument(
+        _ path: String,
+        workspaceRoot: URL,
+        configFilePath: String?
+    ) -> String {
+        if path.hasPrefix("/") {
+            return path
+        }
+        guard let configFilePath, !configFilePath.isEmpty else {
+            return path
+        }
+        let configDir = URL(fileURLWithPath: configFilePath).deletingLastPathComponent().standardizedFileURL.path
+        let rootPath = workspaceRoot.standardizedFileURL.path
+        if configDir == rootPath {
+            return path
+        }
+        return workspaceRoot.appendingPathComponent(path).standardizedFileURL.path
     }
 
     public static func shellSingleQuote(_ value: String) -> String {
