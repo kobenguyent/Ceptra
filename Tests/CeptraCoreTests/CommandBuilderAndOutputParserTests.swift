@@ -223,6 +223,101 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
         let output = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         XCTAssertEqual(proc.terminationStatus, 0, "Expected exit 0, got output: \(output)")
         XCTAssertTrue(output.contains("ceptra-uuid-v4-ok"), "Unexpected output: \(output)")
+        XCTAssertFalse(output.contains("DEP0205"), "Should use registerHooks without DEP0205 warning: \(output)")
+    }
+
+    func testNodeCompatLoaderFixesWorkerThreadsExtensionlessTSImportsAndWritableErrorStack() throws {
+        let fm = FileManager.default
+        let sandbox = fm.temporaryDirectory.appendingPathComponent("ceptra-worker-ts-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: sandbox.appendingPathComponent("services"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: sandbox.appendingPathComponent("shared/auth"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: sandbox.appendingPathComponent("tests/admin"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: sandbox) }
+
+        let toolchain = NodeToolchainResolver.resolve(workspaceRoot: sandbox)
+        guard let nodePath = toolchain.nodePath else {
+            throw XCTSkip("Node binary not available in test environment")
+        }
+
+        try #"{"name":"worker-ts-demo","type":"module"}"#
+            .write(to: sandbox.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+
+        let tsconfig = """
+        {
+          // JSONC comment test
+          "compilerOptions": {
+            "paths": {
+              "@auth/*": ["./shared/auth/*"],
+            },
+          }
+        }
+        """
+        try tsconfig.write(to: sandbox.appendingPathComponent("tsconfig.json"), atomically: true, encoding: .utf8)
+
+        try "export default class KeycloakApi { ping(): string { return 'kc-ok'; } }\n"
+            .write(to: sandbox.appendingPathComponent("services/keycloak.api.ts"), atomically: true, encoding: .utf8)
+        try "export const token = 'alias-token-ok';\n"
+            .write(to: sandbox.appendingPathComponent("shared/auth/index.ts"), atomically: true, encoding: .utf8)
+
+        let specFile = sandbox.appendingPathComponent("tests/admin/accounts.spec.ts")
+        let specSource = """
+        import KeycloakApi from '../../services/keycloak.api';
+        import { token } from '@auth/index';
+        const api: KeycloakApi = new KeycloakApi();
+        export const combined = api.ping() + ':' + token;
+        """
+        try specSource.write(to: specFile, atomically: true, encoding: .utf8)
+
+        let workerScript = sandbox.appendingPathComponent("worker.mjs")
+        let workerSource = """
+        import { parentPort, workerData } from 'node:worker_threads';
+        const loaded = await import(workerData.specUrl);
+        let stackWritable = false;
+        try {
+          await import('./non-existent-module-check');
+        } catch (err) {
+          // Simulates codeceptjs/lib/utils/typescript.js fixErrorStack: error.stack = stack
+          err.stack = 'FIXED:' + err.stack;
+          stackWritable = err.stack.startsWith('FIXED:');
+        }
+        parentPort.postMessage({ combined: loaded.combined, stackWritable });
+        """
+        try workerSource.write(to: workerScript, atomically: true, encoding: .utf8)
+
+        let mainScript = sandbox.appendingPathComponent("main.mjs")
+        let mainSource = """
+        import { Worker } from 'node:worker_threads';
+        import { pathToFileURL } from 'node:url';
+        const w = new Worker(\(String(reflecting: workerScript.path)), {
+          workerData: { specUrl: pathToFileURL(\(String(reflecting: specFile.path))).href }
+        });
+        w.on('message', (msg) => console.log('RESULT:' + JSON.stringify(msg)));
+        w.on('error', (err) => { console.error(err); process.exit(1); });
+        """
+        try mainSource.write(to: mainScript, atomically: true, encoding: .utf8)
+
+        let built = CommandBuilder.build(
+            mode: .runWorkers(count: 2, strategy: .pool),
+            options: RunOptions(esmCjsCompat: true),
+            workspaceRoot: sandbox,
+            toolchain: toolchain
+        )
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: nodePath)
+        proc.arguments = [mainScript.path]
+        proc.currentDirectoryURL = sandbox
+        proc.environment = built.environment
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = outPipe
+        try proc.run()
+        proc.waitUntilExit()
+
+        let output = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(proc.terminationStatus, 0, "Expected exit 0, got output: \(output)")
+        XCTAssertTrue(output.contains(#""combined":"kc-ok:alias-token-ok""#), "Unexpected output: \(output)")
+        XCTAssertTrue(output.contains(#""stackWritable":true"#), "Error.stack must remain writable in workers: \(output)")
     }
 
     func testParsesLiveStepsAndCompactCodeceptOutput() {

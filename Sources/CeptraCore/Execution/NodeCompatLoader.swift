@@ -1,11 +1,15 @@
 import Foundation
 
-/// Provides a lightweight, zero-dependency Node.js ESM loader hook (`--import`) that resolves
-/// named imports from CommonJS `node_modules` packages whose exports use `Object.defineProperty`
-/// getters, `Object.assign`, or `__exportStar` (such as `uuid` v3/v7/v8 and Babel/TS-compiled CJS libraries).
-///
-/// Without this interop hook, running CodeceptJS 4.x (ESM / `tsx/esm`) against a CJS-only `uuid`
-/// package fails with: `SyntaxError: The requested module 'uuid' does not provide an export named 'v4'`.
+/// Provides a lightweight, zero-dependency Node.js ESM loader hook (`--import`) that:
+/// 1. Uses synchronous in-thread `module.registerHooks` (Node 22.15+/24/26) with automatic fallback
+///    to `module.register` on older Node versions — avoiding loader-worker error serialization that
+///    marks `ERR_MODULE_NOT_FOUND`'s `.stack` property read-only (which breaks CodeceptJS `fixErrorStack`
+///    inside `run-workers`) and eliminating `DEP0205` deprecation warnings.
+/// 2. Resolves extensionless TypeScript/JS relative imports (e.g. `../../services/keycloak.api` -> `.ts`,
+///    directory `/index.ts`, `.js` -> `.ts` remapping, and `tsconfig.json` `paths`/`baseUrl` aliases)
+///    when native Node ESM resolution fails inside main or `worker_threads` worker runs.
+/// 3. Resolves named imports from CommonJS `node_modules` packages whose exports use
+///    `Object.defineProperty` getters, `Object.assign`, or `__exportStar` (such as `uuid` v3/v7/v8).
 public enum NodeCompatLoader {
     private static let directoryName = "ceptra-node-compat-v1"
     private static let preloadFileName = "ceptra-cjs-interop-preload.mjs"
@@ -13,15 +17,19 @@ public enum NodeCompatLoader {
 
     public static let preloadScriptSource: String = """
     import * as mod from 'node:module';
-    if (typeof mod.register === 'function') {
+    import { resolveSync, loadSync } from './\(hookFileName)';
+    if (typeof mod.registerHooks === 'function') {
+      mod.registerHooks({ resolve: resolveSync, load: loadSync });
+    } else if (typeof mod.register === 'function') {
       mod.register(new URL('./\(hookFileName)', import.meta.url));
     }
     """
 
     public static let hookScriptSource: String = """
     import fs from 'node:fs';
+    import path from 'node:path';
     import { createRequire } from 'node:module';
-    import { fileURLToPath } from 'node:url';
+    import { fileURLToPath, pathToFileURL } from 'node:url';
 
     const JS_IDENT = /^[A-Za-z_$][\\w$]*$/;
     const RESERVED = new Set([
@@ -34,11 +42,178 @@ public enum NodeCompatLoader {
     ]);
     const FN_BUILTINS = new Set(['length', 'name', 'prototype', 'arguments', 'caller']);
     const SKIP_PACKAGES = /\\/node_modules\\/(?:codeceptjs|mocha|playwright|playwright-core|@playwright|puppeteer|puppeteer-core|webdriverio|appium|tsx|esbuild|typescript|@esbuild)\\//;
+    const PROBE_EXTS = ['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs'];
     const baseRequire = createRequire(import.meta.url);
+    const tsConfigCache = new Map();
 
-    export async function load(url, context, nextLoad) {
-      const result = await nextLoad(url, context);
-      if (result.format !== 'commonjs' || !url.startsWith('file://')) {
+    function isRegularFile(filePath) {
+      try {
+        return fs.statSync(filePath).isFile();
+      } catch {
+        return false;
+      }
+    }
+
+    function isDirectoryPath(dirPath) {
+      try {
+        return fs.statSync(dirPath).isDirectory();
+      } catch {
+        return false;
+      }
+    }
+
+    function findExistingFile(basePath) {
+      const lower = basePath.toLowerCase();
+      // Map ESM `.js`/`.mjs`/`.cjs` specifiers to sibling `.ts` sources when compiled JS isn't emitted
+      if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) {
+        const stem = basePath.slice(0, -path.extname(basePath).length);
+        for (const tsExt of ['.ts', '.mts', '.cts', '.tsx']) {
+          if (isRegularFile(stem + tsExt)) return stem + tsExt;
+        }
+      }
+      // Probe file extensions before directory index (handles both `foo` -> `foo.ts` and dotted stems `foo.api` -> `foo.api.ts`)
+      for (const ext of PROBE_EXTS) {
+        if (isRegularFile(basePath + ext)) return basePath + ext;
+      }
+      // Directory index fallback (`./dir` -> `./dir/index.ts`)
+      if (isDirectoryPath(basePath)) {
+        for (const ext of PROBE_EXTS) {
+          const idx = path.join(basePath, 'index' + ext);
+          if (isRegularFile(idx)) return idx;
+        }
+      }
+      return null;
+    }
+
+    function stripJsonCommentsAndTrailingCommas(raw) {
+      let out = '';
+      let inStr = false;
+      let escaped = false;
+      for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i];
+        const next = raw[i + 1];
+        if (inStr) {
+          out += ch;
+          if (escaped) {
+            escaped = false;
+          } else if (ch === '\\\\') {
+            escaped = true;
+          } else if (ch === '"') {
+            inStr = false;
+          }
+          continue;
+        }
+        if (ch === '"') {
+          inStr = true;
+          out += ch;
+          continue;
+        }
+        if (ch === '/' && next === '/') {
+          while (i < raw.length && raw[i] !== '\\n') i++;
+          out += '\\n';
+          continue;
+        }
+        if (ch === '/' && next === '*') {
+          i += 2;
+          while (i < raw.length && !(raw[i] === '*' && raw[i + 1] === '/')) i++;
+          i++;
+          continue;
+        }
+        out += ch;
+      }
+      return out.replace(/,\\s*([}\\]])/g, '$1');
+    }
+
+    function findNearestTsConfig(startDir) {
+      if (tsConfigCache.has(startDir)) return tsConfigCache.get(startDir);
+      let dir = startDir;
+      const visited = [];
+      let found = null;
+      while (true) {
+        if (tsConfigCache.has(dir)) {
+          found = tsConfigCache.get(dir);
+          break;
+        }
+        visited.push(dir);
+        const candidate = path.join(dir, 'tsconfig.json');
+        if (isRegularFile(candidate)) {
+          try {
+            const parsed = JSON.parse(stripJsonCommentsAndTrailingCommas(fs.readFileSync(candidate, 'utf8')));
+            found = { configDir: dir, compilerOptions: parsed?.compilerOptions || {} };
+          } catch {
+            found = null;
+          }
+          break;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+      for (const v of visited) tsConfigCache.set(v, found);
+      return found;
+    }
+
+    function resolveFallbackPath(specifier, parentURL) {
+      if (!parentURL || !parentURL.startsWith('file://') || parentURL.includes('/node_modules/')) {
+        return null;
+      }
+      if (!specifier || specifier.startsWith('node:') || specifier.startsWith('data:') || specifier.startsWith('file:')) {
+        return null;
+      }
+      let parentDir;
+      try {
+        parentDir = path.dirname(fileURLToPath(parentURL));
+      } catch {
+        return null;
+      }
+
+      if (specifier.startsWith('./') || specifier.startsWith('../') || specifier.startsWith('/')) {
+        const basePath = specifier.startsWith('/') ? specifier : path.resolve(parentDir, specifier);
+        return findExistingFile(basePath);
+      }
+
+      // Check tsconfig.json paths / baseUrl aliases
+      const tsInfo = findNearestTsConfig(parentDir);
+      if (!tsInfo) return null;
+      const { configDir, compilerOptions } = tsInfo;
+      const baseDir = compilerOptions.baseUrl ? path.resolve(configDir, compilerOptions.baseUrl) : configDir;
+
+      if (compilerOptions.paths && typeof compilerOptions.paths === 'object') {
+        for (const [pattern, targets] of Object.entries(compilerOptions.paths)) {
+          if (!Array.isArray(targets) || targets.length === 0) continue;
+          const starIdx = pattern.indexOf('*');
+          let matchedWildcard = null;
+          if (starIdx === -1) {
+            if (specifier === pattern) matchedWildcard = '';
+          } else {
+            const prefix = pattern.slice(0, starIdx);
+            const suffix = pattern.slice(starIdx + 1);
+            if (specifier.startsWith(prefix) && specifier.endsWith(suffix) && specifier.length >= prefix.length + suffix.length) {
+              matchedWildcard = specifier.slice(prefix.length, specifier.length - suffix.length);
+            }
+          }
+          if (matchedWildcard === null) continue;
+          for (const target of targets) {
+            if (typeof target !== 'string') continue;
+            const expanded = target.replace('*', matchedWildcard);
+            const candidateBase = path.resolve(baseDir, expanded);
+            if (isRegularFile(candidateBase)) return candidateBase;
+            const found = findExistingFile(candidateBase);
+            if (found) return found;
+          }
+        }
+      }
+
+      if (compilerOptions.baseUrl) {
+        const candidateBase = path.resolve(baseDir, specifier);
+        if (isRegularFile(candidateBase)) return candidateBase;
+        return findExistingFile(candidateBase);
+      }
+      return null;
+    }
+
+    function maybeWrapCommonJSResult(url, result) {
+      if (!result || result.format !== 'commonjs' || !url.startsWith('file://')) {
         return result;
       }
       if (!url.includes('/node_modules/') || SKIP_PACKAGES.test(url)) {
@@ -95,6 +270,42 @@ public enum NodeCompatLoader {
       } catch {
         return result;
       }
+    }
+
+    // Synchronous hooks for Node 22.15+ / 24+ / 26+ `module.registerHooks`
+    export function resolveSync(specifier, context, nextResolve) {
+      try {
+        return nextResolve(specifier, context);
+      } catch (err) {
+        const fallbackPath = resolveFallbackPath(specifier, context?.parentURL);
+        if (fallbackPath) {
+          return nextResolve(pathToFileURL(fallbackPath).href, context);
+        }
+        throw err;
+      }
+    }
+
+    export function loadSync(url, context, nextLoad) {
+      const result = nextLoad(url, context);
+      return maybeWrapCommonJSResult(url, result);
+    }
+
+    // Legacy async hooks for older Node versions falling back to `module.register`
+    export async function resolve(specifier, context, nextResolve) {
+      try {
+        return await nextResolve(specifier, context);
+      } catch (err) {
+        const fallbackPath = resolveFallbackPath(specifier, context?.parentURL);
+        if (fallbackPath) {
+          return await nextResolve(pathToFileURL(fallbackPath).href, context);
+        }
+        throw err;
+      }
+    }
+
+    export async function load(url, context, nextLoad) {
+      const result = await nextLoad(url, context);
+      return maybeWrapCommonJSResult(url, result);
     }
     """
 
