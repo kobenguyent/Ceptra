@@ -57,7 +57,7 @@ private struct FeatureFlowCard: View {
 
                 Spacer()
 
-                if let file {
+                if let file, file.isExecutableTestFile {
                     Button {
                         appState.run(mode: .runFile(relativePath: file.relativePath))
                     } label: {
@@ -171,18 +171,20 @@ private struct ScenarioFlowCard: View {
                 .buttonStyle(.plain)
                 .help("Jump to Line \(scenario.lineNumber)")
 
-                Button {
-                    appState.run(mode: .runScenario(relativePath: file?.relativePath, scenarioTitle: scenario.cleanTitle))
-                } label: {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(CeptraTheme.success)
-                        .frame(width: 24, height: 24)
-                        .background(CeptraTheme.success.opacity(0.14), in: Circle())
+                if file?.isExecutableTestFile == true {
+                    Button {
+                        appState.run(mode: .runScenario(relativePath: file?.relativePath, scenarioTitle: scenario.cleanTitle))
+                    } label: {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(CeptraTheme.success)
+                            .frame(width: 24, height: 24)
+                            .background(CeptraTheme.success.opacity(0.14), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(appState.isRunning)
+                    .help("Run only this scenario")
                 }
-                .buttonStyle(.plain)
-                .disabled(appState.isRunning)
-                .help("Run only this scenario")
             }
 
             if !scenario.steps.isEmpty {

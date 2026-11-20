@@ -56,6 +56,28 @@ struct CeptraApp: App {
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
                 .disabled(appState.openTabs.isEmpty)
+
+                Divider()
+
+                Button("Close Tab") {
+                    if let path = appState.activeTabPath {
+                        appState.closeTab(filePath: path)
+                    }
+                }
+                .keyboardShortcut("w", modifiers: .command)
+                .disabled(appState.activeTabPath == nil)
+
+                Button("Previous Tab") {
+                    appState.selectAdjacentTab(offset: -1)
+                }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled(appState.openTabs.count < 2)
+
+                Button("Next Tab") {
+                    appState.selectAdjacentTab(offset: 1)
+                }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled(appState.openTabs.count < 2)
             }
 
             CommandMenu("CodeceptJS") {
@@ -65,11 +87,11 @@ struct CeptraApp: App {
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(appState.workspace == nil || appState.isRunning)
 
-                Button("Run Current File") {
+                Button("Run Current Test File") {
                     appState.runActiveFile()
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(appState.workspace == nil || appState.isRunning)
+                .disabled(!appState.isActiveTabExecutableTestFile || appState.isRunning)
 
                 Button("Dry Run (Discover & Validate)") {
                     appState.run(mode: .dryRun(relativePath: nil))
@@ -105,6 +127,26 @@ struct CeptraApp: App {
                 }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(appState.workspace == nil)
+
+                Divider()
+
+                Button("Go to Import / Definition") {
+                    appState.goToDefinitionTrigger += 1
+                }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                .disabled(appState.activeTab == nil)
+
+                Button("Navigate Back") {
+                    appState.navigateBack()
+                }
+                .keyboardShortcut("-", modifiers: .control)
+                .disabled(!appState.canNavigateBack)
+
+                Button("Navigate Forward") {
+                    appState.navigateForward()
+                }
+                .keyboardShortcut("-", modifiers: [.control, .shift])
+                .disabled(!appState.canNavigateForward)
 
                 Divider()
 

@@ -95,14 +95,22 @@ struct MainStudioView: View {
     }
 
     private func editorSurface(for tab: OpenDocumentTab) -> some View {
-        CodeEditorView(
+        let boundPath = tab.filePath
+        return CodeEditorView(
+            documentID: boundPath,
             text: Binding(
-                get: { appState.activeTab?.content ?? "" },
-                set: { appState.updateActiveTabContent($0) }
+                get: { appState.openTabs.first(where: { $0.filePath == boundPath })?.content ?? tab.content },
+                set: { appState.updateTabContent(filePath: boundPath, newText: $0) }
             ),
             language: tab.language,
             fontSize: CGFloat(appState.settings.editorFontSize),
-            jumpToLine: $appState.pendingJumpToLine
+            workspace: appState.workspace,
+            completionIndex: appState.completionIndex,
+            jumpToLine: $appState.pendingJumpToLine,
+            goToDefinitionTrigger: appState.goToDefinitionTrigger,
+            onNavigate: { target, fromLine in
+                appState.navigateToImportTarget(target, fromLine: fromLine)
+            }
         )
     }
 
@@ -330,7 +338,9 @@ private struct TopStudioBar: View {
                         .help("Run All Tests (⌘R)")
 
                         Menu {
-                            Button("Run Current File (⌘⇧R)") { appState.runActiveFile() }
+                            if appState.isActiveTabExecutableTestFile {
+                                Button("Run Current Test File (⌘⇧R)") { appState.runActiveFile() }
+                            }
                             Button("Dry Run (Validate & List)") { appState.run(mode: .dryRun(relativePath: nil)) }
                             Button("Run Parallel Workers (\(appState.runOptions.workerCount)x \(appState.runOptions.workerStrategy.rawValue))") {
                                 appState.run(mode: .runWorkers(count: appState.runOptions.workerCount, strategy: appState.runOptions.workerStrategy))
@@ -433,39 +443,88 @@ private struct EditorTabBar: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            // Back / Forward import-navigation history buttons
+            if appState.canNavigateBack || appState.canNavigateForward {
+                HStack(spacing: 2) {
+                    Button {
+                        appState.navigateBack()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(appState.canNavigateBack ? CeptraTheme.textSecondary : CeptraTheme.textMuted.opacity(0.4))
+                            .frame(width: 22, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!appState.canNavigateBack)
+                    .help("Navigate Back (⌃-)")
+
+                    Button {
+                        appState.navigateForward()
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(appState.canNavigateForward ? CeptraTheme.textSecondary : CeptraTheme.textMuted.opacity(0.4))
+                            .frame(width: 22, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!appState.canNavigateForward)
+                    .help("Navigate Forward (⌃⇧-)")
+                }
+                .padding(.leading, 6)
+
+                Divider()
+                    .frame(height: 16)
+                    .overlay(CeptraTheme.border)
+                    .padding(.horizontal, 4)
+            }
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 2) {
                     ForEach(appState.openTabs) { tab in
                         let isActive = tab.filePath == appState.activeTabPath
-                        HStack(spacing: 6) {
-                            Text(tab.name)
-                                .font(.system(size: 11.5, weight: isActive ? .semibold : .regular))
-                                .foregroundStyle(isActive ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
-                            if tab.isDirty {
-                                Circle()
-                                    .fill(CeptraTheme.accentWarm)
-                                    .frame(width: 6, height: 6)
+                        HStack(spacing: 4) {
+                            Button {
+                                appState.switchTab(to: tab.filePath)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: tab.category.symbolName)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(tab.isExecutableTestFile ? CeptraTheme.accent : CeptraTheme.textMuted)
+                                    Text(tab.name)
+                                        .font(.system(size: 11.5, weight: isActive ? .semibold : .regular))
+                                        .foregroundStyle(isActive ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
+                                        .lineLimit(1)
+                                    if tab.isDirty {
+                                        Circle()
+                                            .fill(CeptraTheme.accentWarm)
+                                            .frame(width: 6, height: 6)
+                                    }
+                                }
+                                .padding(.leading, 9)
+                                .padding(.trailing, 4)
+                                .padding(.vertical, 6)
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            .help(tab.relativePath)
+
                             Button {
                                 appState.closeTab(filePath: tab.filePath)
                             } label: {
                                 Image(systemName: "xmark")
                                     .font(.system(size: 9, weight: .bold))
                                     .foregroundStyle(CeptraTheme.textMuted)
+                                    .frame(width: 18, height: 20)
+                                    .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .padding(.trailing, 4)
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
                         .background(isActive ? CeptraTheme.canvasBG : Color.clear)
                         .overlay(alignment: .bottom) {
                             if isActive {
                                 Rectangle().fill(CeptraTheme.accent).frame(height: 2)
                             }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            appState.activeTabPath = tab.filePath
                         }
                     }
                 }
@@ -483,31 +542,37 @@ private struct EditorTabBar: View {
                         .controlSize(.mini)
                     }
 
-                    Menu {
-                        ForEach(CodeSnippetItem.builtInSnippets) { snippet in
-                            Button {
-                                appState.insertSnippet(snippet)
-                            } label: {
-                                Text("\(snippet.title) — \(snippet.subtitle)")
+                    if tab.isExecutableTestFile || tab.language == "javascript" || tab.language == "typescript" {
+                        Menu {
+                            ForEach(CodeSnippetItem.builtInSnippets) { snippet in
+                                Button {
+                                    appState.insertSnippet(snippet)
+                                } label: {
+                                    Text("\(snippet.title) — \(snippet.subtitle)")
+                                }
                             }
+                        } label: {
+                            Label("Snippet", systemImage: "curlybraces.square")
+                                .font(.system(size: 11))
+                                .foregroundStyle(CeptraTheme.textSecondary)
                         }
-                    } label: {
-                        Label("Snippet", systemImage: "curlybraces.square")
-                            .font(.system(size: 11))
-                            .foregroundStyle(CeptraTheme.textSecondary)
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
 
-                    Button {
-                        appState.runActiveFile()
-                    } label: {
-                        Label("Run File", systemImage: "play")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(CeptraTheme.success)
+                    // Show execution button ONLY for CodeceptJS test suites and Gherkin feature files
+                    if appState.isActiveTabExecutableTestFile {
+                        Button {
+                            appState.runActiveFile()
+                        } label: {
+                            Label("Run Test File", systemImage: "play.fill")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(CeptraTheme.success)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(appState.isRunning)
+                        .help("Run \(tab.name) (⌘⇧R)")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(appState.isRunning)
                 }
                 .padding(.trailing, 10)
             }

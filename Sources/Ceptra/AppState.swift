@@ -28,10 +28,19 @@ struct OpenDocumentTab: Identifiable, Equatable {
     let relativePath: String
     let name: String
     let language: String
+    let category: WorkspaceFileCategory
     var content: String
     var savedContent: String
 
     var isDirty: Bool { content != savedContent }
+    var isExecutableTestFile: Bool {
+        category == .testSuite || category == .gherkinFeature
+    }
+}
+
+struct NavigationHistoryEntry: Equatable {
+    let filePath: String
+    let lineNumber: Int
 }
 
 struct ConsoleLogEntry: Identifiable, Equatable {
@@ -73,11 +82,15 @@ final class AppState: ObservableObject {
     @Published var isSidebarVisible: Bool = true
     @Published var isConsoleVisible: Bool = true
 
-    // Editor Tabs
+    // Editor Tabs, IntelliSense & Import Navigation History
     @Published var openTabs: [OpenDocumentTab] = []
     @Published var activeTabPath: String? = nil
     @Published var pendingJumpToLine: Int? = nil
     @Published var liveParsedFeaturesByPath: [String: [ParsedFeature]] = [:]
+    @Published var completionIndex: WorkspaceCompletionIndex = WorkspaceCompletionIndex()
+    @Published var goToDefinitionTrigger: Int = 0
+    @Published var navigationBackStack: [NavigationHistoryEntry] = []
+    @Published var navigationForwardStack: [NavigationHistoryEntry] = []
 
     // Execution & Live Status
     @Published var runOptions: RunOptions
@@ -140,6 +153,16 @@ final class AppState: ObservableObject {
         return workspace.files.first(where: { $0.path == activeTabPath })
     }
 
+    var isActiveTabExecutableTestFile: Bool {
+        if let wsFile = activeWorkspaceFile {
+            return wsFile.isExecutableTestFile
+        }
+        return activeTab?.isExecutableTestFile ?? false
+    }
+
+    var canNavigateBack: Bool { !navigationBackStack.isEmpty }
+    var canNavigateForward: Bool { !navigationForwardStack.isEmpty }
+
     var activeFeaturesForCurrentTab: [ParsedFeature] {
         guard let activeTabPath else { return [] }
         if let live = liveParsedFeaturesByPath[activeTabPath] {
@@ -199,8 +222,11 @@ final class AppState: ObservableObject {
         let savedConfigPath = settings.customConfigPath(forWorkspaceRoot: rootURL.path)
         let scanned = WorkspaceScanner.scan(rootURL: rootURL, customConfigPath: savedConfigPath)
         workspace = scanned
+        completionIndex = IntelliSenseEngine.buildWorkspaceIndex(workspace: scanned)
         openTabs = []
         activeTabPath = nil
+        navigationBackStack = []
+        navigationForwardStack = []
         liveParsedFeaturesByPath = [:]
         liveScenarioStatuses = [:]
         liveScenarioDurations = [:]
@@ -225,7 +251,9 @@ final class AppState: ObservableObject {
     func rescanWorkspace() {
         guard let root = workspace?.rootURL else { return }
         let savedConfigPath = settings.customConfigPath(forWorkspaceRoot: root.path)
-        workspace = WorkspaceScanner.scan(rootURL: root, customConfigPath: savedConfigPath)
+        let scanned = WorkspaceScanner.scan(rootURL: root, customConfigPath: savedConfigPath)
+        workspace = scanned
+        completionIndex = IntelliSenseEngine.buildWorkspaceIndex(workspace: scanned)
         refreshArtifacts()
     }
 
@@ -332,12 +360,13 @@ final class AppState: ObservableObject {
             relativePath: file.relativePath,
             name: file.name,
             language: file.languageHint,
+            category: file.category,
             content: content,
             savedContent: content
         )
         openTabs.append(tab)
         activeTabPath = tab.filePath
-        if file.category == .testSuite || file.category == .gherkinFeature {
+        if file.isExecutableTestFile {
             liveParsedFeaturesByPath[file.path] = TestFileParser.parse(content: content, filePath: file.path)
         }
         if let jumpToLine {
@@ -348,6 +377,24 @@ final class AppState: ObservableObject {
         }
     }
 
+    func switchTab(to filePath: String) {
+        guard openTabs.contains(where: { $0.filePath == filePath }) else { return }
+        if activeTabPath != filePath {
+            activeTabPath = filePath
+        }
+        if workspaceMode == .reports {
+            workspaceMode = .split
+        }
+    }
+
+    func selectAdjacentTab(offset: Int) {
+        guard openTabs.count > 1,
+              let activeTabPath,
+              let idx = openTabs.firstIndex(where: { $0.filePath == activeTabPath }) else { return }
+        let next = (idx + offset + openTabs.count) % openTabs.count
+        switchTab(to: openTabs[next].filePath)
+    }
+
     func closeTab(filePath: String) {
         guard let idx = openTabs.firstIndex(where: { $0.filePath == filePath }) else { return }
         openTabs.remove(at: idx)
@@ -356,16 +403,84 @@ final class AppState: ObservableObject {
         }
     }
 
-    func updateActiveTabContent(_ newText: String) {
-        guard let activeTabPath,
-              let idx = openTabs.firstIndex(where: { $0.filePath == activeTabPath }) else { return }
+    func navigateToImportTarget(_ target: NavigationTarget, fromLine: Int) {
+        if let currentPath = activeTabPath {
+            navigationBackStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: max(1, fromLine)))
+            if navigationBackStack.count > 40 {
+                navigationBackStack.removeFirst()
+            }
+            navigationForwardStack.removeAll()
+        }
+        openFileByURL(target.fileURL, jumpToLine: target.lineNumber)
+        let symBadge = target.isSymlink ? " (via symlink)" : ""
+        let lineSuffix = target.lineNumber.map { ":\($0)" } ?? ""
+        showBanner("Opened \(target.displayLabel)\(lineSuffix)\(symBadge)")
+    }
+
+    func navigateBack() {
+        guard let entry = navigationBackStack.popLast() else { return }
+        if let currentPath = activeTabPath {
+            navigationForwardStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: 1))
+        }
+        openFileByURL(URL(fileURLWithPath: entry.filePath), jumpToLine: entry.lineNumber)
+    }
+
+    func navigateForward() {
+        guard let entry = navigationForwardStack.popLast() else { return }
+        if let currentPath = activeTabPath {
+            navigationBackStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: 1))
+        }
+        openFileByURL(URL(fileURLWithPath: entry.filePath), jumpToLine: entry.lineNumber)
+    }
+
+    func openFileByURL(_ fileURL: URL, jumpToLine: Int? = nil) {
+        let stdURL = fileURL.standardizedFileURL
+        if let existing = workspace?.files.first(where: { $0.path == stdURL.path }) {
+            openFile(existing, jumpToLine: jumpToLine)
+            return
+        }
+        let relPath: String
+        if let root = workspace?.rootURL {
+            let prefix = root.standardizedFileURL.path.hasSuffix("/")
+                ? root.standardizedFileURL.path
+                : root.standardizedFileURL.path + "/"
+            relPath = stdURL.path.hasPrefix(prefix) ? String(stdURL.path.dropFirst(prefix.count)) : stdURL.path
+        } else {
+            relPath = stdURL.path
+        }
+        let ext = stdURL.pathExtension.lowercased()
+        let lowerName = stdURL.lastPathComponent.lowercased()
+        let inferredCategory: WorkspaceFileCategory
+        if ext == "feature" {
+            inferredCategory = .gherkinFeature
+        } else if lowerName.contains("_test.") || lowerName.contains(".test.") || lowerName.contains("_spec.") || lowerName.contains(".spec.") {
+            inferredCategory = .testSuite
+        } else {
+            inferredCategory = .other
+        }
+        let synthetic = WorkspaceFile(
+            path: stdURL.path,
+            relativePath: relPath,
+            name: stdURL.lastPathComponent,
+            fileExtension: ext,
+            category: inferredCategory
+        )
+        openFile(synthetic, jumpToLine: jumpToLine)
+    }
+
+    func updateTabContent(filePath: String, newText: String) {
+        guard let idx = openTabs.firstIndex(where: { $0.filePath == filePath }) else { return }
         guard openTabs[idx].content != newText else { return }
         openTabs[idx].content = newText
 
-        let ext = URL(fileURLWithPath: activeTabPath).pathExtension.lowercased()
-        if ["js", "ts", "mjs", "cjs", "feature"].contains(ext) {
-            liveParsedFeaturesByPath[activeTabPath] = TestFileParser.parse(content: newText, filePath: activeTabPath)
+        if openTabs[idx].isExecutableTestFile {
+            liveParsedFeaturesByPath[filePath] = TestFileParser.parse(content: newText, filePath: filePath)
         }
+    }
+
+    func updateActiveTabContent(_ newText: String) {
+        guard let activeTabPath else { return }
+        updateTabContent(filePath: activeTabPath, newText: newText)
     }
 
     func insertSnippet(_ snippet: CodeSnippetItem) {
@@ -562,8 +677,8 @@ final class AppState: ObservableObject {
     }
 
     func runActiveFile() {
-        guard let file = activeWorkspaceFile else {
-            run(mode: .runAll)
+        guard let file = activeWorkspaceFile, file.isExecutableTestFile else {
+            showBanner("Select a CodeceptJS test suite or Gherkin .feature file to run.", isError: true)
             return
         }
         run(mode: .runFile(relativePath: file.relativePath))

@@ -6,7 +6,7 @@
 
 - **CodeceptJS 4.x Workspace Explorer**: Automatically detects standard (`codecept.conf.{ts,js,cjs,mjs}`, `codecept.config.*`, `codecept.json`) AND custom-named or nested configs (via filename, `package.json` `-c/--config` scripts, or manual selection anywhere on disk), `package.json`, Helpers (`Playwright`, `Puppeteer`, `WebDriver`, `CDPBrowser`, `REST`, `GraphQL`, `Appium`, custom helpers), `include` Page/Step objects, Plugins (`screenshot`, `screencast`, `aiTrace`, `junitReporter`, `heal`, `retryFailedStep`), JS/TS suites, and Gherkin `.feature` files.
 - **Visual Scenario & Step Pipeline**: Interactive side-by-side **Split** or **Visual** mode rendering `Feature`, lifecycle hooks (`BeforeSuite`, `Before`, `After`, `AfterSuite`, `Background`), `Scenario` / `xScenario` / `Data(...).Scenario`, `@tags`, and color-coded `I.*` step flows. Clicking any node jumps straight to that line in the code editor.
-- **Native macOS Code Editor**: Explicit TextKit 1 `NSTextView` with a sibling line-number gutter, CodeceptJS 4.x / TypeScript / JavaScript / Gherkin syntax highlighting, Find & Replace (`⌘F`), quick CodeceptJS snippet insertion, and template scaffolding (`⌘N`).
+- **Native macOS Code Editor**: Explicit TextKit 1 `NSTextView` with per-tab scroll/cursor/undo isolation, sibling line-number gutter, CodeceptJS 4.x / TypeScript / JavaScript / Gherkin syntax highlighting, floating **IntelliSense autocomplete** (`Ctrl+Space` or automatic on `.` / `@` / `/` for `I.*` actions, `steps.d.ts`, `include` PageObjects, custom helpers, `@tags`, and import paths), **symlink-aware `⌘+Click` / `F12` import & symbol navigation** (with Back/Forward history `⌃-` / `⌃⇧-`), Find & Replace (`⌘F`), snippet insertion, and template scaffolding (`⌘N`).
 - **Focused Test Execution**: Run all tests (`⌘R`), current file (`⌘⇧R`), single scenario, `@tag`, `--last-failed`, `dry-run`, `run-workers <N> --by pool`, `check`, `def`, and `list` with live streaming console logs and real-time scenario status updates.
 - **Reports & Artifacts Dashboard**: Persists per-project run history with pass-rate trend bars, parses CodeceptJS 4.x `junitReporter` XML (including nested `<system-out>` steps, tags, and failure stack traces), previews `output/` artifacts (Screenshots, `aiTrace` markdown traces, Screencasts/Subtitles, HTML reports), and exports reports to Markdown or standalone HTML.
 - **GitHub Releases Auto-Updater**: Checks GitHub Releases (`kobenguyent/Ceptra` by default, configurable in Settings), downloads the macOS `.zip`/`.dmg` artifact with live progress, cryptographically verifies `SHA256SUMS.txt` via `CryptoKit`, then closes the running app and atomically replaces & relaunches `Ceptra.app` via a detached helper with rollback protection.
@@ -71,6 +71,10 @@ In-app updates check `Ceptra → Check for Updates…` (or automatically on laun
 | `⌘B` | Toggle sidebar |
 | `⌘J` | Toggle execution console |
 | `⌘F` | Find & Replace in editor |
+| `Ctrl+Space` | Trigger IntelliSense auto-complete |
+| `⌘+Click` / `F12` | Jump to import target / symbol / custom `I.*` step definition |
+| `⌃-` / `⌃⇧-` | Navigate Back / Forward across jumped files |
+| `⌘W` / `⌘⇧[` / `⌘⇧]` | Close / Previous / Next editor tab |
 | `⌘,` | Open Settings |
 
 ## Requirements
