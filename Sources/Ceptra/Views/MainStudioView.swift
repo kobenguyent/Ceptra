@@ -350,6 +350,18 @@ private struct TopStudioBar: View {
                             Button("Check Environment (check)") { appState.run(mode: .checkEnvironment) }
                             Button("Generate Type Defs (def)") { appState.run(mode: .generateDefinitions) }
                             Button("List I.* Actions (list)") { appState.run(mode: .listActions) }
+                            if let pm = appState.workspace?.packageManager {
+                                Divider()
+                                Button("Install Dependencies (\(pm.rawValue) install)") {
+                                    appState.runDependencyAction(.install)
+                                }
+                                Button("Update Dependencies (\(PackageManagerSupport.commandPreview(for: .update, packageManager: pm)))") {
+                                    appState.runDependencyAction(.update)
+                                }
+                                Button("Update CodeceptJS (@latest)") {
+                                    appState.runDependencyAction(.upgradeCodeceptJS)
+                                }
+                            }
                         } label: {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 10, weight: .semibold))

@@ -70,6 +70,7 @@ In-app updates check `Ceptra → Check for Updates…` (or automatically on laun
 | `⌘.` | Stop active run |
 | `⌘B` | Toggle sidebar |
 | `⌘J` | Toggle execution console |
+| `⌘⇧K` | Focus console command prompt (`npm update`, scripts, shell) |
 | `⌘F` | Find & Replace in editor |
 | `Ctrl+Space` | Trigger IntelliSense auto-complete |
 | `⌘+Click` / `F12` | Jump to import target / symbol / custom `I.*` step definition |

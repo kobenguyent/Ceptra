@@ -128,6 +128,35 @@ struct CeptraApp: App {
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(appState.workspace == nil)
 
+                Menu("Dependencies & Commands") {
+                    Button("Install Dependencies") {
+                        appState.runDependencyAction(.install)
+                    }
+                    Button("Update Dependencies") {
+                        appState.runDependencyAction(.update)
+                    }
+                    Button("Clean Install (Lockfile)") {
+                        appState.runDependencyAction(.cleanInstall)
+                    }
+                    Button("Check Outdated Packages") {
+                        appState.runDependencyAction(.outdated)
+                    }
+                    Divider()
+                    Button("Update CodeceptJS (@latest)") {
+                        appState.runDependencyAction(.upgradeCodeceptJS)
+                    }
+                    Button("Install Playwright Browsers") {
+                        appState.runDependencyAction(.installPlaywrightBrowsers)
+                    }
+                }
+                .disabled(appState.workspace == nil || appState.isRunning)
+
+                Button("Run Shell Command…") {
+                    appState.focusConsoleCommandPrompt()
+                }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+                .disabled(appState.workspace == nil)
+
                 Divider()
 
                 Button("Go to Import / Definition") {

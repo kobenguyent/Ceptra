@@ -58,6 +58,69 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
         XCTAssertTrue(nestedConfigCmd.arguments.contains("/tmp/demo/configs/staging.conf.ts"))
     }
 
+    func testDetectsPackageManagersReadsScriptsAndBuildsDependencyCommands() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("ceptra-pm-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        // Default npm + scripts
+        let pkg = """
+        {
+          "name": "pm-test",
+          "scripts": {
+            "def": "codeceptjs def",
+            "lint": "eslint ."
+          }
+        }
+        """
+        try pkg.write(to: root.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(PackageManagerSupport.detectPackageManager(in: root), .npm)
+        XCTAssertEqual(PackageManagerSupport.readPackageScripts(in: root).map(\.name), ["def", "lint"])
+
+        // Lockfile detection (pnpm)
+        try "lockfileVersion: '9.0'\n".write(to: root.appendingPathComponent("pnpm-lock.yaml"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(PackageManagerSupport.detectPackageManager(in: root), .pnpm)
+
+        // packageManager field takes precedence (bun)
+        let bunPkg = """
+        {
+          "name": "pm-test",
+          "packageManager": "bun@1.2.0"
+        }
+        """
+        try bunPkg.write(to: root.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(PackageManagerSupport.detectPackageManager(in: root), .bun)
+
+        let toolchain = NodeToolchainResolver.resolve(workspaceRoot: root)
+        let updateCmd = PackageManagerSupport.buildCommand(
+            action: .update,
+            packageManager: .npm,
+            workspaceRoot: root,
+            toolchain: toolchain
+        )
+        XCTAssertEqual(updateCmd.displayCommand, "npm update")
+        XCTAssertTrue(updateCmd.arguments.contains("update"))
+
+        let upgradeCmd = PackageManagerSupport.buildCommand(
+            action: .upgradeCodeceptJS,
+            packageManager: .pnpm,
+            workspaceRoot: root,
+            toolchain: toolchain
+        )
+        XCTAssertEqual(upgradeCmd.displayCommand, "pnpm add -D codeceptjs@latest")
+
+        let shellCmd = PackageManagerSupport.buildCommand(
+            action: .customShell(command: "npm install -D @codeceptjs/configure"),
+            packageManager: .npm,
+            workspaceRoot: root,
+            toolchain: toolchain
+        )
+        XCTAssertEqual(shellCmd.executablePath, "/bin/zsh")
+        XCTAssertEqual(shellCmd.arguments, ["-c", "npm install -D @codeceptjs/configure"])
+        XCTAssertEqual(shellCmd.workingDirectory, root)
+    }
+
     func testParsesLiveStepsAndCompactCodeceptOutput() {
         let parser = LiveOutputParser()
         let lines = [

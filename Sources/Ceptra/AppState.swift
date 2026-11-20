@@ -98,6 +98,9 @@ final class AppState: ObservableObject {
     @Published var activeRunLabel: String = ""
     @Published var lastCommandLine: String = ""
     @Published var consoleLogs: [ConsoleLogEntry] = []
+    @Published var commandInputText: String = ""
+    @Published var commandHistory: [String] = []
+    @Published var focusCommandInputTrigger: Int = 0
     @Published var liveScenarioStatuses: [String: ExecutionStatus] = [:]
     @Published var liveScenarioDurations: [String: Int] = [:]
     @Published var activeRunningScenarioKey: String? = nil
@@ -693,6 +696,98 @@ final class AppState: ObservableObject {
         }
         let targetRel = activeWorkspaceFile?.relativePath ?? tab.relativePath
         run(mode: .runFile(relativePath: targetRel))
+    }
+
+    func runDependencyAction(_ action: DependencyAction) {
+        guard let workspace, let toolchain = resolvedToolchain else {
+            showBanner("Open a workspace first.", isError: true)
+            return
+        }
+        guard !isRunning else {
+            showBanner("Another command is already running. Stop it first (⌘.).", isError: true)
+            return
+        }
+
+        if case .customShell(let raw) = action {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            commandHistory.removeAll { $0 == trimmed }
+            commandHistory.insert(trimmed, at: 0)
+            if commandHistory.count > 40 {
+                commandHistory = Array(commandHistory.prefix(40))
+            }
+            commandInputText = ""
+        }
+
+        let command = PackageManagerSupport.buildCommand(
+            action: action,
+            packageManager: workspace.packageManager,
+            workspaceRoot: workspace.rootURL,
+            toolchain: toolchain,
+            extraEnv: runOptions.environmentVariables
+        )
+
+        isRunning = true
+        isConsoleVisible = true
+        activeRunLabel = action.displayTitle
+        lastCommandLine = command.displayCommand
+        consoleLogs.append(ConsoleLogEntry(
+            timestamp: Date(),
+            text: "$ \(command.displayCommand)",
+            isError: false,
+            isStep: false,
+            isHighlight: true
+        ))
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await self.runnerService.execute(command: command) { [weak self] event in
+                    Task { @MainActor [weak self] in
+                        if case .logLine(let text, let isError) = event {
+                            self?.consoleLogs.append(ConsoleLogEntry(
+                                timestamp: Date(),
+                                text: text,
+                                isError: isError,
+                                isStep: false,
+                                isHighlight: false
+                            ))
+                            if let count = self?.consoleLogs.count, count > 4000 {
+                                self?.consoleLogs.removeFirst(500)
+                            }
+                        }
+                    }
+                }
+
+                let totalMs = max(1, Int((result.finishedAt.timeIntervalSince(result.startedAt) * 1000.0).rounded()))
+                self.isRunning = false
+                // Rescan workspace so newly updated packages, CodeceptJS versions, scripts, or steps.d.ts take effect immediately
+                self.rescanWorkspace()
+
+                if result.wasCancelled {
+                    self.showBanner("Command cancelled.")
+                } else if result.exitCode == 0 {
+                    self.showBanner("\(action.displayTitle) completed in \(ReportExporter.formatDuration(ms: totalMs)).")
+                } else {
+                    self.showBanner("\(action.displayTitle) exited with code \(result.exitCode).", isError: true)
+                }
+            } catch {
+                self.isRunning = false
+                self.consoleLogs.append(ConsoleLogEntry(
+                    timestamp: Date(),
+                    text: "Command failed: \(error.localizedDescription)",
+                    isError: true,
+                    isStep: false,
+                    isHighlight: false
+                ))
+                self.showBanner("Could not run command: \(error.localizedDescription)", isError: true)
+            }
+        }
+    }
+
+    func focusConsoleCommandPrompt() {
+        isConsoleVisible = true
+        focusCommandInputTrigger += 1
     }
 
     func stopActiveRun() {

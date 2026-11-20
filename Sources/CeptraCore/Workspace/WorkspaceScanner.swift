@@ -44,6 +44,9 @@ public enum WorkspaceScanner {
         var discovered: [WorkspaceFile] = []
         var allTags = Set<String>()
 
+        let packageManager = PackageManagerSupport.detectPackageManager(in: standardizedRoot)
+        let packageScripts = PackageManagerSupport.readPackageScripts(in: standardizedRoot)
+
         guard let enumerator = fm.enumerator(
             at: standardizedRoot,
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey],
@@ -53,6 +56,8 @@ public enum WorkspaceScanner {
                 rootURL: standardizedRoot,
                 config: config,
                 discoveredConfigPaths: discoveredConfigPaths,
+                packageManager: packageManager,
+                packageScripts: packageScripts,
                 files: [],
                 allTags: []
             )
@@ -177,6 +182,8 @@ public enum WorkspaceScanner {
             rootURL: standardizedRoot,
             config: config,
             discoveredConfigPaths: discoveredConfigPaths,
+            packageManager: packageManager,
+            packageScripts: packageScripts,
             files: discovered,
             allTags: allTags.sorted()
         )

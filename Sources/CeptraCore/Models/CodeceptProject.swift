@@ -133,6 +133,8 @@ public struct CodeceptWorkspace: Equatable, Sendable {
     public let rootURL: URL
     public let config: CodeceptConfigSummary
     public let discoveredConfigPaths: [String]
+    public let packageManager: PackageManagerKind
+    public let packageScripts: [PackageScriptItem]
     public let files: [WorkspaceFile]
     public let allTags: [String]
     public let scannedAt: Date
@@ -141,6 +143,8 @@ public struct CodeceptWorkspace: Equatable, Sendable {
         rootURL: URL,
         config: CodeceptConfigSummary,
         discoveredConfigPaths: [String] = [],
+        packageManager: PackageManagerKind = .npm,
+        packageScripts: [PackageScriptItem] = [],
         files: [WorkspaceFile],
         allTags: [String],
         scannedAt: Date = Date()
@@ -148,6 +152,8 @@ public struct CodeceptWorkspace: Equatable, Sendable {
         self.rootURL = rootURL
         self.config = config
         self.discoveredConfigPaths = discoveredConfigPaths
+        self.packageManager = packageManager
+        self.packageScripts = packageScripts
         self.files = files
         self.allTags = allTags
         self.scannedAt = scannedAt
