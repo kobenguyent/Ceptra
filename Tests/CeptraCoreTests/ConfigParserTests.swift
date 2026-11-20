@@ -190,4 +190,57 @@ final class ConfigParserTests: XCTestCase {
         XCTAssertEqual(extWorkspace.config.configFilePath, externalConfigURL.standardizedFileURL.path)
         XCTAssertTrue(extWorkspace.files.contains { $0.path == externalConfigURL.standardizedFileURL.path && $0.category == .config })
     }
+
+    func testBuildsFullHierarchicalProjectTreeWithNestedFoldersDotfilesAndFiltering() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("ceptra-tree-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root.appendingPathComponent("src/e2e/auth"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("src/fixtures"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent(".github/workflows"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("node_modules/fake-pkg"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        try "name: CI\n".write(to: root.appendingPathComponent(".github/workflows/ci.yml"), atomically: true, encoding: .utf8)
+        try #"{"email":"dev@example.com"}"#.write(to: root.appendingPathComponent("src/fixtures/user.json"), atomically: true, encoding: .utf8)
+        try "# Readme\n".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "export const x = 1;".write(to: root.appendingPathComponent("node_modules/fake-pkg/index.js"), atomically: true, encoding: .utf8)
+
+        let authTest = """
+        Feature('Auth @smoke');
+        Scenario('signs in', ({ I }) => {
+          I.amOnPage('/login');
+        });
+        """
+        let authTestURL = root.appendingPathComponent("src/e2e/auth/login_test.ts")
+        try authTest.write(to: authTestURL, atomically: true, encoding: .utf8)
+
+        let ws = WorkspaceScanner.scan(rootURL: root)
+
+        // node_modules excluded, real folders + dotfiles + json fixtures + markdown included
+        let topNames = ws.rootTree.map(\.name)
+        XCTAssertFalse(topNames.contains("node_modules"))
+        XCTAssertTrue(topNames.contains(".github"))
+        XCTAssertTrue(topNames.contains("src"))
+        XCTAssertTrue(topNames.contains("README.md"))
+
+        // Folders come before files at root level
+        let srcIdx = topNames.firstIndex(of: "src")!
+        let readmeIdx = topNames.firstIndex(of: "README.md")!
+        XCTAssertLessThan(srcIdx, readmeIdx)
+
+        // Nested recursive test counts aggregate upward to `src`
+        let srcNode = try XCTUnwrap(ws.rootTree.first { $0.name == "src" })
+        XCTAssertEqual(srcNode.testFileCount, 1)
+        XCTAssertEqual(srcNode.scenarioCount, 1)
+
+        // Ancestor path lookup reveals nested file cleanly
+        let ancestors = srcNode.ancestorDirectoryPaths(containing: authTestURL.standardizedFileURL.path)
+        XCTAssertEqual(ancestors?.count, 3) // src -> src/e2e -> src/e2e/auth
+
+        // Tag filtering prunes non-matching branches (fixtures/user.json dropped, auth/login_test.ts kept)
+        let filtered = srcNode.filtered(query: "", tag: "@smoke")
+        XCTAssertEqual(filtered?.children.map(\.name), ["e2e"])
+        XCTAssertEqual(filtered?.testFileCount, 1)
+    }
 }

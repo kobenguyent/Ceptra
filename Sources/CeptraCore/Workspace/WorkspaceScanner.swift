@@ -1,14 +1,22 @@
 import Foundation
 
 public enum WorkspaceScanner {
+    /// Heavy VCS / dependency / build artifact directories never descended into for fast tree scanning.
     private static let ignoredDirectories: Set<String> = [
         "node_modules", ".git", ".idea", ".vscode", "dist", "build",
-        "output", "_output", "coverage", ".build", ".next", "allure-report", "allure-results"
+        "coverage", ".build", ".next", ".nuxt", ".turbo", ".cache",
+        "allure-report", "allure-results", "__pycache__"
     ]
 
-    private static let supportedExtensions: Set<String> = [
-        "js", "ts", "mjs", "cjs", "mts", "cts", "feature", "json"
+    private static let ignoredFiles: Set<String> = [
+        ".DS_Store", "Thumbs.db", "tsconfig.tsbuildinfo"
     ]
+
+    private static let codeTestExtensions: Set<String> = [
+        "js", "ts", "mjs", "cjs", "mts", "cts", "feature"
+    ]
+
+    private static let maxTreeDepth = 12
 
     public static func scan(
         rootURL: URL,
@@ -40,139 +48,66 @@ public enum WorkspaceScanner {
         })
         let resolvedOutputPath = config.resolvedOutputURL(rootURL: standardizedRoot).path
 
-        let fm = FileManager.default
-        var discovered: [WorkspaceFile] = []
-        var allTags = Set<String>()
-
         let packageManager = PackageManagerSupport.detectPackageManager(in: standardizedRoot)
         let packageScripts = PackageManagerSupport.readPackageScripts(in: standardizedRoot)
-
-        guard let enumerator = fm.enumerator(
-            at: standardizedRoot,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return CodeceptWorkspace(
-                rootURL: standardizedRoot,
-                config: config,
-                discoveredConfigPaths: discoveredConfigPaths,
-                packageManager: packageManager,
-                packageScripts: packageScripts,
-                files: [],
-                allTags: []
-            )
-        }
 
         let rootPathWithSlash = standardizedRoot.path.hasSuffix("/")
             ? standardizedRoot.path
             : standardizedRoot.path + "/"
 
-        for case let fileURL as URL in enumerator {
-            let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey])
-            let fileName = fileURL.lastPathComponent
-            let fullPath = fileURL.standardizedFileURL.path
+        var allFiles: [WorkspaceFile] = []
+        var allTags = Set<String>()
 
-            if values?.isDirectory == true {
-                if ignoredDirectories.contains(fileName) || fullPath == resolvedOutputPath {
-                    enumerator.skipDescendants()
-                }
-                continue
-            }
+        let context = ScanContext(
+            rootPathWithSlash: rootPathWithSlash,
+            activeConfigPath: config.configFilePath,
+            knownConfigPaths: knownConfigPathSet,
+            includeAbsolutePaths: includeAbsolutePaths,
+            helperAbsolutePaths: helperAbsolutePaths,
+            stepDefAbsolutePaths: stepDefAbsolutePaths,
+            resolvedOutputPath: resolvedOutputPath
+        )
 
-            guard values?.isRegularFile == true else { continue }
-            let ext = fileURL.pathExtension.lowercased()
-            guard supportedExtensions.contains(ext) else { continue }
+        var visitedDirs = Set<String>([standardizedRoot.resolvingSymlinksInPath().path])
+        var rootNodes = buildChildren(
+            in: standardizedRoot,
+            depth: 0,
+            context: context,
+            visitedDirs: &visitedDirs,
+            allFiles: &allFiles,
+            allTags: &allTags
+        )
 
-            if fileName == "package-lock.json" || fileName == "tsconfig.tsbuildinfo" {
-                continue
-            }
-
-            let relPath = fullPath.hasPrefix(rootPathWithSlash)
-                ? String(fullPath.dropFirst(rootPathWithSlash.count))
-                : fileName
-            let normalizedRel = normalizeRelativePath(relPath)
-
-            if relPath.split(separator: "/").count > 6 {
-                continue
-            }
-
-            let initialCategory = classifyNonTestCategory(
-                fileName: fileName,
-                relativePath: normalizedRel,
-                ext: ext,
-                fullPath: fullPath,
-                activeConfigPath: config.configFilePath,
-                knownConfigPaths: knownConfigPathSet,
-                includeAbsolutePaths: includeAbsolutePaths,
-                helperAbsolutePaths: helperAbsolutePaths,
-                stepDefAbsolutePaths: stepDefAbsolutePaths
-            )
-
-            // Keep JSON files if they are standard project manifests OR a discovered/selected CodeceptJS config
-            if ext == "json"
-                && !["package.json", "tsconfig.json", "jsconfig.json"].contains(fileName)
-                && initialCategory != .config {
-                continue
-            }
-
-            // Content-verify CodeceptJS tests: a file (even named `*.TEST.ts` or `*_spec.js`) is ONLY
-            // classified as `.testSuite` / `.gherkinFeature` if its content actually declares
-            // CodeceptJS `Feature(...)` / `Scenario(...)` (or Gherkin `Feature:` / `Scenario:`).
-            var category = initialCategory
-            var features: [ParsedFeature] = []
-            let fileSize = values?.fileSize ?? 0
-            let canContainTests = ext == "feature"
-                || (initialCategory == .other
-                    && !fileName.lowercased().hasSuffix(".d.ts")
-                    && ["js", "ts", "mjs", "cjs", "mts", "cts"].contains(ext)
-                    && fileSize <= 512_000)
-
-            if canContainTests, let content = try? String(contentsOf: fileURL, encoding: .utf8) {
-                let parsed = TestFileParser.parse(content: content, filePath: fullPath)
-                if !parsed.isEmpty {
-                    features = parsed
-                    category = (ext == "feature") ? .gherkinFeature : .testSuite
-                    for feature in features {
-                        allTags.formUnion(feature.tags)
-                        for scenario in feature.scenarios {
-                            allTags.formUnion(scenario.tags)
-                        }
-                    }
-                } else if ext == "feature" {
-                    category = .other
-                }
-            }
-
-            discovered.append(WorkspaceFile(
-                path: fullPath,
-                relativePath: relPath,
-                name: fileName,
-                fileExtension: ext,
-                category: category,
-                features: features
-            ))
-        }
-
-        // If the user selected an external custom config file outside `rootURL`, still surface it in the sidebar
+        // If the user selected an external custom config file outside `rootURL`, surface it cleanly
+        let fm = FileManager.default
         if let activeConfigPath = config.configFilePath,
-           !discovered.contains(where: { $0.path == activeConfigPath }),
+           !allFiles.contains(where: { $0.path == activeConfigPath }),
            fm.fileExists(atPath: activeConfigPath) {
             let extURL = URL(fileURLWithPath: activeConfigPath).standardizedFileURL
-            discovered.append(WorkspaceFile(
+            let extFile = WorkspaceFile(
                 path: extURL.path,
                 relativePath: extURL.path,
                 name: extURL.lastPathComponent,
                 fileExtension: extURL.pathExtension.lowercased(),
                 category: .config,
                 features: []
-            ))
+            )
+            allFiles.append(extFile)
+            rootNodes.insert(WorkspaceTreeNode(
+                path: extFile.path,
+                relativePath: extFile.relativePath,
+                name: extFile.name,
+                isDirectory: false,
+                isHidden: false,
+                isBinary: false,
+                file: extFile
+            ), at: 0)
         }
 
-        discovered.sort { lhs, rhs in
+        allFiles.sort { lhs, rhs in
             if lhs.category != rhs.category {
                 return categorySortOrder(lhs.category) < categorySortOrder(rhs.category)
             }
-            // Pin active config at top of config group
             if lhs.path == config.configFilePath && rhs.path != config.configFilePath { return true }
             if rhs.path == config.configFilePath && lhs.path != config.configFilePath { return false }
             return lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
@@ -184,15 +119,200 @@ public enum WorkspaceScanner {
             discoveredConfigPaths: discoveredConfigPaths,
             packageManager: packageManager,
             packageScripts: packageScripts,
-            files: discovered,
+            files: allFiles,
+            rootTree: rootNodes,
             allTags: allTags.sorted()
         )
+    }
+
+    private struct ScanContext {
+        let rootPathWithSlash: String
+        let activeConfigPath: String?
+        let knownConfigPaths: Set<String>
+        let includeAbsolutePaths: Set<String>
+        let helperAbsolutePaths: Set<String>
+        let stepDefAbsolutePaths: Set<String>
+        let resolvedOutputPath: String
+    }
+
+    private static func buildChildren(
+        in directoryURL: URL,
+        depth: Int,
+        context: ScanContext,
+        visitedDirs: inout Set<String>,
+        allFiles: inout [WorkspaceFile],
+        allTags: inout Set<String>
+    ) -> [WorkspaceTreeNode] {
+        guard depth <= maxTreeDepth else { return [] }
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
+            options: []
+        ) else {
+            return []
+        }
+
+        var folderNodes: [WorkspaceTreeNode] = []
+        var fileNodes: [WorkspaceTreeNode] = []
+
+        for entryURL in entries {
+            let name = entryURL.lastPathComponent
+            if ignoredFiles.contains(name) { continue }
+
+            let values = try? entryURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            let stdURL = entryURL.standardizedFileURL
+            let fullPath = stdURL.path
+            let relPath = fullPath.hasPrefix(context.rootPathWithSlash)
+                ? String(fullPath.dropFirst(context.rootPathWithSlash.count))
+                : name
+            let isHidden = name.hasPrefix(".")
+
+            // Follow directory check safely (even for symlinks pointing to directories)
+            var isDirObjC: ObjCBool = false
+            let exists = fm.fileExists(atPath: fullPath, isDirectory: &isDirObjC)
+            guard exists else { continue }
+            let isDir = isDirObjC.boolValue
+
+            if isDir {
+                if ignoredDirectories.contains(name) {
+                    continue
+                }
+                // Keep CodeceptJS output directory visible in the tree as a leaf folder without scanning generated artifacts as tests
+                let isOutputDir = fullPath == context.resolvedOutputPath || name == "output" || name == "_output"
+                let realDirPath = stdURL.resolvingSymlinksInPath().path
+                let children: [WorkspaceTreeNode]
+                if isOutputDir {
+                    children = buildShallowFileNodes(in: stdURL, context: context)
+                } else if visitedDirs.insert(realDirPath).inserted {
+                    children = buildChildren(
+                        in: stdURL,
+                        depth: depth + 1,
+                        context: context,
+                        visitedDirs: &visitedDirs,
+                        allFiles: &allFiles,
+                        allTags: &allTags
+                    )
+                } else {
+                    children = []
+                }
+                let testCount = children.reduce(0) { $0 + $1.testFileCount }
+                let scenarioCount = children.reduce(0) { $0 + $1.scenarioCount }
+                folderNodes.append(WorkspaceTreeNode(
+                    path: fullPath,
+                    relativePath: relPath,
+                    name: name,
+                    isDirectory: true,
+                    isHidden: isHidden,
+                    isBinary: false,
+                    file: nil,
+                    children: children,
+                    testFileCount: testCount,
+                    scenarioCount: scenarioCount
+                ))
+            } else {
+                let ext = stdURL.pathExtension.lowercased()
+                let normalizedRel = normalizeRelativePath(relPath)
+                let initialCategory = classifyNonTestCategory(
+                    fileName: name,
+                    relativePath: normalizedRel,
+                    fullPath: fullPath,
+                    activeConfigPath: context.activeConfigPath,
+                    knownConfigPaths: context.knownConfigPaths,
+                    includeAbsolutePaths: context.includeAbsolutePaths,
+                    helperAbsolutePaths: context.helperAbsolutePaths,
+                    stepDefAbsolutePaths: context.stepDefAbsolutePaths
+                )
+
+                var category = initialCategory
+                var features: [ParsedFeature] = []
+                let fileSize = values?.fileSize ?? 0
+                let canContainTests = ext == "feature"
+                    || (initialCategory == .other
+                        && !name.lowercased().hasSuffix(".d.ts")
+                        && codeTestExtensions.contains(ext)
+                        && fileSize <= 512_000)
+
+                if canContainTests, let content = try? String(contentsOf: stdURL, encoding: .utf8) {
+                    let parsed = TestFileParser.parse(content: content, filePath: fullPath)
+                    if !parsed.isEmpty {
+                        features = parsed
+                        category = (ext == "feature") ? .gherkinFeature : .testSuite
+                        for feature in features {
+                            allTags.formUnion(feature.tags)
+                            for scenario in feature.scenarios {
+                                allTags.formUnion(scenario.tags)
+                            }
+                        }
+                    } else if ext == "feature" {
+                        category = .other
+                    }
+                }
+
+                let workspaceFile = WorkspaceFile(
+                    path: fullPath,
+                    relativePath: relPath,
+                    name: name,
+                    fileExtension: ext,
+                    category: category,
+                    features: features
+                )
+                allFiles.append(workspaceFile)
+
+                let isExec = workspaceFile.isExecutableTestFile
+                let scCount = features.reduce(0) { $0 + $1.scenarios.count }
+
+                fileNodes.append(WorkspaceTreeNode(
+                    path: fullPath,
+                    relativePath: relPath,
+                    name: name,
+                    isDirectory: false,
+                    isHidden: isHidden,
+                    isBinary: workspaceFile.isBinaryFile,
+                    file: workspaceFile,
+                    children: [],
+                    testFileCount: isExec ? 1 : 0,
+                    scenarioCount: isExec ? scCount : 0
+                ))
+            }
+        }
+
+        folderNodes.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        fileNodes.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return folderNodes + fileNodes
+    }
+
+    /// Shows output/ artifact files in the tree without indexing them into code/test lists.
+    private static func buildShallowFileNodes(in directoryURL: URL, context: ScanContext) -> [WorkspaceTreeNode] {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
+            return []
+        }
+        return entries.prefix(50).compactMap { entryURL in
+            let std = entryURL.standardizedFileURL
+            let name = std.lastPathComponent
+            if ignoredFiles.contains(name) { return nil }
+            let fullPath = std.path
+            let relPath = fullPath.hasPrefix(context.rootPathWithSlash)
+                ? String(fullPath.dropFirst(context.rootPathWithSlash.count))
+                : name
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: fullPath, isDirectory: &isDir) else { return nil }
+            if isDir.boolValue {
+                return WorkspaceTreeNode(path: fullPath, relativePath: relPath, name: name, isDirectory: true, isHidden: false)
+            }
+            let ext = std.pathExtension.lowercased()
+            let file = WorkspaceFile(path: fullPath, relativePath: relPath, name: name, fileExtension: ext, category: .other)
+            return WorkspaceTreeNode(path: fullPath, relativePath: relPath, name: name, isDirectory: false, isBinary: file.isBinaryFile, file: file)
+        }.sorted { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
     }
 
     private static func classifyNonTestCategory(
         fileName: String,
         relativePath: String,
-        ext: String,
         fullPath: String,
         activeConfigPath: String?,
         knownConfigPaths: Set<String>,

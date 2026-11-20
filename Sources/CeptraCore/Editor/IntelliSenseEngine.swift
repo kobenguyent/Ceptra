@@ -380,8 +380,12 @@ public enum IntelliSenseEngine {
         let sourceDir = sourceFileURL.deletingLastPathComponent().standardizedFileURL
         let lower = typed.lowercased()
 
+        let importableExts: Set<String> = ["js", "ts", "mjs", "cjs", "mts", "cts", "jsx", "tsx", "json", "feature"]
         var items: [CompletionItem] = []
-        for file in workspace.files where file.path != sourceFileURL.standardizedFileURL.path {
+        for file in workspace.files
+            where file.path != sourceFileURL.standardizedFileURL.path
+            && !file.isBinaryFile
+            && importableExts.contains(file.fileExtension.lowercased()) {
             let rel = relativePath(from: sourceDir, to: file.url.standardizedFileURL)
             if lower.isEmpty || rel.lowercased().contains(lower) {
                 items.append(CompletionItem(

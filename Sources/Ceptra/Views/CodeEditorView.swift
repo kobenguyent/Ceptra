@@ -837,6 +837,28 @@ final class CeptraCodeTextView: NSTextView {
             apply(#":\s*"(?:\\.|[^"\\])*""#, color: stringColor)
             apply(#"\b(?:true|false|null)\b"#, color: keywordColor)
             apply(#"\b\d+(?:\.\d+)?\b"#, color: numberColor)
+        } else if editorLanguage == "yaml" {
+            apply(#"^\s*[A-Za-z0-9_.-]+\s*(?=:)"#, color: dslColor, options: [.anchorsMatchLines])
+            apply(#"'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*""#, color: stringColor)
+            apply(#"\b(?:true|false|null|yes|no)\b"#, color: keywordColor)
+            apply(#"#[^\n]*"#, color: commentColor)
+        } else if editorLanguage == "markdown" {
+            apply(#"^#{1,6}\s+.*$"#, color: dslColor, useBold: true, options: [.anchorsMatchLines])
+            apply(#"`[^`\n]+`"#, color: actorColor)
+            apply(#"^\s*[-*+]\s+"#, color: keywordColor, options: [.anchorsMatchLines])
+        } else if editorLanguage == "shell" {
+            apply(#"\b(?:if|then|else|fi|for|in|do|done|case|esac|export|local|return|set|exit|echo|cd)\b"#, color: keywordColor)
+            apply(#"'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*""#, color: stringColor)
+            apply(#"\$[A-Za-z0-9_{}?@#*-]+"#, color: dslColor)
+            apply(#"#[^\n]*"#, color: commentColor)
+        } else if editorLanguage == "xml" {
+            apply(#"</?[A-Za-z0-9_:-]+|/?>"#, color: dslColor)
+            apply(#"\b[A-Za-z0-9_:-]+(?==)"#, color: actorColor)
+            apply(#""[^"]*""#, color: stringColor)
+            apply(#"<!--[\s\S]*?-->"#, color: commentColor)
+        } else if editorLanguage == "plaintext" {
+            apply(#"^\s*#.*$"#, color: commentColor, options: [.anchorsMatchLines])
+            apply(#"^[A-Z0-9_]+(?==)"#, color: dslColor, options: [.anchorsMatchLines])
         } else {
             apply(#"\b(?:import|export|from|const|let|var|async|await|return|if|else|for|while|try|catch|finally|throw|new|class|extends|default|function|type|interface|true|false|null|undefined)\b"#, color: keywordColor)
             apply(#"\b(?:Feature|Scenario|xScenario|BeforeSuite|AfterSuite|Before|After|Data|DataTable|within|session|tryTo|retryTo|locate|secret|inject|pause|eachElement)\b"#, color: dslColor, useBold: true)

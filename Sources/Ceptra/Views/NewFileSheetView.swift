@@ -8,6 +8,7 @@ struct NewFileSheetView: View {
     @State private var selectedKind: ScaffoldTemplateKind = .jsTest
     @State private var name: String = ""
     @State private var directory: String = "tests"
+    @State private var hasCustomDirectoryOverride: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -22,7 +23,9 @@ struct NewFileSheetView: View {
                     }
                 }
                 .onChange(of: selectedKind) { _, newValue in
-                    directory = newValue.suggestedDirectory
+                    if !hasCustomDirectoryOverride {
+                        directory = newValue.suggestedDirectory
+                    }
                 }
 
                 TextField("Feature / Object Name (e.g. Checkout)", text: $name)
@@ -49,5 +52,17 @@ struct NewFileSheetView: View {
         .padding(20)
         .frame(width: 420)
         .background(CeptraTheme.sidebarBG)
+        .onAppear {
+            if let initial = appState.newFileInitialDirectory {
+                directory = initial
+                hasCustomDirectoryOverride = true
+            } else {
+                directory = selectedKind.suggestedDirectory
+                hasCustomDirectoryOverride = false
+            }
+        }
+        .onDisappear {
+            appState.newFileInitialDirectory = nil
+        }
     }
 }

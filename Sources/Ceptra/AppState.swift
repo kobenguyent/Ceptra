@@ -113,6 +113,7 @@ final class AppState: ObservableObject {
     // Sheets, Notifications, Settings & Updates
     @Published var settings: AppSettings
     @Published var showingNewFileSheet: Bool = false
+    @Published var newFileInitialDirectory: String? = nil
     @Published var showingUpdateSheet: Bool = false
     @Published var showingRunOptionsPopover: Bool = false
     @Published var bannerMessage: String? = nil
@@ -347,6 +348,11 @@ final class AppState: ObservableObject {
     // MARK: - File & Editor Tabs
 
     func openFile(_ file: WorkspaceFile, jumpToLine: Int? = nil) {
+        if file.isBinaryFile {
+            NSWorkspace.shared.open(file.url)
+            showBanner("Opened \(file.name) in default macOS app")
+            return
+        }
         if let existing = openTabs.first(where: { $0.filePath == file.path }) {
             activeTabPath = existing.filePath
             if let jumpToLine {
@@ -526,6 +532,11 @@ final class AppState: ObservableObject {
         } catch {
             showBanner("Failed to save \(tab.name): \(error.localizedDescription)", isError: true)
         }
+    }
+
+    func presentNewFileSheet(inDirectory relativeDirectory: String? = nil) {
+        newFileInitialDirectory = relativeDirectory
+        showingNewFileSheet = true
     }
 
     func createNewFile(kind: ScaffoldTemplateKind, name: String, directory: String) {

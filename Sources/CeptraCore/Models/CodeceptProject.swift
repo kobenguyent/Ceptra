@@ -136,6 +136,7 @@ public struct CodeceptWorkspace: Equatable, Sendable {
     public let packageManager: PackageManagerKind
     public let packageScripts: [PackageScriptItem]
     public let files: [WorkspaceFile]
+    public let rootTree: [WorkspaceTreeNode]
     public let allTags: [String]
     public let scannedAt: Date
 
@@ -146,6 +147,7 @@ public struct CodeceptWorkspace: Equatable, Sendable {
         packageManager: PackageManagerKind = .npm,
         packageScripts: [PackageScriptItem] = [],
         files: [WorkspaceFile],
+        rootTree: [WorkspaceTreeNode] = [],
         allTags: [String],
         scannedAt: Date = Date()
     ) {
@@ -155,6 +157,7 @@ public struct CodeceptWorkspace: Equatable, Sendable {
         self.packageManager = packageManager
         self.packageScripts = packageScripts
         self.files = files
+        self.rootTree = rootTree
         self.allTags = allTags
         self.scannedAt = scannedAt
     }

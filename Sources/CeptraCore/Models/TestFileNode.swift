@@ -243,14 +243,28 @@ public struct WorkspaceFile: Identifiable, Codable, Equatable, Hashable, Sendabl
 
     public var languageHint: String {
         switch fileExtension.lowercased() {
-        case "ts", "mts", "cts": return "typescript"
-        case "js", "mjs", "cjs": return "javascript"
+        case "ts", "mts", "cts", "tsx": return "typescript"
+        case "js", "mjs", "cjs", "jsx": return "javascript"
         case "feature": return "gherkin"
-        case "json": return "json"
-        case "xml": return "xml"
-        case "md": return "markdown"
-        default: return "javascript"
+        case "json", "jsonc": return "json"
+        case "xml", "plist", "svg", "html", "htm": return "xml"
+        case "md", "markdown": return "markdown"
+        case "yml", "yaml": return "yaml"
+        case "sh", "bash", "zsh": return "shell"
+        default: return "plaintext"
         }
+    }
+
+    public static let binaryExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "icns", "tiff",
+        "pdf", "zip", "gz", "tgz", "tar", "7z", "rar", "dmg", "pkg", "ipa",
+        "mp4", "webm", "mov", "avi", "mp3", "wav", "m4a",
+        "woff", "woff2", "ttf", "otf", "eot",
+        "sqlite", "db", "bin", "exe", "dll", "so", "dylib", "node", "wasm"
+    ]
+
+    public var isBinaryFile: Bool {
+        Self.binaryExtensions.contains(fileExtension.lowercased())
     }
 
     public var allTags: [String] {
