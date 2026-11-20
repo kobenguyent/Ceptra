@@ -47,6 +47,7 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
     public var environmentVariables: [String: String]
     public var workerCount: Int
     public var workerStrategy: WorkerStrategy
+    public var esmCjsCompat: Bool
 
     public init(
         showSteps: Bool = true,
@@ -60,7 +61,8 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         enabledPlugins: [String] = ["junitReporter"],
         environmentVariables: [String: String] = [:],
         workerCount: Int = 2,
-        workerStrategy: WorkerStrategy = .pool
+        workerStrategy: WorkerStrategy = .pool,
+        esmCjsCompat: Bool = true
     ) {
         self.showSteps = showSteps
         self.debug = debug
@@ -74,6 +76,24 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         self.environmentVariables = environmentVariables
         self.workerCount = workerCount
         self.workerStrategy = workerStrategy
+        self.esmCjsCompat = esmCjsCompat
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.showSteps = try c.decodeIfPresent(Bool.self, forKey: .showSteps) ?? true
+        self.debug = try c.decodeIfPresent(Bool.self, forKey: .debug) ?? false
+        self.verbose = try c.decodeIfPresent(Bool.self, forKey: .verbose) ?? false
+        self.aiEnabled = try c.decodeIfPresent(Bool.self, forKey: .aiEnabled) ?? false
+        self.bailOnFail = try c.decodeIfPresent(Bool.self, forKey: .bailOnFail) ?? false
+        self.noTimeouts = try c.decodeIfPresent(Bool.self, forKey: .noTimeouts) ?? false
+        self.grepPattern = try c.decodeIfPresent(String.self, forKey: .grepPattern) ?? ""
+        self.profile = try c.decodeIfPresent(String.self, forKey: .profile) ?? ""
+        self.enabledPlugins = try c.decodeIfPresent([String].self, forKey: .enabledPlugins) ?? ["junitReporter"]
+        self.environmentVariables = try c.decodeIfPresent([String: String].self, forKey: .environmentVariables) ?? [:]
+        self.workerCount = try c.decodeIfPresent(Int.self, forKey: .workerCount) ?? 2
+        self.workerStrategy = try c.decodeIfPresent(WorkerStrategy.self, forKey: .workerStrategy) ?? .pool
+        self.esmCjsCompat = try c.decodeIfPresent(Bool.self, forKey: .esmCjsCompat) ?? true
     }
 
     public static let availableQuickPlugins: [String] = [

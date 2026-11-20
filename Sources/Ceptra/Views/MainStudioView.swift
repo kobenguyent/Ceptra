@@ -612,6 +612,7 @@ private struct RunOptionsPopover: View {
                 Toggle("Enable AI Assistant (--ai)", isOn: $appState.runOptions.aiEnabled)
                 Toggle("Bail on First Failure (--bail)", isOn: $appState.runOptions.bailOnFail)
                 Toggle("Disable Timeouts (--no-timeouts)", isOn: $appState.runOptions.noTimeouts)
+                Toggle("ESM/CJS Named-Export Compat (uuid, etc.)", isOn: $appState.runOptions.esmCjsCompat)
             }
             .toggleStyle(.checkbox)
             .font(.system(size: 12))

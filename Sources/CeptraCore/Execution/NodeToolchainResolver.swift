@@ -105,16 +105,22 @@ public enum NodeToolchainResolver {
             )
         }
 
-        // 2. Local project ./node_modules/.bin/codeceptjs
-        let localBin = workspaceRoot.appendingPathComponent("node_modules/.bin/codeceptjs").path
-        if fm.isExecutableFile(atPath: localBin) {
-            return ResolvedToolchain(
-                nodePath: nodePath,
-                codeceptExecutable: localBin,
-                prefixArguments: [],
-                searchPath: searchPath,
-                resolutionSource: "Project node_modules"
-            )
+        // 2. Local project or parent monorepo ./node_modules/.bin/codeceptjs (walks up to 4 levels)
+        var searchDir = workspaceRoot.standardizedFileURL
+        for level in 0...4 {
+            let localBin = searchDir.appendingPathComponent("node_modules/.bin/codeceptjs").path
+            if fm.isExecutableFile(atPath: localBin) {
+                return ResolvedToolchain(
+                    nodePath: nodePath,
+                    codeceptExecutable: localBin,
+                    prefixArguments: [],
+                    searchPath: searchPath,
+                    resolutionSource: level == 0 ? "Project node_modules" : "Workspace parent node_modules"
+                )
+            }
+            let parent = searchDir.deletingLastPathComponent()
+            if parent.path == searchDir.path { break }
+            searchDir = parent
         }
 
         // 3. Direct CodeceptJS repository checkout (./bin/codecept.js)

@@ -121,6 +121,62 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
         XCTAssertEqual(shellCmd.workingDirectory, root)
     }
 
+    func testNodeCompatLoaderFixesNamedImportFromCommonJSUuidPackage() throws {
+        let fm = FileManager.default
+        let sandbox = fm.temporaryDirectory.appendingPathComponent("ceptra-uuid-compat-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: sandbox.appendingPathComponent("node_modules/uuid"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: sandbox) }
+
+        // CJS-only uuid package using Object.defineProperty getter exports (fails native ESM `import { v4 as uuid4 } from 'uuid'`)
+        try #"{"name":"uuid","version":"8.3.2","main":"./index.js"}"#
+            .write(to: sandbox.appendingPathComponent("node_modules/uuid/package.json"), atomically: true, encoding: .utf8)
+        let uuidCJS = """
+        "use strict";
+        Object.defineProperty(exports, "__esModule", { value: true });
+        Object.defineProperty(exports, "v4", {
+          enumerable: true,
+          get: function () { return function () { return "ceptra-uuid-v4-ok"; }; }
+        });
+        """
+        try uuidCJS.write(to: sandbox.appendingPathComponent("node_modules/uuid/index.js"), atomically: true, encoding: .utf8)
+
+        let mjsEntry = sandbox.appendingPathComponent("check.mjs")
+        try "import { v4 as uuid4 } from 'uuid'; console.log(uuid4());\n"
+            .write(to: mjsEntry, atomically: true, encoding: .utf8)
+
+        let toolchain = NodeToolchainResolver.resolve(workspaceRoot: sandbox)
+        guard let nodePath = toolchain.nodePath else {
+            throw XCTSkip("Node binary not available in test environment")
+        }
+
+        // Verify CommandBuilder injects NODE_OPTIONS --import preload when esmCjsCompat == true
+        let built = CommandBuilder.build(
+            mode: .runAll,
+            options: RunOptions(esmCjsCompat: true),
+            workspaceRoot: sandbox,
+            toolchain: toolchain
+        )
+        let nodeOptions = try XCTUnwrap(built.environment["NODE_OPTIONS"])
+        XCTAssertTrue(nodeOptions.contains("--import file://"))
+        XCTAssertTrue(nodeOptions.contains("ceptra-cjs-interop-preload.mjs"))
+
+        // Execute real Node process with the injected NODE_OPTIONS and verify `import { v4 as uuid4 } from 'uuid'` succeeds!
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: nodePath)
+        proc.arguments = [mjsEntry.path]
+        proc.currentDirectoryURL = sandbox
+        proc.environment = built.environment
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = outPipe
+        try proc.run()
+        proc.waitUntilExit()
+
+        let output = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(proc.terminationStatus, 0, "Expected exit 0, got output: \(output)")
+        XCTAssertTrue(output.contains("ceptra-uuid-v4-ok"), "Unexpected output: \(output)")
+    }
+
     func testParsesLiveStepsAndCompactCodeceptOutput() {
         let parser = LiveOutputParser()
         let lines = [

@@ -118,6 +118,12 @@ public enum CommandBuilder {
         for (key, value) in options.environmentVariables where !key.trimmingCharacters(in: .whitespaces).isEmpty {
             env[key.trimmingCharacters(in: .whitespaces)] = value
         }
+        if options.esmCjsCompat, let preloadURL = NodeCompatLoader.ensurePreloadFileURL() {
+            env["NODE_OPTIONS"] = NodeCompatLoader.mergedNodeOptions(
+                existing: env["NODE_OPTIONS"],
+                preloadFileURL: preloadURL
+            )
+        }
 
         let displayParts = [URL(fileURLWithPath: toolchain.codeceptExecutable).lastPathComponent] + args.map { displayQuote($0) }
 
