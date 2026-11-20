@@ -211,6 +211,33 @@ struct CeptraApp: App {
 
                 Divider()
 
+                Menu("Code Folding") {
+                    Button("Collapse Block") {
+                        appState.triggerEditorFold(.collapseAtCaret)
+                    }
+                    .keyboardShortcut("[", modifiers: [.command, .option])
+
+                    Button("Expand Block") {
+                        appState.triggerEditorFold(.expandAtCaret)
+                    }
+                    .keyboardShortcut("]", modifiers: [.command, .option])
+
+                    Divider()
+
+                    Button("Collapse All Blocks") {
+                        appState.triggerEditorFold(.collapseAll)
+                    }
+                    .keyboardShortcut("[", modifiers: [.command, .option, .shift])
+
+                    Button("Expand All Blocks") {
+                        appState.triggerEditorFold(.expandAll)
+                    }
+                    .keyboardShortcut("]", modifiers: [.command, .option, .shift])
+                }
+                .disabled(appState.activeTab == nil)
+
+                Divider()
+
                 Button("Toggle Sidebar") {
                     appState.isSidebarVisible.toggle()
                 }

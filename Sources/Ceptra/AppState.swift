@@ -58,6 +58,13 @@ enum ParallelRunTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum EditorFoldAction: Equatable {
+    case collapseAtCaret
+    case expandAtCaret
+    case collapseAll
+    case expandAll
+}
+
 enum AppUpdateState: Equatable {
     case idle
     case checking
@@ -95,6 +102,8 @@ final class AppState: ObservableObject {
     @Published var liveParsedFeaturesByPath: [String: [ParsedFeature]] = [:]
     @Published var completionIndex: WorkspaceCompletionIndex = WorkspaceCompletionIndex()
     @Published var goToDefinitionTrigger: Int = 0
+    @Published var editorFoldActionTrigger: Int = 0
+    @Published var pendingEditorFoldAction: EditorFoldAction? = nil
     @Published var navigationBackStack: [NavigationHistoryEntry] = []
     @Published var navigationForwardStack: [NavigationHistoryEntry] = []
 
@@ -540,6 +549,12 @@ final class AppState: ObservableObject {
         guard let activeTabPath,
               let idx = openTabs.firstIndex(where: { $0.filePath == activeTabPath }) else { return }
         saveTab(at: idx)
+    }
+
+    func triggerEditorFold(_ action: EditorFoldAction) {
+        guard activeTab != nil else { return }
+        pendingEditorFoldAction = action
+        editorFoldActionTrigger += 1
     }
 
     func saveAllDirtyFiles() {

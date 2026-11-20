@@ -116,6 +116,8 @@ struct MainStudioView: View {
             completionIndex: appState.completionIndex,
             jumpToLine: $appState.pendingJumpToLine,
             goToDefinitionTrigger: appState.goToDefinitionTrigger,
+            foldActionTrigger: appState.editorFoldActionTrigger,
+            foldAction: appState.pendingEditorFoldAction,
             onNavigate: { target, fromLine in
                 appState.navigateToImportTarget(target, fromLine: fromLine)
             }
@@ -596,6 +598,32 @@ private struct EditorTabBar: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
+                    }
+
+                    if appState.workspaceMode == .code || appState.workspaceMode == .split {
+                        HStack(spacing: 2) {
+                            Button {
+                                appState.triggerEditorFold(.collapseAll)
+                            } label: {
+                                Image(systemName: "rectangle.compress.vertical")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(CeptraTheme.textSecondary)
+                                    .frame(width: 22, height: 22)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Collapse All Blocks (⌘⌥⇧[)")
+
+                            Button {
+                                appState.triggerEditorFold(.expandAll)
+                            } label: {
+                                Image(systemName: "rectangle.expand.vertical")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(CeptraTheme.textSecondary)
+                                    .frame(width: 22, height: 22)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Expand All Blocks (⌘⌥⇧])")
+                        }
                     }
 
                     if tab.isExecutableTestFile || tab.language == "javascript" || tab.language == "typescript" {

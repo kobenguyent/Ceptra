@@ -3,10 +3,11 @@ import CeptraCore
 import SwiftUI
 
 /// Native macOS AppKit code editor built on an explicit TextKit 1 stack with:
-/// - Per-tab scroll, cursor, and undo isolation (zero blank-viewport or cross-tab bleed on switch)
+/// - Per-tab scroll, cursor, fold, and undo isolation (zero blank-viewport or cross-tab bleed on switch)
+/// - Crisp line numbers + non-destructive code folding (collapse/expand blocks, arrays, comments, Gherkin, YAML, Markdown)
 /// - Floating IntelliSense / auto-complete popup (CodeceptJS 4.x `I.*`, PageObjects, `steps.d.ts`, DSL, `@tags`, import paths, Gherkin)
 /// - Symlink-like `⌘+Click` & `F12` navigation across imports, `require()`, config paths, `include` objects, and custom steps
-/// - Sibling line-number gutter, high-contrast syntax highlighting, and Find & Replace (`⌘F`)
+/// - Sibling line-number & fold gutter, high-contrast syntax highlighting, and Find & Replace (`⌘F`)
 struct CodeEditorView: NSViewRepresentable {
     var documentID: String
     @Binding var text: String
@@ -16,6 +17,8 @@ struct CodeEditorView: NSViewRepresentable {
     var completionIndex: WorkspaceCompletionIndex
     @Binding var jumpToLine: Int?
     var goToDefinitionTrigger: Int = 0
+    var foldActionTrigger: Int = 0
+    var foldAction: EditorFoldAction? = nil
     var onNavigate: (NavigationTarget, Int) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -33,6 +36,7 @@ struct CodeEditorView: NSViewRepresentable {
         context.coordinator.container = container
         context.coordinator.currentDocumentID = documentID
         context.coordinator.lastGoToDefTrigger = goToDefinitionTrigger
+        context.coordinator.lastFoldActionTrigger = foldActionTrigger
         context.coordinator.wireCallbacks(for: container)
         context.coordinator.observe(container: container)
         return container
@@ -53,12 +57,13 @@ struct CodeEditorView: NSViewRepresentable {
         textView.currentFileURL = URL(fileURLWithPath: documentID)
 
         if documentChanged {
-            // 1. Persist outgoing tab's cursor & scroll offset only after initial layout has stabilized
+            // 1. Persist outgoing tab's cursor, scroll offset, and collapsed fold regions
             let outgoingID = coord.currentDocumentID
             if !outgoingID.isEmpty && container.hasCompletedInitialLayout {
                 coord.savedStates[outgoingID] = TabViewState(
                     selectedRange: textView.selectedRange(),
-                    scrollOrigin: container.scrollView.documentVisibleRect.origin
+                    scrollOrigin: container.scrollView.documentVisibleRect.origin,
+                    collapsedStartLines: container.collapsedStartLines
                 )
             }
 
@@ -66,11 +71,14 @@ struct CodeEditorView: NSViewRepresentable {
             coord.completionController.dismiss()
             textView.clearHoverLink()
 
-            // 3. Swap document content cleanly with full layout & undo reset
+            // 3. Swap document content cleanly with full fold, layout & undo reset
             coord.currentDocumentID = documentID
             coord.isProgrammaticUpdate = true
+            let incomingCollapsed = coord.savedStates[documentID]?.collapsedStartLines ?? []
+            container.clearFoldsWithoutRelayout()
             textView.string = text
             textView.restyleAllText()
+            container.refreshFolds(restoringCollapsedStartLines: incomingCollapsed)
             container.relayoutDocument()
             textView.undoManager?.removeAllActions()
 
@@ -98,8 +106,11 @@ struct CodeEditorView: NSViewRepresentable {
             // External text mutation on the same tab (e.g. Insert Snippet)
             coord.isProgrammaticUpdate = true
             let savedSelection = textView.selectedRange()
+            let prevCollapsed = container.collapsedStartLines
+            container.clearFoldsWithoutRelayout()
             textView.string = text
             textView.restyleAllText()
+            container.refreshFolds(restoringCollapsedStartLines: prevCollapsed)
             container.relayoutDocument()
             let maxLen = (text as NSString).length
             let safeLoc = min(savedSelection.location, maxLen)
@@ -107,7 +118,9 @@ struct CodeEditorView: NSViewRepresentable {
             container.updateGutter()
             coord.isProgrammaticUpdate = false
         } else if languageChanged || fontChanged {
+            let prevCollapsed = container.collapsedStartLines
             textView.restyleAllText()
+            container.refreshFolds(restoringCollapsedStartLines: prevCollapsed)
             container.relayoutDocument()
             container.updateGutter()
         }
@@ -123,11 +136,19 @@ struct CodeEditorView: NSViewRepresentable {
             coord.lastGoToDefTrigger = goToDefinitionTrigger
             coord.triggerGoToDefinitionAtCaret()
         }
+
+        if coord.lastFoldActionTrigger != foldActionTrigger {
+            coord.lastFoldActionTrigger = foldActionTrigger
+            if let action = foldAction {
+                container.performFoldAction(action)
+            }
+        }
     }
 
     struct TabViewState {
         let selectedRange: NSRange
         let scrollOrigin: CGPoint
+        let collapsedStartLines: Set<Int>
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -137,6 +158,7 @@ struct CodeEditorView: NSViewRepresentable {
         var savedStates: [String: TabViewState] = [:]
         var isProgrammaticUpdate = false
         var lastGoToDefTrigger: Int = 0
+        var lastFoldActionTrigger: Int = 0
         let completionController = CompletionPopupController()
         private var observers: [NSObjectProtocol] = []
 
@@ -202,6 +224,22 @@ struct CodeEditorView: NSViewRepresentable {
             tv.onGoToDefinitionKey = { [weak self] in
                 self?.triggerGoToDefinitionAtCaret()
             }
+
+            tv.onFoldShortcut = { [weak container] action in
+                container?.performFoldAction(action)
+            }
+
+            tv.onExpandFoldedLine = { [weak container] startLine in
+                container?.setFolded(false, atStartLine: startLine)
+            }
+
+            container.gutterView.onToggleFold = { [weak container] startLine in
+                container?.toggleFold(atStartLine: startLine)
+            }
+
+            container.gutterView.onSelectLine = { [weak container] lineNumber in
+                container?.selectEntireLine(lineNumber)
+            }
         }
 
         func observe(container: CeptraEditorContainerView) {
@@ -231,11 +269,30 @@ struct CodeEditorView: NSViewRepresentable {
             observers.append(contentsOf: [boundsObserver, frameObserver, resignObserver])
         }
 
+        func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+            if !isProgrammaticUpdate, let container {
+                let overlapping = CodeFoldingEngine.collapsedStartLinesIntersecting(
+                    characterRange: affectedCharRange,
+                    regions: container.foldableRegions,
+                    collapsedStartLines: container.collapsedStartLines
+                )
+                if !overlapping.isEmpty {
+                    container.unfold(startLines: overlapping)
+                }
+            }
+            return true
+        }
+
         func textDidChange(_ notification: Notification) {
             guard !isProgrammaticUpdate,
                   let codeView = notification.object as? CeptraCodeTextView else { return }
             codeView.restyleAllText()
-            container?.updateGutter()
+            if let container {
+                let prevCollapsed = container.collapsedStartLines
+                container.refreshFolds(restoringCollapsedStartLines: prevCollapsed)
+                container.relayoutDocument()
+                container.updateGutter()
+            }
 
             let updated = codeView.string
             if parent.text != updated {
@@ -246,6 +303,7 @@ struct CodeEditorView: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             container?.gutterView.needsDisplay = true
+            container?.textView.needsDisplay = true
             if !isProgrammaticUpdate && completionController.isVisible {
                 refreshCompletions(forceShow: false)
             }
@@ -364,13 +422,93 @@ private final class FlippedClipView: NSClipView {
     override var isFlipped: Bool { true }
 }
 
-// MARK: - Container View (TextKit 1 + Sibling Gutter)
+// MARK: - Non-Destructive Code Folding Layout Manager Delegate
+
+private final class CodeFoldLayoutManagerDelegate: NSObject, NSLayoutManagerDelegate {
+    /// Sorted, disjoint UTF-16 character ranges hidden when folded.
+    var hiddenRanges: [NSRange] = []
+
+    func isCharacterHidden(_ charIndex: Int) -> Bool {
+        guard !hiddenRanges.isEmpty else { return false }
+        var low = 0
+        var high = hiddenRanges.count - 1
+        while low <= high {
+            let mid = (low + high) / 2
+            let r = hiddenRanges[mid]
+            if charIndex < r.location {
+                high = mid - 1
+            } else if charIndex >= NSMaxRange(r) {
+                low = mid + 1
+            } else {
+                return true
+            }
+        }
+        return false
+    }
+
+    func layoutManager(
+        _ layoutManager: NSLayoutManager,
+        shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+        properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
+        characterIndexes charIndexes: UnsafePointer<Int>,
+        font aFont: NSFont,
+        forGlyphRange glyphRange: NSRange
+    ) -> Int {
+        guard !hiddenRanges.isEmpty else { return 0 }
+        let count = glyphRange.length
+        guard count > 0 else { return 0 }
+
+        var anyHidden = false
+        for i in 0..<count {
+            if isCharacterHidden(charIndexes[i]) {
+                anyHidden = true
+                break
+            }
+        }
+        guard anyHidden else { return 0 }
+
+        var newGlyphs = Array(UnsafeBufferPointer(start: glyphs, count: count))
+        var newProps = Array(UnsafeBufferPointer(start: props, count: count))
+        for i in 0..<count {
+            if isCharacterHidden(charIndexes[i]) {
+                newGlyphs[i] = CGGlyph(NSNullGlyph)
+                newProps[i] = .null
+            }
+        }
+        layoutManager.setGlyphs(
+            newGlyphs,
+            properties: newProps,
+            characterIndexes: charIndexes,
+            font: aFont,
+            forGlyphRange: glyphRange
+        )
+        return count
+    }
+
+    func layoutManager(
+        _ layoutManager: NSLayoutManager,
+        shouldUse action: NSLayoutManager.ControlCharacterAction,
+        forControlCharacterAt charIndex: Int
+    ) -> NSLayoutManager.ControlCharacterAction {
+        if isCharacterHidden(charIndex) {
+            return .zeroAdvancement
+        }
+        return action
+    }
+}
+
+// MARK: - Container View (TextKit 1 + Sibling Line Number & Code Folding Gutter)
 
 final class CeptraEditorContainerView: NSView {
     let scrollView: NSScrollView
     let textView: CeptraCodeTextView
     let gutterView: LineNumberGutterView
+    private let foldLayoutDelegate = CodeFoldLayoutManagerDelegate()
     private var gutterWidthConstraint: NSLayoutConstraint?
+
+    private(set) var lineIndex = LineIndexTable(text: "")
+    private(set) var foldableRegions: [FoldableRegion] = []
+    private(set) var collapsedStartLines: Set<Int> = []
 
     var hasCompletedInitialLayout = false
     var pendingInitialScrollOrigin: CGPoint? = .zero
@@ -385,6 +523,7 @@ final class CeptraEditorContainerView: NSView {
 
         let textStorage = NSTextStorage()
         let layoutManager = NSLayoutManager()
+        layoutManager.delegate = foldLayoutDelegate
         textStorage.addLayoutManager(layoutManager)
         let textContainer = NSTextContainer(containerSize: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
         textContainer.widthTracksTextView = false
@@ -423,7 +562,7 @@ final class CeptraEditorContainerView: NSView {
         addSubview(gutterView)
         addSubview(scrollView)
 
-        let widthConstraint = gutterView.widthAnchor.constraint(equalToConstant: 48)
+        let widthConstraint = gutterView.widthAnchor.constraint(equalToConstant: 64)
         gutterWidthConstraint = widthConstraint
 
         NSLayoutConstraint.activate([
@@ -438,6 +577,7 @@ final class CeptraEditorContainerView: NSView {
             scrollView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
+        refreshFolds(restoringCollapsedStartLines: [])
         relayoutDocument()
         scrollToClampedOrigin(.zero)
         updateGutter()
@@ -482,17 +622,179 @@ final class CeptraEditorContainerView: NSView {
         gutterView.needsDisplay = true
     }
 
+    // MARK: - Code Folding Management
+
+    func clearFoldsWithoutRelayout() {
+        collapsedStartLines = []
+        foldLayoutDelegate.hiddenRanges = []
+    }
+
+    func refreshFolds(restoringCollapsedStartLines previousCollapsed: Set<Int>) {
+        let currentText = textView.string
+        let newIndex = LineIndexTable(text: currentText)
+        let newRegions = CodeFoldingEngine.detectRegions(
+            in: currentText,
+            language: textView.editorLanguage,
+            lineIndex: newIndex
+        )
+        let validCollapsed = CodeFoldingEngine.validCollapsedStartLines(from: previousCollapsed, regions: newRegions)
+
+        self.lineIndex = newIndex
+        self.foldableRegions = newRegions
+        self.collapsedStartLines = validCollapsed
+
+        applyFoldRangesToLayoutManager(previousRanges: foldLayoutDelegate.hiddenRanges)
+        syncFoldStateToViews()
+    }
+
+    func toggleFold(atStartLine startLine: Int) {
+        let shouldCollapse = !collapsedStartLines.contains(startLine)
+        setFolded(shouldCollapse, atStartLine: startLine)
+    }
+
+    func setFolded(_ collapsed: Bool, atStartLine startLine: Int) {
+        guard let region = foldableRegions.first(where: { $0.startLine == startLine }) else { return }
+        let prevRanges = foldLayoutDelegate.hiddenRanges
+        if collapsed {
+            collapsedStartLines.insert(startLine)
+            // Keep caret outside hidden range so editing remains intuitive
+            let sel = textView.selectedRange()
+            if sel.location > region.hiddenRange.location && sel.location < NSMaxRange(region.hiddenRange) {
+                textView.setSelectedRange(NSRange(location: region.hiddenRange.location, length: 0))
+            }
+        } else {
+            collapsedStartLines.remove(startLine)
+        }
+        applyFoldRangesToLayoutManager(previousRanges: prevRanges)
+        syncFoldStateToViews()
+        relayoutDocument()
+        scrollToClampedOrigin(scrollView.documentVisibleRect.origin)
+    }
+
+    func unfold(startLines: Set<Int>) {
+        guard !startLines.isEmpty else { return }
+        let prevRanges = foldLayoutDelegate.hiddenRanges
+        collapsedStartLines.subtract(startLines)
+        applyFoldRangesToLayoutManager(previousRanges: prevRanges)
+        syncFoldStateToViews()
+        relayoutDocument()
+    }
+
+    func performFoldAction(_ action: EditorFoldAction) {
+        let caretLine = lineIndex.lineNumber(forUTF16Offset: textView.selectedRange().location)
+        switch action {
+        case .collapseAtCaret:
+            if let region = CodeFoldingEngine.innermostRegion(containingLine: caretLine, in: foldableRegions) {
+                if !collapsedStartLines.contains(region.startLine) {
+                    setFolded(true, atStartLine: region.startLine)
+                } else {
+                    // Already collapsed at innermost -> collapse next enclosing unfolded region
+                    let enclosing = foldableRegions
+                        .filter { $0.startLine <= caretLine && caretLine <= $0.endLine && !collapsedStartLines.contains($0.startLine) }
+                        .min { ($0.endLine - $0.startLine) < ($1.endLine - $1.startLine) }
+                    if let enclosing {
+                        setFolded(true, atStartLine: enclosing.startLine)
+                    }
+                }
+            }
+        case .expandAtCaret:
+            if collapsedStartLines.contains(caretLine) {
+                setFolded(false, atStartLine: caretLine)
+            } else {
+                let hiding = CodeFoldingEngine.collapsedStartLinesHiding(
+                    line: caretLine,
+                    regions: foldableRegions,
+                    collapsedStartLines: collapsedStartLines
+                )
+                if !hiding.isEmpty {
+                    unfold(startLines: hiding)
+                } else if let region = CodeFoldingEngine.innermostRegion(containingLine: caretLine, in: foldableRegions),
+                          collapsedStartLines.contains(region.startLine) {
+                    setFolded(false, atStartLine: region.startLine)
+                }
+            }
+        case .collapseAll:
+            guard !foldableRegions.isEmpty else { return }
+            let prevRanges = foldLayoutDelegate.hiddenRanges
+            collapsedStartLines = Set(foldableRegions.map(\.startLine))
+            applyFoldRangesToLayoutManager(previousRanges: prevRanges)
+            syncFoldStateToViews()
+            relayoutDocument()
+            scrollToClampedOrigin(scrollView.documentVisibleRect.origin)
+        case .expandAll:
+            guard !collapsedStartLines.isEmpty else { return }
+            let prevRanges = foldLayoutDelegate.hiddenRanges
+            collapsedStartLines.removeAll()
+            applyFoldRangesToLayoutManager(previousRanges: prevRanges)
+            syncFoldStateToViews()
+            relayoutDocument()
+            scrollToClampedOrigin(scrollView.documentVisibleRect.origin)
+        }
+    }
+
+    func selectEntireLine(_ oneBasedLine: Int) {
+        let hiding = CodeFoldingEngine.collapsedStartLinesHiding(
+            line: oneBasedLine,
+            regions: foldableRegions,
+            collapsedStartLines: collapsedStartLines
+        )
+        if !hiding.isEmpty {
+            unfold(startLines: hiding)
+        }
+        let range = lineIndex.fullLineRange(forOneBasedLine: oneBasedLine)
+        textView.window?.makeFirstResponder(textView)
+        textView.setSelectedRange(range)
+        gutterView.needsDisplay = true
+        textView.needsDisplay = true
+    }
+
+    private func applyFoldRangesToLayoutManager(previousRanges: [NSRange]) {
+        let nextRanges = CodeFoldingEngine.mergedHiddenRanges(
+            regions: foldableRegions,
+            collapsedStartLines: collapsedStartLines
+        )
+        foldLayoutDelegate.hiddenRanges = nextRanges
+
+        guard let layoutManager = textView.layoutManager,
+              let storage = textView.textStorage else { return }
+        let fullLen = storage.length
+        guard fullLen > 0 else { return }
+
+        // Only invalidate when fold ranges actually changed or exist
+        if !previousRanges.isEmpty || !nextRanges.isEmpty {
+            let fullRange = NSRange(location: 0, length: fullLen)
+            layoutManager.invalidateGlyphs(forCharacterRange: fullRange, changeInLength: 0, actualCharacterRange: nil)
+            layoutManager.invalidateLayout(forCharacterRange: fullRange, actualCharacterRange: nil)
+        }
+    }
+
+    private func syncFoldStateToViews() {
+        let regionMap = Dictionary(uniqueKeysWithValues: foldableRegions.map { ($0.startLine, $0) })
+        gutterView.lineIndex = lineIndex
+        gutterView.regionsByStartLine = regionMap
+        gutterView.collapsedStartLines = collapsedStartLines
+        gutterView.needsDisplay = true
+
+        textView.lineIndex = lineIndex
+        textView.collapsedRegions = foldableRegions.filter { collapsedStartLines.contains($0.startLine) }
+        textView.hiddenRanges = foldLayoutDelegate.hiddenRanges
+        textView.needsDisplay = true
+    }
+
     /// Forces TextKit to recompute the exact document frame immediately (crucial when switching from a
-    /// long file to a short file so the scroll viewport clamps cleanly instead of staying blank below EOF).
+    /// long file to a short file or collapsing/expanding blocks so the scroll viewport clamps cleanly).
     func relayoutDocument() {
         guard let layoutManager = textView.layoutManager,
               let textContainer = textView.textContainer else { return }
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
+        let extraRect = layoutManager.extraLineFragmentRect
+        let totalContentHeight = max(usedRect.maxY, extraRect.maxY)
         let clipSize = scrollView.contentView.bounds.size
         let insets = textView.textContainerInset
-        let targetWidth = max(clipSize.width, ceil(usedRect.width + insets.width * 2 + 40))
-        let targetHeight = max(clipSize.height, ceil(usedRect.height + insets.height * 2 + 40))
+        let badgePadding: CGFloat = collapsedStartLines.isEmpty ? 40 : 140
+        let targetWidth = max(clipSize.width, ceil(usedRect.width + insets.width * 2 + badgePadding))
+        let targetHeight = max(clipSize.height, ceil(totalContentHeight + insets.height * 2 + 40))
         textView.minSize = clipSize
         textView.frame = NSRect(origin: .zero, size: NSSize(width: targetWidth, height: targetHeight))
         textView.needsDisplay = true
@@ -516,9 +818,10 @@ final class CeptraEditorContainerView: NSView {
     }
 
     func updateGutter() {
-        let lineCount = max(1, textView.string.components(separatedBy: "\n").count)
+        let lineCount = max(1, lineIndex.lineCount)
         let digits = max(3, String(lineCount).count)
-        gutterWidthConstraint?.constant = CGFloat(digits * 8 + 22)
+        // Line numbers + right padding + dedicated 18pt fold chevron column
+        gutterWidthConstraint?.constant = CGFloat(digits * 8 + 34)
         gutterView.needsDisplay = true
     }
 
@@ -528,31 +831,58 @@ final class CeptraEditorContainerView: NSView {
             pendingInitialScrollOrigin = nil
             return
         }
-        relayoutDocument()
-        let ns = textView.string as NSString
-        var currentLine = 1
-        var index = 0
-        let length = ns.length
 
-        while currentLine < oneBasedLine && index < length {
-            let lineRange = ns.lineRange(for: NSRange(location: index, length: 0))
-            index = NSMaxRange(lineRange)
-            currentLine += 1
+        // Auto-expand any collapsed regions concealing the target line
+        let hiding = CodeFoldingEngine.collapsedStartLinesHiding(
+            line: oneBasedLine,
+            regions: foldableRegions,
+            collapsedStartLines: collapsedStartLines
+        )
+        if !hiding.isEmpty {
+            unfold(startLines: hiding)
         }
 
-        let targetRange = ns.lineRange(for: NSRange(location: min(index, length), length: 0))
+        relayoutDocument()
+        let targetRange = lineIndex.fullLineRange(forOneBasedLine: oneBasedLine)
         textView.setSelectedRange(NSRange(location: targetRange.location, length: 0))
         textView.scrollRangeToVisible(targetRange)
         scrollView.reflectScrolledClipView(scrollView.contentView)
         gutterView.needsDisplay = true
+        textView.needsDisplay = true
     }
 }
 
-// MARK: - Line Number Gutter
+// MARK: - Line Number & Code Folding Gutter
 
 final class LineNumberGutterView: NSView {
     weak var textView: NSTextView?
     weak var scrollView: NSScrollView?
+
+    var lineIndex = LineIndexTable(text: "")
+    var regionsByStartLine: [Int: FoldableRegion] = [:]
+    var collapsedStartLines: Set<Int> = []
+
+    var onToggleFold: ((Int) -> Void)?
+    var onSelectLine: ((Int) -> Void)?
+
+    private struct FoldHitItem {
+        let region: FoldableRegion
+        let isCollapsed: Bool
+        let chevronRect: NSRect
+        let rowRect: NSRect
+    }
+
+    private struct LineHitItem {
+        let lineNumber: Int
+        let rowRect: NSRect
+    }
+
+    private var visibleFoldItems: [FoldHitItem] = []
+    private var visibleLineItems: [LineHitItem] = []
+    private var isMouseInside = false
+    private var hoveredFoldLine: Int? = nil
+
+    private let foldColumnWidth: CGFloat = 18
 
     init(textView: NSTextView, scrollView: NSScrollView) {
         self.textView = textView
@@ -567,13 +897,89 @@ final class LineNumberGutterView: NSView {
 
     override var isFlipped: Bool { true }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.owner === self {
+            removeTrackingArea(area)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        isMouseInside = true
+        updateHover(atWindowPoint: event.locationInWindow)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        isMouseInside = true
+        updateHover(atWindowPoint: event.locationInWindow)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        isMouseInside = false
+        hoveredFoldLine = nil
+        toolTip = nil
+        NSCursor.arrow.set()
+        needsDisplay = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let pt = convert(event.locationInWindow, from: nil)
+
+        if let foldHit = visibleFoldItems.first(where: { $0.chevronRect.contains(pt) }) {
+            onToggleFold?(foldHit.region.startLine)
+            return
+        }
+
+        if let lineHit = visibleLineItems.first(where: { $0.rowRect.contains(pt) }) {
+            onSelectLine?(lineHit.lineNumber)
+            return
+        }
+
+        super.mouseDown(with: event)
+    }
+
+    private func updateHover(atWindowPoint windowPoint: NSPoint) {
+        let pt = convert(windowPoint, from: nil)
+        if let hit = visibleFoldItems.first(where: { $0.chevronRect.contains(pt) }) {
+            if hoveredFoldLine != hit.region.startLine {
+                hoveredFoldLine = hit.region.startLine
+                needsDisplay = true
+            }
+            let verb = hit.isCollapsed ? "Expand" : "Collapse"
+            let count = hit.region.hiddenLineCount
+            toolTip = "\(verb) lines \(hit.region.startLine)–\(hit.region.endLine) (\(count) \(count == 1 ? "line" : "lines"))"
+            NSCursor.pointingHand.set()
+        } else {
+            if hoveredFoldLine != nil {
+                hoveredFoldLine = nil
+                needsDisplay = true
+            }
+            toolTip = nil
+            NSCursor.arrow.set()
+            needsDisplay = true
+        }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+
+        visibleFoldItems.removeAll(keepingCapacity: true)
+        visibleLineItems.removeAll(keepingCapacity: true)
 
         NSColor(red: 0.088, green: 0.096, blue: 0.120, alpha: 1.0).setFill()
         dirtyRect.fill()
 
-        NSColor.white.withAlphaComponent(0.06).setFill()
+        NSColor.white.withAlphaComponent(0.07).setFill()
         NSRect(x: bounds.width - 1, y: dirtyRect.minY, width: 1, height: dirtyRect.height).fill()
 
         guard let textView,
@@ -582,73 +988,152 @@ final class LineNumberGutterView: NSView {
               let scrollView else { return }
 
         let visibleRect = scrollView.documentVisibleRect
-        let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
-        let nsString = textView.string as NSString
+        let containerOrigin = textView.textContainerOrigin
+        let containerVisibleRect = NSRect(
+            x: max(0, visibleRect.origin.x - containerOrigin.x),
+            y: max(0, visibleRect.origin.y - containerOrigin.y),
+            width: visibleRect.width,
+            height: visibleRect.height + containerOrigin.y * 2
+        )
 
-        let selectedLocation = textView.selectedRange().location
-        var activeLineNumber = 1
-        if selectedLocation > 0 && selectedLocation <= nsString.length {
-            let prefix = nsString.substring(to: selectedLocation)
-            activeLineNumber = prefix.components(separatedBy: "\n").count
-        }
+        let activeLineNumber = lineIndex.lineNumber(forUTF16Offset: textView.selectedRange().location)
 
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         let normalAttrs: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: NSColor(red: 0.42, green: 0.46, blue: 0.55, alpha: 1.0)
+            .foregroundColor: NSColor(red: 0.45, green: 0.50, blue: 0.60, alpha: 1.0)
         ]
         let activeAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor(red: 0.78, green: 0.85, blue: 0.98, alpha: 1.0)
+            .foregroundColor: NSColor(red: 0.84, green: 0.90, blue: 1.0, alpha: 1.0)
         ]
 
-        if nsString.length == 0 || layoutManager.numberOfGlyphs == 0 || visibleGlyphRange.location >= layoutManager.numberOfGlyphs {
-            let label = "1" as NSString
-            let textSize = label.size(withAttributes: activeAttrs)
-            label.draw(
-                at: NSPoint(x: bounds.width - textSize.width - 10, y: textView.textContainerInset.height),
-                withAttributes: activeAttrs
-            )
-            return
-        }
+        let numberRightEdge = bounds.width - foldColumnWidth - 2
 
-        var lineNumber = 1
-        var charIndex = 0
-        let firstVisibleChar = layoutManager.characterIndexForGlyph(at: visibleGlyphRange.location)
-        while charIndex < firstVisibleChar && charIndex < nsString.length {
-            let range = nsString.lineRange(for: NSRange(location: charIndex, length: 0))
-            charIndex = NSMaxRange(range)
-            lineNumber += 1
-        }
+        func drawRow(lineNumber: Int, y: CGFloat, height: CGFloat) {
+            let rowRect = NSRect(x: 0, y: y, width: bounds.width - 1, height: height)
+            visibleLineItems.append(LineHitItem(lineNumber: lineNumber, rowRect: rowRect))
 
-        var glyphIndex = visibleGlyphRange.location
-        let maxGlyph = NSMaxRange(visibleGlyphRange)
-        let insetTop = textView.textContainerInset.height
-
-        while glyphIndex < maxGlyph {
-            let charIdx = layoutManager.characterIndexForGlyph(at: glyphIndex)
-            let lineCharRange = nsString.lineRange(for: NSRange(location: charIdx, length: 0))
-            let lineGlyphRange = layoutManager.glyphRange(forCharacterRange: lineCharRange, actualCharacterRange: nil)
-
-            var lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
-            lineRect.origin.y += insetTop - visibleRect.origin.y
+            let isActive = lineNumber == activeLineNumber
+            if isActive {
+                NSColor(red: 0.30, green: 0.44, blue: 0.78, alpha: 0.13).setFill()
+                rowRect.fill()
+            }
 
             let label = "\(lineNumber)" as NSString
-            let attrs = (lineNumber == activeLineNumber) ? activeAttrs : normalAttrs
+            let attrs = isActive ? activeAttrs : normalAttrs
             let textSize = label.size(withAttributes: attrs)
             let drawPoint = NSPoint(
-                x: bounds.width - textSize.width - 10,
-                y: lineRect.origin.y + (lineRect.height - textSize.height) * 0.5
+                x: max(4, numberRightEdge - textSize.width),
+                y: y + (height - textSize.height) * 0.5
             )
             label.draw(at: drawPoint, withAttributes: attrs)
 
-            lineNumber += 1
-            glyphIndex = max(NSMaxRange(lineGlyphRange), glyphIndex + 1)
+            if let region = regionsByStartLine[lineNumber] {
+                let isCollapsed = collapsedStartLines.contains(lineNumber)
+                let chevronRect = NSRect(
+                    x: bounds.width - foldColumnWidth - 1,
+                    y: y,
+                    width: foldColumnWidth,
+                    height: height
+                )
+                visibleFoldItems.append(FoldHitItem(
+                    region: region,
+                    isCollapsed: isCollapsed,
+                    chevronRect: chevronRect,
+                    rowRect: rowRect
+                ))
+
+                let isHovered = hoveredFoldLine == lineNumber
+                drawFoldChevron(
+                    in: chevronRect,
+                    collapsed: isCollapsed,
+                    highlighted: isHovered || isCollapsed,
+                    subtle: !isMouseInside && !isCollapsed && !isActive
+                )
+            }
         }
+
+        if layoutManager.numberOfGlyphs == 0 {
+            let lineH = max(16, textView.font?.boundingRectForFont.height ?? 17)
+            drawRow(lineNumber: 1, y: containerOrigin.y - visibleRect.origin.y, height: lineH)
+            return
+        }
+
+        let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: containerVisibleRect, in: textContainer)
+        var drawnLines = Set<Int>()
+
+        if visibleGlyphRange.length > 0 {
+            layoutManager.enumerateLineFragments(forGlyphRange: visibleGlyphRange) { rect, _, _, glyphRange, _ in
+                let charIdx = layoutManager.characterIndexForGlyph(at: glyphRange.location)
+                let lineNumber = self.lineIndex.lineNumber(forUTF16Offset: charIdx)
+                guard drawnLines.insert(lineNumber).inserted else { return }
+
+                let y = rect.origin.y + containerOrigin.y - visibleRect.origin.y
+                drawRow(lineNumber: lineNumber, y: y, height: rect.height)
+            }
+        }
+
+        // Draw trailing empty line number when document ends with a newline
+        let extraRect = layoutManager.extraLineFragmentRect
+        if extraRect.height > 0 {
+            let y = extraRect.origin.y + containerOrigin.y - visibleRect.origin.y
+            if y + extraRect.height >= dirtyRect.minY - 2 && y <= dirtyRect.maxY + 2 {
+                let lastLine = lineIndex.lineCount
+                if drawnLines.insert(lastLine).inserted {
+                    drawRow(lineNumber: lastLine, y: y, height: extraRect.height)
+                }
+            }
+        }
+    }
+
+    private func drawFoldChevron(in rect: NSRect, collapsed: Bool, highlighted: Bool, subtle: Bool) {
+        let cx = rect.midX - 0.5
+        let cy = rect.midY
+
+        if collapsed {
+            let pill = NSRect(x: cx - 6, y: cy - 6, width: 12, height: 12)
+            NSColor(red: 0.34, green: 0.62, blue: 1.0, alpha: 0.22).setFill()
+            NSBezierPath(roundedRect: pill, xRadius: 3, yRadius: 3).fill()
+        } else if highlighted {
+            let pill = NSRect(x: cx - 6, y: cy - 6, width: 12, height: 12)
+            NSColor.white.withAlphaComponent(0.08).setFill()
+            NSBezierPath(roundedRect: pill, xRadius: 3, yRadius: 3).fill()
+        }
+
+        let path = NSBezierPath()
+        path.lineWidth = 1.35
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+
+        if collapsed {
+            // Right-pointing chevron ▸
+            path.move(to: NSPoint(x: cx - 2.0, y: cy - 3.3))
+            path.line(to: NSPoint(x: cx + 2.4, y: cy))
+            path.line(to: NSPoint(x: cx - 2.0, y: cy + 3.3))
+        } else {
+            // Down-pointing chevron ▾
+            path.move(to: NSPoint(x: cx - 3.3, y: cy - 1.8))
+            path.line(to: NSPoint(x: cx, y: cy + 2.3))
+            path.line(to: NSPoint(x: cx + 3.3, y: cy - 1.8))
+        }
+
+        let strokeColor: NSColor
+        if collapsed {
+            strokeColor = NSColor(red: 0.45, green: 0.78, blue: 1.0, alpha: 1.0)
+        } else if highlighted {
+            strokeColor = NSColor(red: 0.85, green: 0.90, blue: 1.0, alpha: 0.95)
+        } else if subtle {
+            strokeColor = NSColor(red: 0.48, green: 0.53, blue: 0.64, alpha: 0.48)
+        } else {
+            strokeColor = NSColor(red: 0.64, green: 0.70, blue: 0.82, alpha: 0.85)
+        }
+        strokeColor.setStroke()
+        path.stroke()
     }
 }
 
-// MARK: - Code TextView (Syntax Highlighting + IntelliSense Keys + ⌘-Click Import Navigation)
+// MARK: - Code TextView (Syntax Highlighting + Fold Badges + IntelliSense Keys + ⌘-Click Import Navigation)
 
 final class CeptraCodeTextView: NSTextView {
     var currentFileURL: URL?
@@ -656,14 +1141,22 @@ final class CeptraCodeTextView: NSTextView {
     var editorFontSize: CGFloat = 13.0
     var tabWidth: Int = 2
 
+    var lineIndex = LineIndexTable(text: "")
+    var collapsedRegions: [FoldableRegion] = []
+    var hiddenRanges: [NSRange] = []
+
     var onInterceptKeyDown: ((NSEvent) -> Bool)?
     var onManualComplete: (() -> Void)?
     var onResolveHoverLink: ((Int) -> NavigableSpan?)?
     var onNavigateSpan: ((NavigableSpan) -> Void)?
     var onGoToDefinitionKey: (() -> Void)?
+    var onFoldShortcut: ((EditorFoldAction) -> Void)?
+    var onExpandFoldedLine: ((Int) -> Void)?
 
     private var hoveredSpan: NavigableSpan?
     private var lastMouseWindowPoint: NSPoint?
+    private var renderedFoldBadges: [(startLine: Int, rect: NSRect)] = []
+    private var isHoveringFoldBadge = false
 
     func configureDefaults() {
         isEditable = true
@@ -711,6 +1204,99 @@ final class CeptraCodeTextView: NSTextView {
         return ns.substring(to: loc).components(separatedBy: "\n").count
     }
 
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+
+        // Subtle highlight band behind the active caret line
+        guard let layoutManager else { return }
+        let sel = selectedRange()
+        guard sel.length == 0 else { return }
+        let lineRect: NSRect
+        if layoutManager.numberOfGlyphs == 0 {
+            lineRect = NSRect(x: 0, y: 0, width: bounds.width, height: max(16, font?.boundingRectForFont.height ?? 17))
+        } else if sel.location >= (string as NSString).length, layoutManager.extraLineFragmentRect.height > 0 {
+            lineRect = layoutManager.extraLineFragmentRect
+        } else {
+            let safeChar = min(sel.location, max(0, (string as NSString).length - 1))
+            let glyphIdx = layoutManager.glyphIndexForCharacter(at: safeChar)
+            guard glyphIdx < layoutManager.numberOfGlyphs else { return }
+            lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+        }
+        let highlightBand = NSRect(
+            x: rect.minX,
+            y: lineRect.origin.y + textContainerOrigin.y,
+            width: rect.width,
+            height: lineRect.height
+        )
+        if highlightBand.intersects(rect) {
+            NSColor(red: 0.30, green: 0.44, blue: 0.78, alpha: 0.08).setFill()
+            highlightBand.fill()
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        drawCollapsedFoldBadges(in: dirtyRect)
+    }
+
+    private func drawCollapsedFoldBadges(in dirtyRect: NSRect) {
+        renderedFoldBadges.removeAll(keepingCapacity: true)
+        guard !collapsedRegions.isEmpty,
+              let layoutManager,
+              layoutManager.numberOfGlyphs > 0 else { return }
+
+        let badgeFont = NSFont.monospacedSystemFont(ofSize: max(10, editorFontSize - 2), weight: .medium)
+        let badgeAttrs: [NSAttributedString.Key: Any] = [
+            .font: badgeFont,
+            .foregroundColor: NSColor(red: 0.54, green: 0.80, blue: 1.0, alpha: 1.0)
+        ]
+
+        let nsLen = (string as NSString).length
+        for region in collapsedRegions {
+            let lineStartChar = lineIndex.lineStartOffset(forOneBasedLine: region.startLine)
+            guard lineStartChar < nsLen else { continue }
+            // Skip nested collapsed regions whose opening line is already hidden by an outer fold
+            if isCharHidden(lineStartChar) { continue }
+
+            let glyphIdx = layoutManager.glyphIndexForCharacter(at: lineStartChar)
+            guard glyphIdx < layoutManager.numberOfGlyphs else { continue }
+            let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+            let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+
+            let label = region.badgeLabel as NSString
+            let textSize = label.size(withAttributes: badgeAttrs)
+            let pillHeight = min(lineRect.height - 2, textSize.height + 3)
+            let pillWidth = textSize.width + 12
+            let pillX = usedRect.maxX + textContainerOrigin.x + 8
+            let pillY = lineRect.origin.y + textContainerOrigin.y + (lineRect.height - pillHeight) * 0.5
+            let pillRect = NSRect(x: pillX, y: pillY, width: pillWidth, height: pillHeight)
+
+            renderedFoldBadges.append((startLine: region.startLine, rect: pillRect))
+            guard pillRect.intersects(dirtyRect) else { continue }
+
+            let path = NSBezierPath(roundedRect: pillRect, xRadius: 4, yRadius: 4)
+            NSColor(red: 0.16, green: 0.24, blue: 0.38, alpha: 0.92).setFill()
+            path.fill()
+            NSColor(red: 0.36, green: 0.62, blue: 0.96, alpha: 0.55).setStroke()
+            path.lineWidth = 0.75
+            path.stroke()
+
+            label.draw(
+                at: NSPoint(x: pillRect.minX + 6, y: pillRect.minY + (pillRect.height - textSize.height) * 0.5),
+                withAttributes: badgeAttrs
+            )
+        }
+    }
+
+    private func isCharHidden(_ charIndex: Int) -> Bool {
+        for r in hiddenRanges {
+            if charIndex >= r.location && charIndex < NSMaxRange(r) {
+                return true
+            }
+        }
+        return false
+    }
+
     override func keyDown(with event: NSEvent) {
         // Ctrl+Space -> trigger IntelliSense manually
         if event.modifierFlags.contains(.control) && event.keyCode == 49 {
@@ -720,6 +1306,24 @@ final class CeptraCodeTextView: NSTextView {
         // F12 -> Go to Definition / Follow Import
         if event.keyCode == 111 {
             onGoToDefinitionKey?()
+            return
+        }
+        // ⌘⌥[ / ⌘⌥] -> Collapse / Expand block at caret; ⌘⌥⇧[ / ⌘⌥⇧] -> Collapse / Expand all
+        let mods = event.modifierFlags.intersection([.command, .option, .shift, .control])
+        if mods == [.command, .option] && event.keyCode == 33 { // [
+            onFoldShortcut?(.collapseAtCaret)
+            return
+        }
+        if mods == [.command, .option] && event.keyCode == 30 { // ]
+            onFoldShortcut?(.expandAtCaret)
+            return
+        }
+        if mods == [.command, .option, .shift] && event.keyCode == 33 { // ⇧[
+            onFoldShortcut?(.collapseAll)
+            return
+        }
+        if mods == [.command, .option, .shift] && event.keyCode == 30 { // ⇧]
+            onFoldShortcut?(.expandAll)
             return
         }
         if onInterceptKeyDown?(event) == true {
@@ -744,6 +1348,19 @@ final class CeptraCodeTextView: NSTextView {
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
         lastMouseWindowPoint = event.locationInWindow
+        let localPoint = convert(event.locationInWindow, from: nil)
+        if renderedFoldBadges.contains(where: { $0.rect.contains(localPoint) }) {
+            clearHoverLink()
+            isHoveringFoldBadge = true
+            toolTip = "Click to expand collapsed block"
+            NSCursor.pointingHand.set()
+            return
+        }
+        if isHoveringFoldBadge {
+            isHoveringFoldBadge = false
+            toolTip = nil
+            NSCursor.iBeam.set()
+        }
         let cmdDown = event.modifierFlags.contains(.command)
         if cmdDown {
             updateHoverLink(atWindowPoint: event.locationInWindow, commandPressed: true)
@@ -755,10 +1372,16 @@ final class CeptraCodeTextView: NSTextView {
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         lastMouseWindowPoint = nil
+        isHoveringFoldBadge = false
         clearHoverLink()
     }
 
     override func mouseDown(with event: NSEvent) {
+        let localPoint = convert(event.locationInWindow, from: nil)
+        if let badge = renderedFoldBadges.first(where: { $0.rect.contains(localPoint) }) {
+            onExpandFoldedLine?(badge.startLine)
+            return
+        }
         if event.modifierFlags.contains(.command) {
             if let span = resolveSpan(atWindowPoint: event.locationInWindow) {
                 clearHoverLink()
