@@ -357,6 +357,26 @@ struct CeptraApp: App {
 
                 Divider()
 
+                Button("Zoom In") {
+                    appState.zoomIn()
+                }
+                .keyboardShortcut("=", modifiers: .command)
+                .disabled(!appState.canZoomIn)
+
+                Button("Zoom Out") {
+                    appState.zoomOut()
+                }
+                .keyboardShortcut("-", modifiers: .command)
+                .disabled(!appState.canZoomOut)
+
+                Button("Actual Size (100%)") {
+                    appState.resetZoom()
+                }
+                .keyboardShortcut("0", modifiers: .command)
+                .disabled(appState.isDefaultZoom)
+
+                Divider()
+
                 Button("Toggle Explorer Sidebar") {
                     appState.toggleLeftSidebar()
                 }

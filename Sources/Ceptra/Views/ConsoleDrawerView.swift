@@ -277,15 +277,16 @@ struct ConsoleDrawerView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 2) {
+                            let logFontSize = min(20.0, max(9.5, 11.5 * appState.editorZoomScale))
                             if filteredLogs.isEmpty {
                                 Text("Ready. Press ⌘R to run tests, use the \(appState.workspace?.packageManager.rawValue ?? "npm") menu to update dependencies, or run any shell command below.")
-                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .font(.system(size: logFontSize, design: .monospaced))
                                     .foregroundStyle(CeptraTheme.textMuted)
                                     .padding(12)
                             } else {
                                 ForEach(filteredLogs) { entry in
                                     Text(entry.text)
-                                        .font(.system(size: 11.5, design: .monospaced))
+                                        .font(.system(size: logFontSize, design: .monospaced))
                                         .foregroundStyle(lineColor(for: entry))
                                         .textSelection(.enabled)
                                         .frame(maxWidth: .infinity, alignment: .leading)

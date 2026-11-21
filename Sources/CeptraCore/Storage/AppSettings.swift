@@ -66,6 +66,23 @@ public struct WorkspaceModulePreferences: Codable, Equatable, Sendable {
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
+    public static let defaultEditorFontSize: Double = 13.0
+    public static let minEditorFontSize: Double = 9.0
+    public static let maxEditorFontSize: Double = 28.0
+
+    public static func clampedEditorFontSize(_ raw: Double) -> Double {
+        let clamped = min(max(raw, minEditorFontSize), maxEditorFontSize)
+        return (clamped * 2.0).rounded() / 2.0
+    }
+
+    public var editorZoomScale: Double {
+        Self.clampedEditorFontSize(editorFontSize) / Self.defaultEditorFontSize
+    }
+
+    public var editorZoomPercentage: Int {
+        Int((editorZoomScale * 100.0).rounded())
+    }
+
     public var recentProjectPaths: [String]
     public var workspaceConfigPaths: [String: String]
     public var editorFontSize: Double

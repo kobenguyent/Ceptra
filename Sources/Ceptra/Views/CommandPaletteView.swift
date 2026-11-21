@@ -245,6 +245,33 @@ struct CommandPaletteView: View {
                 action: { appState.showingReportsSheet = true }
             ),
             PaletteItem(
+                id: "act-zoom-in",
+                title: "Zoom In",
+                subtitle: "Increase editor & console font size (currently \(appState.editorZoomPercentage)%)",
+                icon: "plus.magnifyingglass",
+                iconColor: CeptraTheme.accent,
+                badge: "⌘+",
+                action: { appState.zoomIn() }
+            ),
+            PaletteItem(
+                id: "act-zoom-out",
+                title: "Zoom Out",
+                subtitle: "Decrease editor & console font size (currently \(appState.editorZoomPercentage)%)",
+                icon: "minus.magnifyingglass",
+                iconColor: CeptraTheme.accent,
+                badge: "⌘−",
+                action: { appState.zoomOut() }
+            ),
+            PaletteItem(
+                id: "act-zoom-reset",
+                title: "Reset Zoom to Actual Size (100%)",
+                subtitle: "Restore default 13pt editor typography",
+                icon: "1.magnifyingglass",
+                iconColor: CeptraTheme.textSecondary,
+                badge: "⌘0",
+                action: { appState.resetZoom() }
+            ),
+            PaletteItem(
                 id: "act-theme-toggle",
                 title: appState.settings.appearance == .dark ? "Switch Theme to Paper Light" : "Switch Theme to Obsidian Dark",
                 subtitle: "Toggle Ceptra studio appearance",

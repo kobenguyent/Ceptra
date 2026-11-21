@@ -27,17 +27,26 @@ struct SettingsView: View {
                 ))
             }
 
-            Section("Editor") {
-                HStack {
+            Section("Editor & Zoom") {
+                HStack(spacing: 8) {
                     Text("Font Size")
-                    Slider(value: $appState.settings.editorFontSize, in: 10...20, step: 0.5)
-                    Text("\(String(format: "%.1f", appState.settings.editorFontSize)) pt")
+                    Slider(value: $appState.settings.editorFontSize, in: AppSettings.minEditorFontSize...AppSettings.maxEditorFontSize, step: 0.5)
+                    Text("\(String(format: "%.1f", appState.settings.editorFontSize)) pt (\(appState.editorZoomPercentage)%)")
                         .font(.system(size: 11, design: .monospaced))
                         .monospacedDigit()
                         .contentTransition(.numericText())
-                        .frame(width: 46, alignment: .trailing)
+                        .frame(width: 88, alignment: .trailing)
                         .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: appState.settings.editorFontSize)
+                    if !appState.isDefaultZoom {
+                        Button("Reset") {
+                            appState.resetZoom()
+                        }
+                        .controlSize(.small)
+                    }
                 }
+                Text("Use ⌘+ / ⌘− / ⌘0, trackpad pinch, or ⌘ + scroll wheel anywhere in the editor to zoom smoothly.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
             }
 
             if let ws = appState.workspace {

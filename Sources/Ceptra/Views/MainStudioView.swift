@@ -240,8 +240,35 @@ struct MainStudioView: View {
                 }
 
                 if let activeTab = appState.activeTab {
-                    editorSurface(for: activeTab)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ZStack(alignment: .bottomTrailing) {
+                        editorSurface(for: activeTab)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        if let hudText = appState.zoomHUDText {
+                            HStack(spacing: 6) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(CeptraTheme.accent)
+                                Text(hudText)
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .monospacedDigit()
+                                    .contentTransition(.numericText())
+                                    .foregroundStyle(CeptraTheme.textPrimary)
+                            }
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 6)
+                            .background(CeptraTheme.panelBG.opacity(0.94), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(CeptraTheme.borderStrong, lineWidth: 1)
+                            )
+                            .shadow(color: Color.black.opacity(0.24), radius: 10, y: 4)
+                            .padding(14)
+                            .allowsHitTesting(false)
+                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.94, anchor: .bottomTrailing)))
+                        }
+                    }
+                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: appState.zoomHUDText)
                 } else {
                     emptyEditorPlaceholder
                 }
@@ -336,6 +363,12 @@ struct MainStudioView: View {
                     appState.cursorLine = line
                     appState.cursorColumn = col
                 }
+            },
+            onZoomDelta: { delta in
+                appState.applyZoomDelta(Double(delta))
+            },
+            onResetZoom: {
+                appState.resetZoom()
             }
         )
     }
@@ -938,6 +971,67 @@ private struct ToolsControlPopover: View {
 
                 Divider().overlay(CeptraTheme.border)
 
+                // Zoom Control (⌘− · 100% · ⌘+)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("ZOOM")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .tracking(0.6)
+                            .foregroundStyle(CeptraTheme.textMuted)
+                        Spacer()
+                        Text("⌘−  ⌘0  ⌘+")
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(CeptraTheme.textMuted)
+                    }
+
+                    HStack(spacing: 4) {
+                        Button {
+                            appState.zoomOut()
+                        } label: {
+                            Image(systemName: "minus")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(appState.canZoomOut ? CeptraTheme.textPrimary : CeptraTheme.textMuted.opacity(0.45))
+                                .frame(width: 34, height: 24)
+                                .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(CeptraTheme.border, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!appState.canZoomOut)
+                        .help("Zoom Out (⌘−)")
+
+                        Button {
+                            appState.resetZoom()
+                        } label: {
+                            Text("\(appState.editorZoomPercentage)%")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .monospacedDigit()
+                                .contentTransition(.numericText())
+                                .foregroundStyle(appState.isDefaultZoom ? CeptraTheme.textSecondary : CeptraTheme.accent)
+                                .frame(maxWidth: .infinity, minHeight: 24)
+                                .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(CeptraTheme.border, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reset Zoom to 100% (⌘0)")
+
+                        Button {
+                            appState.zoomIn()
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(appState.canZoomIn ? CeptraTheme.textPrimary : CeptraTheme.textMuted.opacity(0.45))
+                                .frame(width: 34, height: 24)
+                                .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(CeptraTheme.border, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!appState.canZoomIn)
+                        .help("Zoom In (⌘+)")
+                    }
+                }
+
+                Divider().overlay(CeptraTheme.border)
+
                 // Appearance Switcher
                 VStack(alignment: .leading, spacing: 6) {
                     Text("APPEARANCE")
@@ -1127,6 +1221,24 @@ private struct BottomModuleStatusStrip: View {
                         .font(.system(size: 10.5, design: .monospaced))
                         .monospacedDigit()
                         .foregroundStyle(CeptraTheme.textMuted)
+
+                    if !appState.isDefaultZoom {
+                        Button {
+                            appState.resetZoom()
+                        } label: {
+                            Text("\(appState.editorZoomPercentage)%")
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .monospacedDigit()
+                                .contentTransition(.numericText())
+                                .foregroundStyle(CeptraTheme.accent)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(CeptraTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Zoom \(appState.editorZoomPercentage)% — Click to reset to 100% (⌘0)")
+                        .transition(.opacity)
+                    }
 
                     if !isCompact {
                         Text(appState.settings.modulePreferences.autoOpenReplayOnRun ? "Replay ON" : "Replay OFF")

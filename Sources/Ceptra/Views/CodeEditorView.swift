@@ -30,6 +30,8 @@ struct CodeEditorView: NSViewRepresentable {
     var onRemoveBreakpoint: ((UUID) -> Void)? = nil
     var onRunScenario: ((String) -> Void)? = nil
     var onCursorChanged: ((Int, Int) -> Void)? = nil
+    var onZoomDelta: ((CGFloat) -> Void)? = nil
+    var onResetZoom: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -76,15 +78,16 @@ struct CodeEditorView: NSViewRepresentable {
 
         let documentChanged = coord.currentDocumentID != documentID
         let languageChanged = textView.editorLanguage != language
-        let fontChanged = abs(textView.editorFontSize - fontSize) > 0.1
+        let previousFontSize = textView.editorFontSize
+        let fontChanged = abs(previousFontSize - fontSize) > 0.05
 
-        textView.editorFontSize = fontSize
-        container.lineLayoutDelegate.fontSize = fontSize
         textView.editorLanguage = language
         textView.tabWidth = 2
         textView.currentFileURL = URL(fileURLWithPath: documentID)
 
         if documentChanged {
+            textView.editorFontSize = fontSize
+            container.lineLayoutDelegate.fontSize = fontSize
             // 1. Persist outgoing tab's cursor, scroll offset, and collapsed fold regions
             let outgoingID = coord.currentDocumentID
             if !outgoingID.isEmpty && container.hasCompletedInitialLayout {
@@ -146,12 +149,16 @@ struct CodeEditorView: NSViewRepresentable {
             textView.setSelectedRange(NSRange(location: safeLoc, length: 0))
             container.updateGutter()
             coord.isProgrammaticUpdate = false
-        } else if languageChanged || fontChanged || themeChanged {
+        } else if languageChanged || themeChanged {
+            textView.editorFontSize = fontSize
+            container.lineLayoutDelegate.fontSize = fontSize
             let prevCollapsed = container.collapsedStartLines
             textView.restyleAllText()
             container.refreshFolds(restoringCollapsedStartLines: prevCollapsed)
             container.relayoutDocument()
             container.updateGutter()
+        } else if fontChanged {
+            container.applyZoomFontSize(fontSize)
         }
 
         container.setScenarioMarkers(scenariosByLine)
@@ -311,6 +318,14 @@ struct CodeEditorView: NSViewRepresentable {
 
             tv.onExpandFoldedLine = { [weak container] startLine in
                 container?.setFolded(false, atStartLine: startLine)
+            }
+
+            tv.onZoomDelta = { [weak self] delta in
+                self?.parent.onZoomDelta?(delta)
+            }
+
+            tv.onResetZoom = { [weak self] in
+                self?.parent.onResetZoom?()
             }
 
             container.gutterView.onToggleFold = { [weak container] startLine in
@@ -740,6 +755,38 @@ final class CeptraEditorContainerView: NSView {
     func setScenarioMarkers(_ markers: [Int: (title: String, status: ExecutionStatus)]) {
         gutterView.scenariosByLine = markers
         gutterView.needsDisplay = true
+    }
+
+    /// Smooth, zero-flicker, scroll-anchored zoom update: updates font & line metrics in place
+    /// without re-running syntax regexes or losing the user's current scroll line.
+    func applyZoomFontSize(_ newSize: CGFloat) {
+        guard let layoutManager = textView.layoutManager else {
+            textView.editorFontSize = newSize
+            lineLayoutDelegate.fontSize = newSize
+            textView.restyleAllText()
+            relayoutDocument()
+            updateGutter()
+            return
+        }
+
+        let oldSize = textView.editorFontSize
+        let oldMetrics = CeptraCenteredLineLayoutDelegate.metrics(fontSize: oldSize, in: layoutManager)
+        let insetY = textView.textContainerInset.height
+        let visibleOrigin = scrollView.documentVisibleRect.origin
+        let anchoredLineFloat = max(0, visibleOrigin.y - insetY) / max(1, oldMetrics.lineHeight)
+
+        textView.editorFontSize = newSize
+        lineLayoutDelegate.fontSize = newSize
+        textView.updateFontSizeInPlace(newSize)
+
+        relayoutDocument()
+        updateGutter()
+
+        let newMetrics = CeptraCenteredLineLayoutDelegate.metrics(fontSize: newSize, in: layoutManager)
+        let targetY = anchoredLineFloat > 0.01 ? (anchoredLineFloat * newMetrics.lineHeight + insetY) : visibleOrigin.y
+        scrollToClampedOrigin(NSPoint(x: visibleOrigin.x, y: targetY))
+        gutterView.needsDisplay = true
+        textView.needsDisplay = true
     }
 
     required init?(coder: NSCoder) {
@@ -1975,6 +2022,8 @@ final class CeptraCodeTextView: NSTextView {
     var onGoToDefinitionKey: (() -> Void)?
     var onFoldShortcut: ((EditorFoldAction) -> Void)?
     var onExpandFoldedLine: ((Int) -> Void)?
+    var onZoomDelta: ((CGFloat) -> Void)?
+    var onResetZoom: (() -> Void)?
 
     private var hoveredSpan: NavigableSpan?
     private var lastMouseWindowPoint: NSPoint?
@@ -1982,6 +2031,8 @@ final class CeptraCodeTextView: NSTextView {
     private var isHoveringFoldBadge = false
     private var flagsMonitor: Any?
     private let hoverLinkPreview = HoverLinkPreviewController()
+    private var pinchZoomAccumulator: CGFloat = 0
+    private var wheelZoomAccumulator: CGFloat = 0
 
     deinit {
         if let flagsMonitor {
@@ -2294,6 +2345,19 @@ final class CeptraCodeTextView: NSTextView {
             onFoldShortcut?(.expandAll)
             return
         }
+        // ⌘+ (Shift+= or Numpad +) / ⌘− (Numpad −) / ⌘0 (Numpad 0) zoom fallback
+        if (mods == [.command, .shift] && event.keyCode == 24) || (mods == [.command] && event.keyCode == 69) {
+            onZoomDelta?(1.0)
+            return
+        }
+        if mods == [.command] && event.keyCode == 78 {
+            onZoomDelta?(-1.0)
+            return
+        }
+        if mods == [.command] && event.keyCode == 82 {
+            onResetZoom?()
+            return
+        }
         if onInterceptKeyDown?(event) == true {
             return
         }
@@ -2358,6 +2422,50 @@ final class CeptraCodeTextView: NSTextView {
         lastMouseWindowPoint = nil
         isHoveringFoldBadge = false
         clearHoverLink()
+    }
+
+    override func magnify(with event: NSEvent) {
+        guard let onZoomDelta else {
+            super.magnify(with: event)
+            return
+        }
+        if event.phase == .began {
+            pinchZoomAccumulator = 0
+        }
+        pinchZoomAccumulator += event.magnification * max(11.0, editorFontSize) * 0.9
+        let step: CGFloat = 0.5
+        if abs(pinchZoomAccumulator) >= step {
+            let steps = trunc(pinchZoomAccumulator / step)
+            let delta = steps * step
+            pinchZoomAccumulator -= delta
+            onZoomDelta(delta)
+        }
+        if event.phase == .ended || event.phase == .cancelled {
+            pinchZoomAccumulator = 0
+        }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        let mods = event.modifierFlags.intersection([.command, .control, .option])
+        if mods == [.command], let onZoomDelta, abs(event.scrollingDeltaY) > 0.01 {
+            let scaled = event.hasPreciseScrollingDeltas
+                ? (event.scrollingDeltaY * 0.045)
+                : (event.scrollingDeltaY > 0 ? 1.0 : -1.0)
+            wheelZoomAccumulator += scaled
+            let step: CGFloat = 0.5
+            if abs(wheelZoomAccumulator) >= step {
+                let steps = trunc(wheelZoomAccumulator / step)
+                let delta = steps * step
+                wheelZoomAccumulator -= delta
+                onZoomDelta(delta)
+            }
+            if event.phase == .ended || event.phase == .cancelled || event.momentumPhase == .ended {
+                wheelZoomAccumulator = 0
+            }
+            return
+        }
+        wheelZoomAccumulator = 0
+        super.scrollWheel(with: event)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -2500,6 +2608,40 @@ final class CeptraCodeTextView: NSTextView {
             ? String(repeating: " ", count: tabWidth)
             : ""
         insertText("\n" + indent + extra, replacementRange: selectedRange())
+    }
+
+    func updateFontSizeInPlace(_ newSize: CGFloat) {
+        guard let storage = textStorage else { return }
+        let fullRange = NSRange(location: 0, length: storage.length)
+        let regularFont = NSFont.monospacedSystemFont(ofSize: newSize, weight: .regular)
+        let boldFont = NSFont.monospacedSystemFont(ofSize: newSize, weight: .semibold)
+        let paragraph = NSMutableParagraphStyle()
+        if let lm = layoutManager {
+            let m = CeptraCenteredLineLayoutDelegate.metrics(fontSize: newSize, in: lm)
+            paragraph.minimumLineHeight = m.lineHeight
+            paragraph.maximumLineHeight = m.lineHeight
+        }
+
+        storage.beginEditing()
+        if fullRange.length > 0 {
+            storage.addAttribute(.paragraphStyle, value: paragraph, range: fullRange)
+            storage.enumerateAttribute(.font, in: fullRange, options: []) { value, range, _ in
+                let isBold: Bool
+                if let existingFont = value as? NSFont {
+                    isBold = NSFontManager.shared.traits(of: existingFont).contains(.boldFontMask)
+                        || existingFont.fontDescriptor.symbolicTraits.contains(.bold)
+                } else {
+                    isBold = false
+                }
+                storage.addAttribute(.font, value: isBold ? boldFont : regularFont, range: range)
+            }
+        }
+        storage.endEditing()
+
+        var nextTyping = typingAttributes
+        nextTyping[.font] = regularFont
+        nextTyping[.paragraphStyle] = paragraph
+        typingAttributes = nextTyping
     }
 
     func restyleAllText() {

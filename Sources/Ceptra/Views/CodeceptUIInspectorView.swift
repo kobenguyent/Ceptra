@@ -77,7 +77,7 @@ struct CodeceptUIInspectorView: View {
             // Main Surface
             switch appState.codeceptUIStatus {
             case .running(let url, let port):
-                LoopbackCodeceptUIWebView(url: url, allowedPort: port)
+                LoopbackCodeceptUIWebView(url: url, allowedPort: port, pageZoom: appState.editorZoomScale)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             case .starting(let port):
@@ -237,6 +237,7 @@ struct CodeceptUIInspectorView: View {
 private struct LoopbackCodeceptUIWebView: NSViewRepresentable {
     let url: URL
     let allowedPort: Int
+    let pageZoom: Double
 
     func makeCoordinator() -> Coordinator {
         Coordinator(allowedPort: allowedPort)
@@ -248,12 +249,16 @@ private struct LoopbackCodeceptUIWebView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
+        webView.pageZoom = pageZoom
         webView.load(URLRequest(url: url))
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.allowedPort = allowedPort
+        if abs(webView.pageZoom - pageZoom) > 0.01 {
+            webView.pageZoom = pageZoom
+        }
         if webView.url?.port != url.port {
             webView.load(URLRequest(url: url))
         }

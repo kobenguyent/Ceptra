@@ -146,4 +146,19 @@ final class MinimalWorkspaceRefactorTests: XCTestCase {
         XCTAssertFalse(CodeceptUIServerManager.isAllowedLoopbackURL(URL(string: "http://127.0.0.1.evil.com:3333/")!, port: port))
         XCTAssertFalse(CodeceptUIServerManager.isAllowedLoopbackURL(URL(string: "file:///etc/passwd")!, port: port))
     }
+
+    func testEditorZoomBoundsSnappingAndPercentage() {
+        XCTAssertEqual(AppSettings.clampedEditorFontSize(4.0), AppSettings.minEditorFontSize)
+        XCTAssertEqual(AppSettings.clampedEditorFontSize(99.0), AppSettings.maxEditorFontSize)
+        XCTAssertEqual(AppSettings.clampedEditorFontSize(14.3), 14.5)
+        XCTAssertEqual(AppSettings.clampedEditorFontSize(14.2), 14.0)
+
+        var settings = AppSettings()
+        XCTAssertEqual(settings.editorZoomPercentage, 100)
+        XCTAssertEqual(settings.editorZoomScale, 1.0, accuracy: 0.001)
+
+        settings.editorFontSize = 19.5
+        XCTAssertEqual(settings.editorZoomPercentage, 150)
+        XCTAssertEqual(settings.editorZoomScale, 1.5, accuracy: 0.001)
+    }
 }

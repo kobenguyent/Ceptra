@@ -163,6 +163,7 @@ final class AppState: ObservableObject {
     @Published var showingReportsSheet: Bool = false
     @Published var bannerMessage: String? = nil
     @Published var bannerIsError: Bool = false
+    @Published var zoomHUDText: String? = nil
     @Published var updateState: AppUpdateState = .idle
 
     // Services
@@ -176,6 +177,7 @@ final class AppState: ObservableObject {
     var cdpClient: CDPInspectorClient? = nil
     var cdpEventTask: Task<Void, Never>? = nil
     var hasHandledInitialBreakOnStart: Bool = false
+    private var zoomHUDDismissTask: Task<Void, Never>? = nil
 
     init() {
         let loadedSettings = settingsStore.load()
@@ -223,6 +225,53 @@ final class AppState: ObservableObject {
 
     var canNavigateBack: Bool { !navigationBackStack.isEmpty }
     var canNavigateForward: Bool { !navigationForwardStack.isEmpty }
+
+    var editorZoomScale: Double { settings.editorZoomScale }
+    var editorZoomPercentage: Int { settings.editorZoomPercentage }
+    var isDefaultZoom: Bool { abs(settings.editorFontSize - AppSettings.defaultEditorFontSize) < 0.05 }
+    var canZoomIn: Bool { settings.editorFontSize < AppSettings.maxEditorFontSize - 0.05 }
+    var canZoomOut: Bool { settings.editorFontSize > AppSettings.minEditorFontSize + 0.05 }
+
+    func zoomIn(step: Double = 1.0) {
+        setEditorFontSize(settings.editorFontSize + step, showHUD: true)
+    }
+
+    func zoomOut(step: Double = 1.0) {
+        setEditorFontSize(settings.editorFontSize - step, showHUD: true)
+    }
+
+    func resetZoom() {
+        setEditorFontSize(AppSettings.defaultEditorFontSize, showHUD: true)
+    }
+
+    func applyZoomDelta(_ deltaPoints: Double) {
+        guard abs(deltaPoints) >= 0.45 else { return }
+        setEditorFontSize(settings.editorFontSize + deltaPoints, showHUD: true)
+    }
+
+    func setEditorFontSize(_ rawSize: Double, showHUD: Bool = true) {
+        let next = AppSettings.clampedEditorFontSize(rawSize)
+        let changed = abs(settings.editorFontSize - next) > 0.01
+        if changed {
+            settings.editorFontSize = next
+            saveSettings()
+        }
+        if showHUD {
+            let pct = settings.editorZoomPercentage
+            let ptStr = next.truncatingRemainder(dividingBy: 1) == 0
+                ? "\(Int(next))"
+                : String(format: "%.1f", next)
+            zoomHUDText = "\(pct)% · \(ptStr)pt"
+            zoomHUDDismissTask?.cancel()
+            zoomHUDDismissTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_150_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.zoomHUDText = nil
+                }
+            }
+        }
+    }
 
     var activeFeaturesForCurrentTab: [ParsedFeature] {
         guard let activeTabPath else { return [] }
