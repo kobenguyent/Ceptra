@@ -29,24 +29,42 @@ public enum WorkspaceScanner {
             explicitConfigPath: customConfigPath
         )
 
-        var discoveredConfigPaths = discoveredConfigURLs.map { $0.standardizedFileURL.path }
-        if let activeConfigPath = config.configFilePath,
-           !discoveredConfigPaths.contains(activeConfigPath) {
-            discoveredConfigPaths.insert(activeConfigPath, at: 0)
+        var discoveredConfigURLsOrdered = discoveredConfigURLs.map(\.standardizedFileURL)
+        if let activeConfigPath = config.configFilePath {
+            let activeURL = URL(fileURLWithPath: activeConfigPath).standardizedFileURL
+            if !discoveredConfigURLsOrdered.contains(where: { $0.path == activeURL.path }) {
+                discoveredConfigURLsOrdered.insert(activeURL, at: 0)
+            }
         }
+        let discoveredConfigPaths = discoveredConfigURLsOrdered.map(\.path)
         let knownConfigPathSet = Set(discoveredConfigPaths)
+        let discoveredConfigs = ConfigParser.parseConfigFiles(
+            discoveredConfigURLsOrdered,
+            rootURL: standardizedRoot,
+            activeConfigPath: config.configFilePath,
+            isCustomOverride: config.isCustomConfigOverride
+        )
 
-        let testRoot = config.resolvedTestRootURL(workspaceRoot: standardizedRoot)
-        let includeAbsolutePaths = Set(config.includes.map {
-            resolveAbsolutePath($0.relativePath, base: testRoot)
-        })
-        let helperAbsolutePaths = Set(config.helpers.compactMap { $0.requirePath }.map {
-            resolveAbsolutePath($0, base: testRoot)
-        })
-        let stepDefAbsolutePaths = Set(config.gherkinStepsPaths.map {
-            resolveAbsolutePath($0, base: testRoot)
-        })
-        let resolvedOutputPath = config.resolvedOutputURL(rootURL: standardizedRoot).path
+        var includeAbsolutePaths = Set<String>()
+        var helperAbsolutePaths = Set<String>()
+        var stepDefAbsolutePaths = Set<String>()
+        var resolvedOutputPaths = Set<String>()
+        let allConfigsForClassification = discoveredConfigs.isEmpty ? [config] : discoveredConfigs
+        for cfg in allConfigsForClassification {
+            let cfgTestRoot = cfg.resolvedTestRootURL(workspaceRoot: standardizedRoot)
+            for inc in cfg.includes {
+                includeAbsolutePaths.insert(resolveAbsolutePath(inc.relativePath, base: cfgTestRoot))
+            }
+            for helper in cfg.helpers {
+                if let req = helper.requirePath {
+                    helperAbsolutePaths.insert(resolveAbsolutePath(req, base: cfgTestRoot))
+                }
+            }
+            for stepDef in cfg.gherkinStepsPaths {
+                stepDefAbsolutePaths.insert(resolveAbsolutePath(stepDef, base: cfgTestRoot))
+            }
+            resolvedOutputPaths.insert(cfg.resolvedOutputURL(rootURL: standardizedRoot).path)
+        }
 
         let packageManager = PackageManagerSupport.detectPackageManager(in: standardizedRoot)
         let packageScripts = PackageManagerSupport.readPackageScripts(in: standardizedRoot)
@@ -65,7 +83,7 @@ public enum WorkspaceScanner {
             includeAbsolutePaths: includeAbsolutePaths,
             helperAbsolutePaths: helperAbsolutePaths,
             stepDefAbsolutePaths: stepDefAbsolutePaths,
-            resolvedOutputPath: resolvedOutputPath
+            resolvedOutputPaths: resolvedOutputPaths
         )
 
         var visitedDirs = Set<String>([standardizedRoot.resolvingSymlinksInPath().path])
@@ -117,6 +135,7 @@ public enum WorkspaceScanner {
             rootURL: standardizedRoot,
             config: config,
             discoveredConfigPaths: discoveredConfigPaths,
+            discoveredConfigs: discoveredConfigs,
             packageManager: packageManager,
             packageScripts: packageScripts,
             files: allFiles,
@@ -132,7 +151,7 @@ public enum WorkspaceScanner {
         let includeAbsolutePaths: Set<String>
         let helperAbsolutePaths: Set<String>
         let stepDefAbsolutePaths: Set<String>
-        let resolvedOutputPath: String
+        let resolvedOutputPaths: Set<String>
     }
 
     private static func buildChildren(
@@ -179,7 +198,7 @@ public enum WorkspaceScanner {
                     continue
                 }
                 // Keep CodeceptJS output directory visible in the tree as a leaf folder without scanning generated artifacts as tests
-                let isOutputDir = fullPath == context.resolvedOutputPath || name == "output" || name == "_output"
+                let isOutputDir = context.resolvedOutputPaths.contains(fullPath) || name == "output" || name == "_output"
                 let realDirPath = stdURL.resolvingSymlinksInPath().path
                 let children: [WorkspaceTreeNode]
                 if isOutputDir {

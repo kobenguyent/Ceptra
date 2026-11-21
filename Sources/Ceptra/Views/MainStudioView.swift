@@ -1183,8 +1183,14 @@ private struct BottomModuleStatusStrip: View {
                                 ForEach(ws.discoveredConfigPaths, id: \.self) { path in
                                     let isActive = path == ws.config.configFilePath
                                     let label = displayPath(path, relativeTo: ws.rootURL)
+                                    let cfgSummary = ws.discoveredConfigs.first(where: { $0.configFilePath == path })
+                                    let helperSubtitle = cfgSummary.flatMap { cfg -> String? in
+                                        let names = cfg.helpers.map(\.name)
+                                        return names.isEmpty ? nil : names.joined(separator: ", ")
+                                    }
                                     CeptraDropdownItem(
                                         title: label,
+                                        subtitle: helperSubtitle,
                                         systemImage: "doc.text",
                                         isSelected: isActive,
                                         isMonospaced: true
@@ -1210,7 +1216,7 @@ private struct BottomModuleStatusStrip: View {
                             }
                         }
                         .fixedSize()
-                        .help("Active Helper: \(appState.activeHelperDisplayName) — Click to open or switch CodeceptJS config")
+                        .help("Active Config: \(ws.config.displayConfigPath(relativeTo: ws.rootURL) ?? "None") (\(appState.activeHelperDisplayName)) — Click to open or switch CodeceptJS config")
                     }
 
                     Rectangle()

@@ -71,6 +71,7 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
     public let isCustomConfigOverride: Bool
     public let projectName: String
     public let testsPattern: String
+    public let hasExplicitTestsPattern: Bool
     public let outputDirectory: String
     public let gherkinFeaturesPattern: String?
     public let gherkinStepsPaths: [String]
@@ -87,6 +88,7 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
         isCustomConfigOverride: Bool = false,
         projectName: String,
         testsPattern: String = "./*_test.js",
+        hasExplicitTestsPattern: Bool = false,
         outputDirectory: String = "./output",
         gherkinFeaturesPattern: String? = nil,
         gherkinStepsPaths: [String] = [],
@@ -102,6 +104,7 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
         self.isCustomConfigOverride = isCustomConfigOverride
         self.projectName = projectName
         self.testsPattern = testsPattern
+        self.hasExplicitTestsPattern = hasExplicitTestsPattern
         self.outputDirectory = outputDirectory
         self.gherkinFeaturesPattern = gherkinFeaturesPattern
         self.gherkinStepsPaths = gherkinStepsPaths
@@ -112,6 +115,25 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
         self.packageCodeceptVersion = packageCodeceptVersion
         self.isESM = isESM
         self.isTypeScript = isTypeScript
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.configFilePath = try c.decodeIfPresent(String.self, forKey: .configFilePath)
+        self.isCustomConfigOverride = try c.decodeIfPresent(Bool.self, forKey: .isCustomConfigOverride) ?? false
+        self.projectName = try c.decode(String.self, forKey: .projectName)
+        self.testsPattern = try c.decodeIfPresent(String.self, forKey: .testsPattern) ?? "./*_test.js"
+        self.hasExplicitTestsPattern = try c.decodeIfPresent(Bool.self, forKey: .hasExplicitTestsPattern) ?? false
+        self.outputDirectory = try c.decodeIfPresent(String.self, forKey: .outputDirectory) ?? "./output"
+        self.gherkinFeaturesPattern = try c.decodeIfPresent(String.self, forKey: .gherkinFeaturesPattern)
+        self.gherkinStepsPaths = try c.decodeIfPresent([String].self, forKey: .gherkinStepsPaths) ?? []
+        self.helpers = try c.decodeIfPresent([CodeceptHelperInfo].self, forKey: .helpers) ?? []
+        self.plugins = try c.decodeIfPresent([CodeceptPluginInfo].self, forKey: .plugins) ?? []
+        self.includes = try c.decodeIfPresent([CodeceptIncludeEntry].self, forKey: .includes) ?? []
+        self.multipleSuites = try c.decodeIfPresent([CodeceptMultipleSuiteInfo].self, forKey: .multipleSuites) ?? []
+        self.packageCodeceptVersion = try c.decodeIfPresent(String.self, forKey: .packageCodeceptVersion)
+        self.isESM = try c.decodeIfPresent(Bool.self, forKey: .isESM) ?? false
+        self.isTypeScript = try c.decodeIfPresent(Bool.self, forKey: .isTypeScript) ?? false
     }
 
     /// Matches CodeceptJS `getTestRoot(configFile)`: the directory containing the active config file,
@@ -150,12 +172,44 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
         }
         return stdConfig
     }
+
+    /// Returns true if `filePath` matches this config's `tests` or `gherkin.features` glob pattern.
+    public func matchesTestFile(_ filePath: String, workspaceRoot: URL) -> Bool {
+        let absPath: String
+        if filePath.hasPrefix("/") {
+            absPath = URL(fileURLWithPath: filePath).standardizedFileURL.path
+        } else {
+            absPath = workspaceRoot.appendingPathComponent(filePath).standardizedFileURL.path
+        }
+        let testRoot = resolvedTestRootURL(workspaceRoot: workspaceRoot)
+        if absPath.lowercased().hasSuffix(".feature") {
+            guard let featuresPattern = gherkinFeaturesPattern, !featuresPattern.isEmpty else {
+                return false
+            }
+            return ConfigParser.globMatches(pattern: featuresPattern, path: absPath, baseDirectory: testRoot)
+        }
+        return ConfigParser.globMatches(pattern: testsPattern, path: absPath, baseDirectory: testRoot)
+    }
+
+    /// Returns true when `filePath` resides inside this config file's directory (`testRoot`).
+    public func containsFileInConfigDirectory(_ filePath: String, workspaceRoot: URL) -> Bool {
+        let absPath: String
+        if filePath.hasPrefix("/") {
+            absPath = URL(fileURLWithPath: filePath).standardizedFileURL.path
+        } else {
+            absPath = workspaceRoot.appendingPathComponent(filePath).standardizedFileURL.path
+        }
+        let dirPath = resolvedTestRootURL(workspaceRoot: workspaceRoot).path
+        let prefix = dirPath.hasSuffix("/") ? dirPath : dirPath + "/"
+        return absPath.hasPrefix(prefix)
+    }
 }
 
 public struct CodeceptWorkspace: Equatable, Sendable {
     public let rootURL: URL
     public let config: CodeceptConfigSummary
     public let discoveredConfigPaths: [String]
+    public let discoveredConfigs: [CodeceptConfigSummary]
     public let packageManager: PackageManagerKind
     public let packageScripts: [PackageScriptItem]
     public let files: [WorkspaceFile]
@@ -167,6 +221,7 @@ public struct CodeceptWorkspace: Equatable, Sendable {
         rootURL: URL,
         config: CodeceptConfigSummary,
         discoveredConfigPaths: [String] = [],
+        discoveredConfigs: [CodeceptConfigSummary] = [],
         packageManager: PackageManagerKind = .npm,
         packageScripts: [PackageScriptItem] = [],
         files: [WorkspaceFile],
@@ -177,12 +232,142 @@ public struct CodeceptWorkspace: Equatable, Sendable {
         self.rootURL = rootURL
         self.config = config
         self.discoveredConfigPaths = discoveredConfigPaths
+        self.discoveredConfigs = discoveredConfigs
         self.packageManager = packageManager
         self.packageScripts = packageScripts
         self.files = files
         self.rootTree = rootTree
         self.allTags = allTags
         self.scannedAt = scannedAt
+    }
+
+    /// Returns a copy of this workspace using `newConfig` as the active config without re-walking disk.
+    public func withActiveConfig(_ newConfig: CodeceptConfigSummary) -> CodeceptWorkspace {
+        CodeceptWorkspace(
+            rootURL: rootURL,
+            config: newConfig,
+            discoveredConfigPaths: discoveredConfigPaths,
+            discoveredConfigs: discoveredConfigs,
+            packageManager: packageManager,
+            packageScripts: packageScripts,
+            files: files,
+            rootTree: rootTree,
+            allTags: allTags,
+            scannedAt: scannedAt
+        )
+    }
+
+    /// Resolves the most appropriate CodeceptJS config for `filePath` (relative to `rootURL` or absolute)
+    /// across multi-config / monorepo workspaces.
+    ///
+    /// Rules:
+    /// - Single-config workspaces always return `config`.
+    /// - External custom overrides outside `rootURL` are preserved.
+    /// - Explicit custom overrides inside `rootURL` are preserved whenever the pinned config already
+    ///   matches `filePath` (e.g., environment overrides like `configs/staging.conf.ts` vs `configs/prod.conf.ts`).
+    /// - When a file lives under or matches a different suite config (e.g. `tests/web/tests/login_test.ts`
+    ///   while `tests/api/codecept.conf.ts` is active), the owning config (`tests/web/codecept.conf.ts`) is selected.
+    public func resolvedConfig(forFilePath filePath: String) -> CodeceptConfigSummary {
+        let trimmed = filePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return config }
+
+        let stdRoot = rootURL.standardizedFileURL
+        let rootPath = stdRoot.path
+        let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        let absPath = trimmed.hasPrefix("/")
+            ? URL(fileURLWithPath: trimmed).standardizedFileURL.path
+            : stdRoot.appendingPathComponent(trimmed).standardizedFileURL.path
+
+        // Build unique candidate list (prefer parsed summaries in `discoveredConfigs`, fallback to `config`)
+        var candidates: [CodeceptConfigSummary] = []
+        var seenPaths = Set<String>()
+        for cfg in discoveredConfigs {
+            if let path = cfg.configFilePath, seenPaths.insert(path).inserted {
+                candidates.append(cfg)
+            }
+        }
+        if let activePath = config.configFilePath {
+            if let existingIdx = candidates.firstIndex(where: { $0.configFilePath == activePath }) {
+                candidates[existingIdx] = config
+            } else if seenPaths.insert(activePath).inserted {
+                candidates.append(config)
+            }
+        }
+        guard candidates.count > 1 else { return config }
+
+        // Respect an explicit external config file outside the workspace root
+        if config.isCustomConfigOverride,
+           let activePath = config.configFilePath,
+           !activePath.hasPrefix(rootPrefix) {
+            return config
+        }
+
+        // Respect an explicit custom override inside the workspace if it already owns/matches `absPath`
+        if config.isCustomConfigOverride,
+           let activePath = config.configFilePath {
+            let activeDir = config.resolvedTestRootURL(workspaceRoot: stdRoot).path
+            let activeIsStrictSubdir = config.containsFileInConfigDirectory(absPath, workspaceRoot: stdRoot) && activeDir != rootPath
+            if activePath == absPath
+                || config.matchesTestFile(absPath, workspaceRoot: stdRoot)
+                || activeIsStrictSubdir {
+                return config
+            }
+        }
+
+        struct CandidateScore {
+            let summary: CodeceptConfigSummary
+            let tier: Int
+            let dirDepth: Int
+            let isActive: Bool
+            let orderIndex: Int
+        }
+
+        var scored: [CandidateScore] = []
+        for (idx, candidate) in candidates.enumerated() {
+            guard let cPath = candidate.configFilePath else { continue }
+            let isActive = (cPath == config.configFilePath)
+            let dirURL = candidate.resolvedTestRootURL(workspaceRoot: stdRoot)
+            let dirPath = dirURL.path
+            let dirDepth = dirURL.pathComponents.count
+            let isUnderDir = candidate.containsFileInConfigDirectory(absPath, workspaceRoot: stdRoot)
+            let isRootDir = (dirPath == rootPath)
+            let isStrictSubdir = isUnderDir && !isRootDir
+            let matchesPattern = candidate.matchesTestFile(absPath, workspaceRoot: stdRoot)
+
+            let tier: Int
+            if cPath == absPath {
+                tier = 5
+            } else if matchesPattern && isUnderDir {
+                tier = 4
+            } else if matchesPattern {
+                tier = 3
+            } else if isStrictSubdir {
+                tier = 2
+            } else if isUnderDir {
+                tier = 1
+            } else {
+                tier = 0
+            }
+
+            scored.append(CandidateScore(
+                summary: candidate,
+                tier: tier,
+                dirDepth: dirDepth,
+                isActive: isActive,
+                orderIndex: idx
+            ))
+        }
+
+        guard let best = scored.max(by: { lhs, rhs in
+            if lhs.tier != rhs.tier { return lhs.tier < rhs.tier }
+            if lhs.dirDepth != rhs.dirDepth { return lhs.dirDepth < rhs.dirDepth }
+            if lhs.isActive != rhs.isActive { return !lhs.isActive && rhs.isActive }
+            return lhs.orderIndex > rhs.orderIndex
+        }), best.tier > 0 else {
+            return config
+        }
+
+        return best.summary
     }
 
     public var testFiles: [WorkspaceFile] {

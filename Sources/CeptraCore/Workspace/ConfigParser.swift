@@ -195,6 +195,41 @@ public enum ConfigParser {
 
         let isCustomOverride = resolvedExplicit != nil
         let configURL = resolvedExplicit ?? locateConfigFile(in: standardizedRoot)
+        return parseConfigSummary(
+            configURL: configURL,
+            standardizedRoot: standardizedRoot,
+            packageInfo: packageInfo,
+            isCustomOverride: isCustomOverride
+        )
+    }
+
+    /// Parses multiple discovered CodeceptJS configs in one pass (reading `package.json` once).
+    public static func parseConfigFiles(
+        _ configURLs: [URL],
+        rootURL: URL,
+        activeConfigPath: String? = nil,
+        isCustomOverride: Bool = false
+    ) -> [CodeceptConfigSummary] {
+        let standardizedRoot = rootURL.standardizedFileURL
+        let packageInfo = parsePackageJSON(rootURL: standardizedRoot)
+        return configURLs.map { url in
+            let stdURL = url.standardizedFileURL
+            let overrideFlag = isCustomOverride && (stdURL.path == activeConfigPath)
+            return parseConfigSummary(
+                configURL: stdURL,
+                standardizedRoot: standardizedRoot,
+                packageInfo: packageInfo,
+                isCustomOverride: overrideFlag
+            )
+        }
+    }
+
+    private static func parseConfigSummary(
+        configURL: URL?,
+        standardizedRoot: URL,
+        packageInfo: PackageInfo,
+        isCustomOverride: Bool
+    ) -> CodeceptConfigSummary {
         let fallbackName = packageInfo.name ?? standardizedRoot.lastPathComponent
 
         guard let configURL,
@@ -226,7 +261,8 @@ public enum ConfigParser {
             ?? cleaned
 
         let name = extractStringProperty(named: "name", in: configBody) ?? fallbackName
-        let testsPattern = extractStringProperty(named: "tests", in: configBody) ?? "./*_test.js"
+        let parsedTestsPattern = extractStringProperty(named: "tests", in: configBody)
+        let testsPattern = parsedTestsPattern ?? "./*_test.js"
         let outputDir = extractStringProperty(named: "output", in: configBody) ?? "./output"
 
         let helpersBlock = extractNamedObjectBlock(named: "helpers", in: configBody) ?? ""
@@ -254,6 +290,7 @@ public enum ConfigParser {
             isCustomConfigOverride: isCustomOverride,
             projectName: name,
             testsPattern: testsPattern,
+            hasExplicitTestsPattern: parsedTestsPattern != nil,
             outputDirectory: outputDir,
             gherkinFeaturesPattern: gherkinFeatures,
             gherkinStepsPaths: gherkinSteps,
@@ -289,7 +326,8 @@ public enum ConfigParser {
         }
 
         let name = (json["name"] as? String) ?? fallbackName
-        let testsPattern = (json["tests"] as? String) ?? "./*_test.js"
+        let parsedTestsPattern = json["tests"] as? String
+        let testsPattern = parsedTestsPattern ?? "./*_test.js"
         let outputDir = (json["output"] as? String) ?? "./output"
 
         var helpers: [CodeceptHelperInfo] = []
@@ -366,6 +404,7 @@ public enum ConfigParser {
             isCustomConfigOverride: isCustomOverride,
             projectName: name,
             testsPattern: testsPattern,
+            hasExplicitTestsPattern: parsedTestsPattern != nil,
             outputDirectory: outputDir,
             gherkinFeaturesPattern: gherkinFeatures,
             gherkinStepsPaths: gherkinSteps,
@@ -849,5 +888,148 @@ public enum ConfigParser {
             i += 1
         }
         return out
+    }
+
+    // MARK: - Glob Matching for Multi-Config Test Ownership
+
+    /// Matches a file path against a CodeceptJS `tests` or `gherkin.features` glob pattern
+    /// resolved relative to `baseDirectory` (typically `dirname(configFile)`).
+    public static func globMatches(pattern: String, path: String, baseDirectory: URL) -> Bool {
+        let trimmedPattern = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPattern.isEmpty else { return false }
+        let normalizedPattern = normalizeGlobPattern(trimmedPattern, baseDirectory: baseDirectory)
+        let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        let regexPattern = "^" + globSegmentToRegex(normalizedPattern) + "$"
+        guard let regex = try? NSRegularExpression(pattern: regexPattern, options: []) else {
+            return false
+        }
+        let nsPath = normalizedPath as NSString
+        return regex.firstMatch(in: normalizedPath, range: NSRange(location: 0, length: nsPath.length)) != nil
+    }
+
+    private static func normalizeGlobPattern(_ rawPattern: String, baseDirectory: URL) -> String {
+        let replaced = rawPattern
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\", with: "/")
+        let combined: String
+        if replaced.hasPrefix("/") {
+            combined = replaced
+        } else {
+            let basePath = baseDirectory.standardizedFileURL.path
+            let trimmedBase = basePath.hasSuffix("/") ? String(basePath.dropLast()) : basePath
+            combined = trimmedBase + "/" + replaced
+        }
+        var stack: [String] = []
+        for part in combined.split(separator: "/", omittingEmptySubsequences: true) {
+            if part == "." {
+                continue
+            } else if part == ".." {
+                if !stack.isEmpty { stack.removeLast() }
+            } else {
+                stack.append(String(part))
+            }
+        }
+        return "/" + stack.joined(separator: "/")
+    }
+
+    private static func globSegmentToRegex(_ pattern: String) -> String {
+        let chars = Array(pattern)
+        var regex = ""
+        regex.reserveCapacity(chars.count * 2)
+        var i = 0
+
+        while i < chars.count {
+            let c = chars[i]
+            if c == "*" {
+                if i + 1 < chars.count && chars[i + 1] == "*" {
+                    if i + 2 < chars.count && chars[i + 2] == "/" {
+                        regex += "(?:[^/]+/)*"
+                        i += 3
+                    } else {
+                        regex += ".*"
+                        i += 2
+                    }
+                } else {
+                    regex += "[^/]*"
+                    i += 1
+                }
+            } else if c == "?" {
+                regex += "[^/]"
+                i += 1
+            } else if c == "{" {
+                if let (alternatives, endIdx) = parseBraceGroup(chars: chars, start: i) {
+                    let converted = alternatives.map { globSegmentToRegex($0) }.joined(separator: "|")
+                    regex += "(?:" + converted + ")"
+                    i = endIdx + 1
+                } else {
+                    regex += "\\{"
+                    i += 1
+                }
+            } else if c == "[" {
+                if let closeIdx = findClosingBracket(chars: chars, start: i) {
+                    var inner = String(chars[(i + 1)..<closeIdx])
+                    if inner.hasPrefix("!") {
+                        inner = "^" + inner.dropFirst()
+                    }
+                    regex += "[" + inner + "]"
+                    i = closeIdx + 1
+                } else {
+                    regex += "\\["
+                    i += 1
+                }
+            } else if ".+()^$|\\}".contains(c) {
+                regex.append("\\")
+                regex.append(c)
+                i += 1
+            } else {
+                regex.append(c)
+                i += 1
+            }
+        }
+        return regex
+    }
+
+    private static func parseBraceGroup(chars: [Character], start: Int) -> ([String], Int)? {
+        guard start < chars.count, chars[start] == "{" else { return nil }
+        var depth = 0
+        var current = ""
+        var alternatives: [String] = []
+        var i = start
+        while i < chars.count {
+            let c = chars[i]
+            if c == "{" {
+                if depth > 0 { current.append(c) }
+                depth += 1
+            } else if c == "}" {
+                depth -= 1
+                if depth == 0 {
+                    alternatives.append(current)
+                    return (alternatives, i)
+                }
+                current.append(c)
+            } else if c == "," && depth == 1 {
+                alternatives.append(current)
+                current = ""
+            } else {
+                current.append(c)
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    private static func findClosingBracket(chars: [Character], start: Int) -> Int? {
+        var i = start + 1
+        if i < chars.count && (chars[i] == "!" || chars[i] == "^") {
+            i += 1
+        }
+        if i < chars.count && chars[i] == "]" {
+            i += 1
+        }
+        while i < chars.count {
+            if chars[i] == "]" { return i }
+            i += 1
+        }
+        return nil
     }
 }

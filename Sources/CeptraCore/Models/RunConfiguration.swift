@@ -64,6 +64,23 @@ public enum CodeceptRunMode: Equatable, Hashable, Sendable {
             return false
         }
     }
+
+    /// Target test file path (relative or absolute) when targeting a single file or scenario.
+    public var targetFilePath: String? {
+        switch self {
+        case .runFile(let relativePath):
+            return relativePath.isEmpty ? nil : relativePath
+        case .runScenario(let relativePath, _):
+            guard let relativePath, !relativePath.isEmpty else { return nil }
+            return relativePath
+        case .dryRun(let relativePath):
+            guard let relativePath, !relativePath.isEmpty else { return nil }
+            return relativePath
+        case .runAll, .runTag, .runLastFailed, .runWorkers, .runMultiple,
+             .checkEnvironment, .generateDefinitions, .listActions:
+            return nil
+        }
+    }
 }
 
 public enum WorkerStrategy: String, Codable, CaseIterable, Equatable, Hashable, Sendable {

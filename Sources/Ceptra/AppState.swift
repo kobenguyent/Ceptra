@@ -457,10 +457,38 @@ final class AppState: ObservableObject {
     func rescanWorkspace() {
         guard let root = workspace?.rootURL else { return }
         let savedConfigPath = settings.customConfigPath(forWorkspaceRoot: root.path)
-        let scanned = WorkspaceScanner.scan(rootURL: root, customConfigPath: savedConfigPath)
+        var scanned = WorkspaceScanner.scan(rootURL: root, customConfigPath: savedConfigPath)
+        if !scanned.config.isCustomConfigOverride,
+           let activeTabPath {
+            let matched = scanned.resolvedConfig(forFilePath: activeTabPath)
+            if matched.configFilePath != scanned.config.configFilePath {
+                scanned = scanned.withActiveConfig(matched)
+            }
+        }
         workspace = scanned
         completionIndex = IntelliSenseEngine.buildWorkspaceIndex(workspace: scanned)
         refreshArtifacts()
+    }
+
+    private func syncAutoConfig(forFilePath filePath: String) {
+        guard let workspace,
+              !workspace.config.isCustomConfigOverride,
+              workspace.discoveredConfigs.count > 1 else {
+            return
+        }
+        let matched = workspace.resolvedConfig(forFilePath: filePath)
+        guard matched.configFilePath != workspace.config.configFilePath else { return }
+        let updated = workspace.withActiveConfig(matched)
+        self.workspace = updated
+        self.completionIndex = IntelliSenseEngine.buildWorkspaceIndex(workspace: updated)
+        self.refreshArtifacts()
+    }
+
+    func effectiveConfig(for mode: CodeceptRunMode, in workspace: CodeceptWorkspace) -> CodeceptConfigSummary {
+        guard let targetPath = mode.targetFilePath else {
+            return workspace.config
+        }
+        return workspace.resolvedConfig(forFilePath: targetPath)
     }
 
     func selectCustomConfigPanel() {
@@ -556,6 +584,7 @@ final class AppState: ObservableObject {
         }
         if let existing = openTabs.first(where: { $0.filePath == file.path }) {
             activeTabPath = existing.filePath
+            syncAutoConfig(forFilePath: existing.filePath)
             if let jumpToLine {
                 pendingJumpToLine = jumpToLine
             }
@@ -577,6 +606,7 @@ final class AppState: ObservableObject {
         )
         openTabs.append(tab)
         activeTabPath = tab.filePath
+        syncAutoConfig(forFilePath: tab.filePath)
         if file.isExecutableTestFile {
             liveParsedFeaturesByPath[file.path] = TestFileParser.parse(content: content, filePath: file.path)
         }
@@ -593,6 +623,7 @@ final class AppState: ObservableObject {
         if activeTabPath != filePath {
             activeTabPath = filePath
         }
+        syncAutoConfig(forFilePath: filePath)
         if workspaceMode == .reports {
             workspaceMode = .split
         }
@@ -619,6 +650,9 @@ final class AppState: ObservableObject {
         openTabs.remove(at: idx)
         if activeTabPath == filePath {
             activeTabPath = openTabs.isEmpty ? nil : openTabs[max(0, idx - 1)].filePath
+            if let nextPath = activeTabPath {
+                syncAutoConfig(forFilePath: nextPath)
+            }
         }
     }
 
@@ -853,13 +887,23 @@ final class AppState: ObservableObject {
 
         saveAllDirtyFiles()
 
+        let currentWorkspace = self.workspace ?? workspace
+        let runConfig = effectiveConfig(for: mode, in: currentWorkspace)
+        let didAutoSelectDifferentConfig = runConfig.configFilePath != currentWorkspace.config.configFilePath
+        if didAutoSelectDifferentConfig && !currentWorkspace.config.isCustomConfigOverride {
+            let syncedWorkspace = currentWorkspace.withActiveConfig(runConfig)
+            self.workspace = syncedWorkspace
+            self.completionIndex = IntelliSenseEngine.buildWorkspaceIndex(workspace: syncedWorkspace)
+            self.refreshArtifacts()
+        }
+
         // Launch directly in the system's default (or chosen) terminal app when System Console mode is enabled
         if settings.consoleExecutionMode == .systemTerminal && !isDebugSession {
             let command = CommandBuilder.build(
                 mode: mode,
                 options: runOptions,
-                workspaceRoot: workspace.rootURL,
-                configFilePath: workspace.config.configFilePath,
+                workspaceRoot: currentWorkspace.rootURL,
+                configFilePath: runConfig.configFilePath,
                 toolchain: toolchain,
                 debugOptions: nil,
                 traceOutputDirectory: nil,
@@ -909,9 +953,9 @@ final class AppState: ObservableObject {
             return
         }
 
-        let outputURL = workspace.config.resolvedOutputURL(rootURL: workspace.rootURL)
-        let projectPath = workspace.rootURL.path
-        let projectName = workspace.config.projectName
+        let outputURL = runConfig.resolvedOutputURL(rootURL: currentWorkspace.rootURL)
+        let projectPath = currentWorkspace.rootURL.path
+        let projectName = runConfig.projectName
 
         let shouldRecordHistory: Bool
         switch mode {
@@ -932,8 +976,8 @@ final class AppState: ObservableObject {
         let command = CommandBuilder.build(
             mode: mode,
             options: runOptions,
-            workspaceRoot: workspace.rootURL,
-            configFilePath: workspace.config.configFilePath,
+            workspaceRoot: currentWorkspace.rootURL,
+            configFilePath: runConfig.configFilePath,
             toolchain: toolchain,
             debugOptions: isDebugSession ? debugLaunch : nil,
             traceOutputDirectory: runTraceDirectory
@@ -960,15 +1004,25 @@ final class AppState: ObservableObject {
         }
         activeRunLabel = isDebugSession ? "Debug: \(mode.displayLabel)" : mode.displayLabel
         lastCommandLine = command.displayCommand
-        consoleLogs = [
-            ConsoleLogEntry(
+        var initialLogs: [ConsoleLogEntry] = []
+        if didAutoSelectDifferentConfig,
+           let displayCfg = runConfig.displayConfigPath(relativeTo: currentWorkspace.rootURL) {
+            initialLogs.append(ConsoleLogEntry(
                 timestamp: Date(),
-                text: "$ \(command.displayCommand)",
+                text: "↳ Auto-selected owning config: \(displayCfg)",
                 isError: false,
                 isStep: false,
-                isHighlight: true
-            )
-        ]
+                isHighlight: false
+            ))
+        }
+        initialLogs.append(ConsoleLogEntry(
+            timestamp: Date(),
+            text: "$ \(command.displayCommand)",
+            isError: false,
+            isStep: false,
+            isHighlight: true
+        ))
+        consoleLogs = initialLogs
         activeRunningScenarioKey = nil
 
         switch mode {

@@ -369,4 +369,165 @@ final class ConfigParserTests: XCTestCase {
         XCTAssertEqual(folderAncestors?.count, 3) // fixtures -> fixtures/auth -> fixtures/auth/mocks
         XCTAssertEqual(ws.testFiles.count, 1)
     }
+
+    func testMonorepoMultiConfigResolutionAndGlobMatching() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("ceptra-monorepo-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root.appendingPathComponent("tests/api/tests"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("tests/web/tests"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("tests/web/support/pageObjects"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("common/steps"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let pkg = """
+        {
+          "name": "monorepo-ts",
+          "type": "module",
+          "scripts": {
+            "test:api": "codeceptjs run --config tests/api/codecept.conf.ts",
+            "test:web": "codeceptjs run --config tests/web/codecept.conf.ts"
+          }
+        }
+        """
+        try pkg.write(to: root.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+
+        let apiConf = """
+        export const config = {
+          tests: './tests/**/*.ts',
+          output: '../../output',
+          name: 'api-tests',
+          helpers: { REST: { endpoint: 'https://dummyjson.com' }, JSONResponse: {} }
+        };
+        """
+        let apiConfURL = root.appendingPathComponent("tests/api/codecept.conf.ts")
+        try apiConf.write(to: apiConfURL, atomically: true, encoding: .utf8)
+
+        let webConf = """
+        export const config = {
+          tests: './tests/**/*.ts',
+          output: '../../output',
+          name: 'web-tests',
+          helpers: { Playwright: { browser: 'chromium', url: 'https://example.com' } },
+          include: { loginPage: './support/pageObjects/loginPage.ts' }
+        };
+        """
+        let webConfURL = root.appendingPathComponent("tests/web/codecept.conf.ts")
+        try webConf.write(to: webConfURL, atomically: true, encoding: .utf8)
+
+        try "Feature('API'); Scenario('login', () => {});".write(
+            to: root.appendingPathComponent("tests/api/tests/login_test.ts"), atomically: true, encoding: .utf8
+        )
+        try "Feature('Web'); Scenario('login', ({ I }) => { I.amOnPage('/'); });".write(
+            to: root.appendingPathComponent("tests/web/tests/login_test.ts"), atomically: true, encoding: .utf8
+        )
+        try "export const loginPage = {};".write(
+            to: root.appendingPathComponent("tests/web/support/pageObjects/loginPage.ts"), atomically: true, encoding: .utf8
+        )
+        try "export default () => actor({});".write(
+            to: root.appendingPathComponent("common/steps/steps_file.ts"), atomically: true, encoding: .utf8
+        )
+
+        // 1. Glob matching covers 0-depth & multi-depth **/, relative ../, and brace expansion
+        XCTAssertTrue(ConfigParser.globMatches(
+            pattern: "./tests/**/*.ts",
+            path: root.appendingPathComponent("tests/web/tests/login_test.ts").path,
+            baseDirectory: root.appendingPathComponent("tests/web")
+        ))
+        XCTAssertTrue(ConfigParser.globMatches(
+            pattern: "./tests/**/*.ts",
+            path: root.appendingPathComponent("tests/web/tests/auth/nested/login_test.ts").path,
+            baseDirectory: root.appendingPathComponent("tests/web")
+        ))
+        XCTAssertFalse(ConfigParser.globMatches(
+            pattern: "./tests/**/*.ts",
+            path: root.appendingPathComponent("tests/web/tests/login_test.ts").path,
+            baseDirectory: root.appendingPathComponent("tests/api")
+        ))
+        XCTAssertTrue(ConfigParser.globMatches(
+            pattern: "../tests/**/*.{test,spec}.{ts,js}",
+            path: root.appendingPathComponent("tests/web/checkout.spec.ts").path,
+            baseDirectory: root.appendingPathComponent("configs")
+        ))
+
+        // 2. Monorepo scan discovers both configs (api sorts first) and resolves owning config per test file
+        let ws = WorkspaceScanner.scan(rootURL: root)
+        XCTAssertEqual(ws.discoveredConfigs.count, 2)
+        XCTAssertEqual(ws.config.configFilePath, apiConfURL.standardizedFileURL.path)
+
+        let resolvedWeb = ws.resolvedConfig(forFilePath: "tests/web/tests/login_test.ts")
+        XCTAssertEqual(resolvedWeb.configFilePath, webConfURL.standardizedFileURL.path)
+        XCTAssertEqual(resolvedWeb.helpers.first?.name, "Playwright")
+
+        let resolvedApi = ws.resolvedConfig(forFilePath: "tests/api/tests/login_test.ts")
+        XCTAssertEqual(resolvedApi.configFilePath, apiConfURL.standardizedFileURL.path)
+        XCTAssertEqual(resolvedApi.helpers.first?.name, "REST")
+
+        // Support file & config file inside tests/web also resolve to web config; shared common file keeps active config
+        XCTAssertEqual(
+            ws.resolvedConfig(forFilePath: "tests/web/support/pageObjects/loginPage.ts").configFilePath,
+            webConfURL.standardizedFileURL.path
+        )
+        XCTAssertEqual(
+            ws.resolvedConfig(forFilePath: "tests/web/codecept.conf.ts").configFilePath,
+            webConfURL.standardizedFileURL.path
+        )
+        XCTAssertEqual(
+            ws.resolvedConfig(forFilePath: "common/steps/steps_file.ts").configFilePath,
+            apiConfURL.standardizedFileURL.path
+        )
+
+        // 3. Even if user previously pinned tests/api/codecept.conf.ts, running a web test still resolves tests/web/codecept.conf.ts
+        let pinnedApiWS = WorkspaceScanner.scan(rootURL: root, customConfigPath: "tests/api/codecept.conf.ts")
+        XCTAssertTrue(pinnedApiWS.config.isCustomConfigOverride)
+        XCTAssertEqual(
+            pinnedApiWS.resolvedConfig(forFilePath: "tests/web/tests/login_test.ts").configFilePath,
+            webConfURL.standardizedFileURL.path
+        )
+
+        // 4. Environment override configs sharing the same tests glob preserve the active/pinned selection
+        let envRoot = fm.temporaryDirectory.appendingPathComponent("ceptra-env-cfgs-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: envRoot.appendingPathComponent("configs"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: envRoot.appendingPathComponent("tests"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: envRoot) }
+
+        let stagingURL = envRoot.appendingPathComponent("configs/staging.conf.ts")
+        let prodURL = envRoot.appendingPathComponent("configs/prod.conf.ts")
+        try "export const config = { name: 'staging', tests: '../tests/*_test.ts', helpers: { Playwright: {} } };"
+            .write(to: stagingURL, atomically: true, encoding: .utf8)
+        try "export const config = { name: 'prod', tests: '../tests/*_test.ts', helpers: { Playwright: {} } };"
+            .write(to: prodURL, atomically: true, encoding: .utf8)
+        try "Feature('Checkout'); Scenario('pays', () => {});"
+            .write(to: envRoot.appendingPathComponent("tests/checkout_test.ts"), atomically: true, encoding: .utf8)
+
+        let pinnedStagingWS = WorkspaceScanner.scan(rootURL: envRoot, customConfigPath: "configs/staging.conf.ts")
+        XCTAssertEqual(
+            pinnedStagingWS.resolvedConfig(forFilePath: "tests/checkout_test.ts").configFilePath,
+            stagingURL.standardizedFileURL.path
+        )
+
+        // 5. Root-level multi-configs separated by tests glob (e.g. web vs api at workspace root)
+        let rootMulti = fm.temporaryDirectory.appendingPathComponent("ceptra-root-multi-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: rootMulti.appendingPathComponent("tests/web"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: rootMulti.appendingPathComponent("tests/api"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: rootMulti) }
+
+        let rootWebURL = rootMulti.appendingPathComponent("codecept.conf.ts")
+        let rootApiURL = rootMulti.appendingPathComponent("codecept.api.conf.ts")
+        try "export const config = { name: 'web', tests: './tests/web/**/*_test.ts', helpers: { Playwright: {} } };"
+            .write(to: rootWebURL, atomically: true, encoding: .utf8)
+        try "export const config = { name: 'api', tests: './tests/api/**/*_test.ts', helpers: { REST: {} } };"
+            .write(to: rootApiURL, atomically: true, encoding: .utf8)
+        try "Feature('API'); Scenario('get', () => {});"
+            .write(to: rootMulti.appendingPathComponent("tests/api/users_test.ts"), atomically: true, encoding: .utf8)
+
+        let rootMultiWS = WorkspaceScanner.scan(rootURL: rootMulti)
+        XCTAssertEqual(rootMultiWS.config.configFilePath, rootWebURL.standardizedFileURL.path)
+        XCTAssertEqual(
+            rootMultiWS.resolvedConfig(forFilePath: "tests/api/users_test.ts").configFilePath,
+            rootApiURL.standardizedFileURL.path
+        )
+        XCTAssertEqual(CodeceptRunMode.runFile(relativePath: "tests/web/tests/login_test.ts").targetFilePath, "tests/web/tests/login_test.ts")
+        XCTAssertEqual(CodeceptRunMode.runScenario(relativePath: "tests/web/tests/login_test.ts", scenarioTitle: "Login").targetFilePath, "tests/web/tests/login_test.ts")
+        XCTAssertNil(CodeceptRunMode.runAll.targetFilePath)
+    }
 }
