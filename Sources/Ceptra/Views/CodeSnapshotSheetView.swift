@@ -175,23 +175,28 @@ struct CodeSnapshotSheetView: View {
     // MARK: - Live Preview Stage
 
     private func previewStage(draft: CodeSnapshotDraft, extraction: CodeSnapshotExtraction) -> some View {
-        ZStack(alignment: .bottomLeading) {
-            if style.background == .transparent {
-                TransparencyCheckerboard()
-            } else {
-                CeptraTheme.canvasBG
-            }
+        GeometryReader { geo in
+            let availW = max(320, geo.size.width - 48)
+            let availH = max(240, geo.size.height - 76)
 
-            ScrollView([.horizontal, .vertical], showsIndicators: true) {
+            ZStack(alignment: .bottomLeading) {
+                if style.background == .transparent {
+                    TransparencyCheckerboard()
+                } else {
+                    CeptraTheme.canvasBG
+                }
+
                 VStack {
                     if let previewImage {
+                        let naturalW = rendered?.logicalSize.width ?? availW
+                        let naturalH = rendered?.logicalSize.height ?? availH
                         Image(nsImage: previewImage)
                             .resizable()
                             .interpolation(.high)
                             .aspectRatio(contentMode: .fit)
                             .frame(
-                                maxWidth: min(680, rendered?.logicalSize.width ?? 680),
-                                maxHeight: min(520, rendered?.logicalSize.height ?? 520)
+                                maxWidth: min(availW, naturalW),
+                                maxHeight: min(availH, naturalH)
                             )
                             .clipShape(RoundedRectangle(cornerRadius: style.background == .transparent ? 0 : 10, style: .continuous))
                             .shadow(color: Color.black.opacity(style.background == .transparent ? 0 : 0.25), radius: 18, y: 8)
@@ -201,26 +206,28 @@ struct CodeSnapshotSheetView: View {
                             .help("Drag image directly into Slack, Notes, Keynote, or Desktop")
                     }
                 }
-                .padding(24)
-                .frame(minWidth: 500, minHeight: 460)
-            }
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+                .padding(.bottom, 48)
+                .frame(width: geo.size.width, height: geo.size.height)
 
-            if let rendered {
-                HStack(spacing: 8) {
-                    Text("\(Int(rendered.pixelSize.width)) × \(Int(rendered.pixelSize.height)) px · \(rendered.scale)× Retina")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(CeptraTheme.textSecondary)
-                    Text("·")
-                        .foregroundStyle(CeptraTheme.textMuted)
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(rendered.pngData.count), countStyle: .file))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(CeptraTheme.textMuted)
+                if let rendered {
+                    HStack(spacing: 8) {
+                        Text("\(Int(rendered.pixelSize.width)) × \(Int(rendered.pixelSize.height)) px · \(rendered.scale)× Retina")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(CeptraTheme.textSecondary)
+                        Text("·")
+                            .foregroundStyle(CeptraTheme.textMuted)
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(rendered.pngData.count), countStyle: .file))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(CeptraTheme.textMuted)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(CeptraTheme.border, lineWidth: 1))
+                    .padding(12)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().strokeBorder(CeptraTheme.border, lineWidth: 1))
-                .padding(12)
             }
         }
     }
