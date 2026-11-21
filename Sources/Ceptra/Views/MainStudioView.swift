@@ -5,6 +5,22 @@ struct MainStudioView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @State private var sidebarWidth: CGFloat = 280
+    @State private var sidebarDragStartWidth: CGFloat = 280
+    @State private var isResizingSidebar = false
+
+    @State private var debugInspectorWidth: CGFloat = 320
+    @State private var inspectorDragStartWidth: CGFloat = 320
+    @State private var isResizingInspector = false
+
+    @State private var consoleBodyHeight: CGFloat = 220
+    @State private var consoleDragStartHeight: CGFloat = 220
+    @State private var isResizingConsole = false
+
+    @State private var splitVisualizerWidth: CGFloat = 420
+    @State private var splitVisualizerDragStartWidth: CGFloat = 420
+    @State private var isResizingSplitVisualizer = false
+
     var body: some View {
         ZStack(alignment: .top) {
             CeptraTheme.canvasBG.ignoresSafeArea()
@@ -52,33 +68,176 @@ struct MainStudioView: View {
     }
 
     private var workspaceContent: some View {
-        HSplitView {
-            if appState.isSidebarVisible {
+        GeometryReader { rootGeo in
+            let handleThickness = CeptraSplitResizeHandle.hitThickness
+            let sidebarHandleW: CGFloat = appState.isSidebarVisible ? handleThickness : 0
+            let availableRootW = max(0, rootGeo.size.width - sidebarHandleW)
+            let minSidebarWidth: CGFloat = 235
+            let maxSidebarWidth: CGFloat = max(minSidebarWidth, min(380, availableRootW * 0.36))
+            let effectiveSidebarWidth = min(max(sidebarWidth, minSidebarWidth), maxSidebarWidth)
+            let sidebarCursor: CeptraSplitResizeHandle.CursorDirection =
+                effectiveSidebarWidth <= minSidebarWidth + 0.5
+                    ? .onlyTrailingOrDown
+                    : (effectiveSidebarWidth >= maxSidebarWidth - 0.5 ? .onlyLeadingOrUp : .both)
+
+            HStack(spacing: 0) {
                 SidebarExplorerView()
-                    .frame(minWidth: 230, idealWidth: 270, maxWidth: 360)
-                    .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
-            }
+                    .frame(width: effectiveSidebarWidth)
+                    .opacity(appState.isSidebarVisible ? 1 : 0)
+                    .offset(x: appState.isSidebarVisible || reduceMotion ? 0 : -12)
+                    .frame(width: appState.isSidebarVisible ? effectiveSidebarWidth : 0, alignment: .trailing)
+                    .clipped()
+                    .allowsHitTesting(appState.isSidebarVisible)
+                    .accessibilityHidden(!appState.isSidebarVisible)
 
-            VStack(spacing: 0) {
-                VSplitView {
-                    centerPane
-                        .frame(minHeight: 300)
+                if appState.isSidebarVisible {
+                    CeptraSplitResizeHandle(
+                        axis: .horizontal,
+                        cursorDirection: sidebarCursor,
+                        onDragStart: {
+                            isResizingSidebar = true
+                            sidebarDragStartWidth = effectiveSidebarWidth
+                        },
+                        onDragChanged: { delta in
+                            sidebarWidth = min(max(sidebarDragStartWidth + delta, minSidebarWidth), maxSidebarWidth)
+                        },
+                        onDragEnd: {
+                            isResizingSidebar = false
+                        },
+                        onDoubleClick: {
+                            withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                                sidebarWidth = 280
+                            }
+                        }
+                    )
+                }
 
-                    if appState.isConsoleVisible {
-                        ConsoleDrawerView()
-                            .frame(minHeight: 150, idealHeight: 220, maxHeight: 420)
-                            .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                GeometryReader { columnGeo in
+                    let consoleHandleH: CGFloat = appState.isConsoleVisible ? handleThickness : 0
+                    let minConsoleBody: CGFloat = 135
+                    let maxConsoleBody = max(
+                        minConsoleBody,
+                        min(440, columnGeo.size.height - ConsoleDrawerView.headerHeight - consoleHandleH - 220)
+                    )
+                    let effectiveConsoleBody = min(max(consoleBodyHeight, minConsoleBody), maxConsoleBody)
+                    let consoleCursor: CeptraSplitResizeHandle.CursorDirection =
+                        effectiveConsoleBody <= minConsoleBody + 0.5
+                            ? .onlyLeadingOrUp
+                            : (effectiveConsoleBody >= maxConsoleBody - 0.5 ? .onlyTrailingOrDown : .both)
+
+                    let inspectorHandleW: CGFloat = appState.isDebugInspectorVisible ? handleThickness : 0
+                    let availableMainW = max(0, columnGeo.size.width - inspectorHandleW)
+                    let minInspectorWidth: CGFloat = 270
+                    let maxInspectorWidth: CGFloat = max(
+                        minInspectorWidth,
+                        min(420, min(availableMainW * 0.42, availableMainW - 360))
+                    )
+                    let effectiveInspectorWidth = min(max(debugInspectorWidth, minInspectorWidth), maxInspectorWidth)
+                    let inspectorCursor: CeptraSplitResizeHandle.CursorDirection =
+                        effectiveInspectorWidth <= minInspectorWidth + 0.5
+                            ? .onlyLeadingOrUp
+                            : (effectiveInspectorWidth >= maxInspectorWidth - 0.5 ? .onlyTrailingOrDown : .both)
+
+                    VStack(spacing: 0) {
+                        if appState.debugPhase.isActive {
+                            HStack {
+                                Spacer(minLength: 0)
+                                DebugFloatingControlBar()
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(CeptraTheme.canvasBG)
+                            .transition(
+                                reduceMotion
+                                    ? .opacity
+                                    : .move(edge: .top).combined(with: .opacity)
+                            )
+                        }
+
+                        HStack(spacing: 0) {
+                            centerPane
+                                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+
+                            if appState.isDebugInspectorVisible {
+                                CeptraSplitResizeHandle(
+                                    axis: .horizontal,
+                                    cursorDirection: inspectorCursor,
+                                    onDragStart: {
+                                        isResizingInspector = true
+                                        inspectorDragStartWidth = effectiveInspectorWidth
+                                    },
+                                    onDragChanged: { delta in
+                                        debugInspectorWidth = min(max(inspectorDragStartWidth - delta, minInspectorWidth), maxInspectorWidth)
+                                    },
+                                    onDragEnd: {
+                                        isResizingInspector = false
+                                    },
+                                    onDoubleClick: {
+                                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                                            debugInspectorWidth = 320
+                                        }
+                                    }
+                                )
+                            }
+
+                            DebugInspectorView()
+                                .frame(width: effectiveInspectorWidth)
+                                .opacity(appState.isDebugInspectorVisible ? 1 : 0)
+                                .offset(x: appState.isDebugInspectorVisible || reduceMotion ? 0 : 12)
+                                .frame(width: appState.isDebugInspectorVisible ? effectiveInspectorWidth : 0, alignment: .leading)
+                                .clipped()
+                                .allowsHitTesting(appState.isDebugInspectorVisible)
+                                .accessibilityHidden(!appState.isDebugInspectorVisible)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .animation(
+                            isResizingInspector ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
+                            value: appState.isDebugInspectorVisible
+                        )
+
+                        if appState.isConsoleVisible {
+                            CeptraSplitResizeHandle(
+                                axis: .vertical,
+                                cursorDirection: consoleCursor,
+                                onDragStart: {
+                                    isResizingConsole = true
+                                    consoleDragStartHeight = effectiveConsoleBody
+                                },
+                                onDragChanged: { delta in
+                                    consoleBodyHeight = min(max(consoleDragStartHeight - delta, minConsoleBody), maxConsoleBody)
+                                },
+                                onDragEnd: {
+                                    isResizingConsole = false
+                                },
+                                onDoubleClick: {
+                                    withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                                        consoleBodyHeight = 220
+                                    }
+                                }
+                            )
+                        }
+
+                        ConsoleDrawerView(
+                            bodyHeight: effectiveConsoleBody,
+                            isResizing: isResizingConsole
+                        )
                     }
-                }
-
-                if !appState.isConsoleVisible {
-                    ConsoleDrawerView()
-                        .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    .animation(
+                        isResizingConsole ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
+                        value: appState.isConsoleVisible
+                    )
+                    .animation(
+                        CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion),
+                        value: appState.debugPhase.isActive
+                    )
                 }
             }
-            .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: appState.isConsoleVisible)
+            .animation(
+                isResizingSidebar ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
+                value: appState.isSidebarVisible
+            )
         }
-        .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: appState.isSidebarVisible)
     }
 
     @ViewBuilder
@@ -101,14 +260,60 @@ struct MainStudioView: View {
                                 features: appState.activeFeaturesForCurrentTab
                             )
                         case .split:
-                            HSplitView {
-                                editorSurface(for: activeTab)
-                                    .frame(minWidth: 340)
-                                FlowVisualizerView(
-                                    file: appState.activeWorkspaceFile,
-                                    features: appState.activeFeaturesForCurrentTab
-                                )
-                                .frame(minWidth: 300, idealWidth: 420)
+                            GeometryReader { splitGeo in
+                                let availableSplit = max(0, splitGeo.size.width - CeptraSplitResizeHandle.hitThickness)
+                                let preferredMinEditor: CGFloat = 340
+                                let preferredMinVisual: CGFloat = 320
+                                let splitBounds: (minVisual: CGFloat, maxVisual: CGFloat) = {
+                                    if availableSplit >= preferredMinEditor + preferredMinVisual {
+                                        let cappedMax = min(availableSplit - preferredMinEditor, availableSplit * 0.62)
+                                        return (preferredMinVisual, max(preferredMinVisual, cappedMax))
+                                    }
+                                    // Balanced fallback when sidebar + debug inspector narrow the split area
+                                    let safeVisualFloor = min(preferredMinVisual, max(240, availableSplit * 0.44))
+                                    let safeEditorFloor = min(preferredMinEditor, max(240, availableSplit * 0.44))
+                                    return (safeVisualFloor, max(safeVisualFloor, availableSplit - safeEditorFloor))
+                                }()
+                                let minVisual = splitBounds.minVisual
+                                let maxVisual = splitBounds.maxVisual
+                                let effectiveVisualWidth = min(max(splitVisualizerWidth, minVisual), maxVisual)
+                                let splitCursor: CeptraSplitResizeHandle.CursorDirection = {
+                                    if maxVisual - minVisual <= 0.5 { return .both }
+                                    if effectiveVisualWidth <= minVisual + 0.5 { return .onlyLeadingOrUp }
+                                    if effectiveVisualWidth >= maxVisual - 0.5 { return .onlyTrailingOrDown }
+                                    return .both
+                                }()
+
+                                HStack(spacing: 0) {
+                                    editorSurface(for: activeTab)
+                                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+
+                                    CeptraSplitResizeHandle(
+                                        axis: .horizontal,
+                                        cursorDirection: splitCursor,
+                                        onDragStart: {
+                                            isResizingSplitVisualizer = true
+                                            splitVisualizerDragStartWidth = effectiveVisualWidth
+                                        },
+                                        onDragChanged: { delta in
+                                            splitVisualizerWidth = min(max(splitVisualizerDragStartWidth - delta, minVisual), maxVisual)
+                                        },
+                                        onDragEnd: {
+                                            isResizingSplitVisualizer = false
+                                        },
+                                        onDoubleClick: {
+                                            withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                                                splitVisualizerWidth = 420
+                                            }
+                                        }
+                                    )
+
+                                    FlowVisualizerView(
+                                        file: appState.activeWorkspaceFile,
+                                        features: appState.activeFeaturesForCurrentTab
+                                    )
+                                    .frame(width: effectiveVisualWidth)
+                                }
                             }
                         case .reports:
                             EmptyView()
@@ -141,6 +346,17 @@ struct MainStudioView: View {
             foldAction: appState.pendingEditorFoldAction,
             onNavigate: { target, fromLine in
                 appState.navigateToImportTarget(target, fromLine: fromLine)
+            },
+            breakpointsByLine: appState.breakpointsByLine(forFilePath: tab.filePath),
+            pausedLine: appState.activePausedLine(forFilePath: tab.filePath),
+            onToggleBreakpoint: { line in
+                appState.toggleBreakpoint(filePath: tab.filePath, line: line)
+            },
+            onEditBreakpoint: { bp in
+                appState.updateBreakpoint(bp)
+            },
+            onRemoveBreakpoint: { id in
+                appState.removeBreakpoint(id: id)
             }
         )
     }
@@ -171,15 +387,13 @@ private struct TopStudioBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isRunMenuHovered = false
+    @State private var leadingTrafficLightReserve: CGFloat = 76
 
     var body: some View {
-        HStack(spacing: 10) {
-            // Left traffic-light spacing + Sidebar toggle + Project menu
-            Color.clear.frame(width: 66, height: 1)
-
+        HStack(spacing: 8) {
             if appState.workspace != nil {
                 Button {
-                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
                         appState.isSidebarVisible.toggle()
                     }
                 } label: {
@@ -204,6 +418,7 @@ private struct TopStudioBar: View {
                 CeptraMenuPillLabel(
                     title: appState.workspace?.config.projectName ?? "Ceptra",
                     subtitle: appState.workspace?.config.packageCodeceptVersion,
+                    maxTitleWidth: 155,
                     isOpen: isOpen
                 ) {
                     Circle()
@@ -274,7 +489,7 @@ private struct TopStudioBar: View {
                         title: activeLabel,
                         titleFont: .system(size: 11, design: .monospaced),
                         titleColor: ws.config.configFilePath == nil ? CeptraTheme.warning : CeptraTheme.textSecondary,
-                        maxTitleWidth: 190,
+                        maxTitleWidth: 155,
                         accentBorder: ws.config.isCustomConfigOverride ? CeptraTheme.accentWarm : nil,
                         horizontalPadding: 9,
                         verticalPadding: 5,
@@ -399,6 +614,33 @@ private struct TopStudioBar: View {
                         }
                         .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.96))
                         .help("Run All Tests (⌘R)")
+
+                        Button {
+                            if appState.isActiveTabExecutableTestFile {
+                                appState.debugActiveFile()
+                            } else {
+                                appState.debug(mode: .runAll)
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "ladybug.fill")
+                                    .font(.system(size: 10))
+                                Text("Debug")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                            }
+                            .foregroundStyle(CeptraTheme.accentWarm)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                        }
+                        .buttonStyle(
+                            CeptraGlassButtonStyle(
+                                cornerRadius: 7,
+                                tint: CeptraTheme.accentWarm,
+                                tintOpacity: 0.16,
+                                accentBorder: CeptraTheme.accentWarm
+                            )
+                        )
+                        .help(appState.isActiveTabExecutableTestFile ? "Debug Current Test File (⌘⇧B)" : "Debug All Tests")
 
                         CeptraGlassDropdown(minWidth: 265, maxWidth: 340) { isOpen in
                             Image(systemName: "chevron.down")
@@ -576,7 +818,7 @@ private struct TopStudioBar: View {
                     }
 
                     Button {
-                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
                             appState.isConsoleVisible.toggle()
                         }
                     } label: {
@@ -596,6 +838,42 @@ private struct TopStudioBar: View {
                         )
                     )
                     .help("Toggle Console (⌘J)")
+
+                    Button {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.isDebugInspectorVisible.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: appState.debugPhase.isActive ? "ladybug.fill" : "ladybug")
+                                .font(.system(size: 11.5))
+                            if !appState.breakpoints.isEmpty {
+                                Text("\(appState.breakpoints.count)")
+                                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                    .monospacedDigit()
+                            }
+                        }
+                        .foregroundStyle(
+                            appState.debugPhase.isActive
+                                ? CeptraTheme.accentWarm
+                                : (appState.isDebugInspectorVisible ? CeptraTheme.accent : CeptraTheme.textSecondary)
+                        )
+                        .padding(.horizontal, appState.breakpoints.isEmpty ? 0 : 7)
+                        .frame(minWidth: 28, minHeight: 26)
+                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .buttonStyle(
+                        CeptraGlassButtonStyle(
+                            cornerRadius: 7,
+                            tint: appState.debugPhase.isActive ? CeptraTheme.accentWarm : CeptraTheme.panelBG,
+                            tintOpacity: appState.debugPhase.isActive ? 0.16 : 0.56,
+                            accentBorder: appState.debugPhase.isActive
+                                ? CeptraTheme.accentWarm
+                                : (appState.isDebugInspectorVisible ? CeptraTheme.accent : nil),
+                            isActive: appState.isDebugInspectorVisible
+                        )
+                    )
+                    .help("Toggle Debug Inspector")
                 }
             }
 
@@ -628,9 +906,16 @@ private struct TopStudioBar: View {
             )
             .help("Check for Updates via GitHub Releases")
         }
+        .padding(.leading, leadingTrafficLightReserve)
         .padding(.trailing, 14)
         .frame(height: 44)
-        .background(CeptraWindowTitlebarDragArea())
+        .background(
+            CeptraWindowTitlebarDragArea { newReserve in
+                withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
+                    leadingTrafficLightReserve = newReserve
+                }
+            }
+        )
         .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.72, bottomHairline: true)
     }
 
@@ -647,6 +932,42 @@ private struct TopStudioBar: View {
 
 // MARK: - Editor Tab Bar
 
+private struct TabWidthPreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct TabDragPointerModifier: ViewModifier {
+    let isDragging: Bool
+    @State private var isLegacyCursorPushed = false
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.pointerStyle(isDragging ? .grabActive : nil)
+        } else {
+            content
+                .onChange(of: isDragging) { _, active in
+                    syncLegacyCursor(active: active)
+                }
+                .onDisappear {
+                    syncLegacyCursor(active: false)
+                }
+        }
+    }
+
+    private func syncLegacyCursor(active: Bool) {
+        if active && !isLegacyCursorPushed {
+            NSCursor.closedHand.push()
+            isLegacyCursorPushed = true
+        } else if !active && isLegacyCursorPushed {
+            NSCursor.pop()
+            isLegacyCursorPushed = false
+        }
+    }
+}
+
 private struct EditorTabBar: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -654,12 +975,59 @@ private struct EditorTabBar: View {
     @Namespace private var activeTabNamespace
     @State private var hoveredTabPath: String?
     @State private var hoveredClosePath: String?
+    @State private var tabWidths: [String: CGFloat] = [:]
+
+    // Direct-manipulation horizontal rail drag state
+    @State private var draggingTabPath: String?
+    @State private var dragOriginIndex: Int?
+    @State private var dragTargetIndex: Int?
+    @State private var dragTranslationX: CGFloat = 0
+
+    // Post-drop settle glide state (runs after atomic array commit)
+    @State private var settlingTabPath: String?
+    @State private var settlingOffsetX: CGFloat = 0
+    @State private var settlingToken: UUID?
+
+    private static let railCoordinateSpace = "EditorTabRail"
+    private static let tabSpacing: CGFloat = 3
+    private static let railHorizontalPadding: CGFloat = 4
+    private static let dragActivationDistance: CGFloat = 5
+    private static let fallbackTabWidth: CGFloat = 120
 
     private var hasNavigationHistory: Bool {
         appState.canNavigateBack || appState.canNavigateForward
     }
 
+    private var orderedTabWidths: [Double] {
+        appState.openTabs.map { Double(tabWidths[$0.filePath] ?? Self.fallbackTabWidth) }
+    }
+
+    private var indexByPath: [String: Int] {
+        Dictionary(uniqueKeysWithValues: appState.openTabs.enumerated().map { ($1.filePath, $0) })
+    }
+
+    private var dropSlotIndicatorRect: (minX: CGFloat, width: CGFloat)? {
+        guard let draggingPath = draggingTabPath,
+              let originIndex = dragOriginIndex,
+              let targetIndex = dragTargetIndex,
+              appState.openTabs.indices.contains(originIndex) else {
+            return nil
+        }
+        let widths = orderedTabWidths
+        let minX = TabReorderEngine.targetSlotMinX(
+            originIndex: originIndex,
+            targetIndex: targetIndex,
+            widths: widths,
+            spacing: Double(Self.tabSpacing),
+            leadingPadding: Double(Self.railHorizontalPadding)
+        )
+        let width = tabWidths[draggingPath] ?? Self.fallbackTabWidth
+        return (CGFloat(minX), width)
+    }
+
     var body: some View {
+        let currentIndexByPath = indexByPath
+
         HStack(spacing: 0) {
             // Back / Forward import-navigation history buttons
             if hasNavigationHistory {
@@ -700,99 +1068,61 @@ private struct EditorTabBar: View {
                     .transition(.opacity)
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 3) {
-                    ForEach(appState.openTabs) { tab in
-                        let isActive = tab.filePath == appState.activeTabPath
-                        let isHovered = hoveredTabPath == tab.filePath
-                        let isCloseHovered = hoveredClosePath == tab.filePath
+            ScrollViewReader { scrollProxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    ZStack(alignment: .leading) {
+                        // Recessed target drop-slot indicator behind sliding tabs
+                        if let slot = dropSlotIndicatorRect {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(CeptraTheme.accent.opacity(0.08))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .strokeBorder(
+                                            CeptraTheme.accent.opacity(0.32),
+                                            style: StrokeStyle(lineWidth: 1, dash: [3, 3])
+                                        )
+                                )
+                                .frame(width: slot.width, height: 26)
+                                .offset(x: slot.minX)
+                                .animation(
+                                    CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion),
+                                    value: dragTargetIndex
+                                )
+                                .allowsHitTesting(false)
+                                .zIndex(0)
+                        }
 
-                        HStack(spacing: 4) {
-                            Button {
-                                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
-                                    appState.switchTab(to: tab.filePath)
-                                }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: tab.category.symbolName)
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(tab.isExecutableTestFile ? CeptraTheme.accent : CeptraTheme.textMuted)
-                                    Text(tab.name)
-                                        .font(.system(size: 11.5, weight: isActive ? .semibold : .regular))
-                                        .foregroundStyle(isActive ? CeptraTheme.textPrimary : (isHovered ? CeptraTheme.textPrimary.opacity(0.88) : CeptraTheme.textSecondary))
-                                        .lineLimit(1)
-                                    if tab.isDirty {
-                                        Circle()
-                                            .fill(CeptraTheme.accentWarm)
-                                            .frame(width: 6, height: 6)
-                                    }
-                                }
-                                .padding(.leading, 9)
-                                .padding(.trailing, 4)
-                                .padding(.vertical, 6)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .help(tab.relativePath)
-
-                            Button {
-                                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
-                                    appState.closeTab(filePath: tab.filePath)
-                                }
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 8.5, weight: .bold))
-                                    .foregroundStyle(isCloseHovered ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
-                                    .frame(width: 18, height: 18)
-                                    .background(
-                                        isCloseHovered ? Color.white.opacity(0.10) : Color.clear,
-                                        in: Circle()
-                                    )
-                                    .contentShape(Circle())
-                            }
-                            .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.90))
-                            .padding(.trailing, 5)
-                            .help("Close Tab (⌘W)")
-                            .accessibilityLabel("Close \(tab.name)")
-                            .onHover { hovering in
-                                withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
-                                    hoveredClosePath = hovering ? tab.filePath : (hoveredClosePath == tab.filePath ? nil : hoveredClosePath)
-                                }
+                        HStack(spacing: Self.tabSpacing) {
+                            ForEach(appState.openTabs) { tab in
+                                let tabIndex = currentIndexByPath[tab.filePath] ?? 0
+                                tabPill(for: tab, index: tabIndex)
+                                    .id(tab.filePath)
                             }
                         }
-                        .background {
-                            if isActive {
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(CeptraTheme.canvasBG.opacity(0.92))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                            .strokeBorder(CeptraTheme.specularRimGradient, lineWidth: 0.7)
-                                    )
-                                    .matchedGeometryEffect(id: "active-editor-tab-bg", in: activeTabNamespace)
-                            } else if isHovered {
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(CeptraTheme.glassHoverOverlay)
-                            }
-                        }
-                        .overlay(alignment: .bottom) {
-                            if isActive {
-                                Capsule()
-                                    .fill(CeptraTheme.accent)
-                                    .frame(height: 2)
-                                    .padding(.horizontal, 8)
-                                    .shadow(color: CeptraTheme.accent.opacity(0.65), radius: 4, y: 0)
-                                    .matchedGeometryEffect(id: "active-editor-tab-indicator", in: activeTabNamespace)
-                            }
-                        }
-                        .padding(.vertical, 2)
-                        .onHover { hovering in
-                            withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
-                                hoveredTabPath = hovering ? tab.filePath : (hoveredTabPath == tab.filePath ? nil : hoveredTabPath)
-                            }
-                        }
+                        .padding(.horizontal, Self.railHorizontalPadding)
+                    }
+                    .coordinateSpace(name: Self.railCoordinateSpace)
+                }
+                .onPreferenceChange(TabWidthPreferenceKey.self) { widths in
+                    if tabWidths != widths {
+                        tabWidths = widths
                     }
                 }
-                .padding(.horizontal, 4)
+                .onChange(of: appState.activeTabPath) { _, newPath in
+                    guard let newPath, draggingTabPath == nil else { return }
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        scrollProxy.scrollTo(newPath, anchor: .center)
+                    }
+                }
+                .onChange(of: dragTargetIndex) { _, newTarget in
+                    guard draggingTabPath != nil,
+                          let newTarget,
+                          appState.openTabs.indices.contains(newTarget) else { return }
+                    let anchorPath = appState.openTabs[newTarget].filePath
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
+                        scrollProxy.scrollTo(anchorPath)
+                    }
+                }
             }
 
             Spacer(minLength: 8)
@@ -880,6 +1210,26 @@ private struct EditorTabBar: View {
                     // Show execution button ONLY for CodeceptJS test suites and Gherkin feature files
                     if appState.isActiveTabExecutableTestFile {
                         Button {
+                            appState.debugActiveFile()
+                        } label: {
+                            Image(systemName: "ladybug.fill")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(CeptraTheme.accentWarm)
+                                .frame(width: 24, height: 22)
+                        }
+                        .buttonStyle(
+                            CeptraGlassButtonStyle(
+                                cornerRadius: 6,
+                                tint: CeptraTheme.accentWarm,
+                                tintOpacity: 0.14,
+                                accentBorder: CeptraTheme.accentWarm
+                            )
+                        )
+                        .disabled(appState.isRunning)
+                        .opacity(appState.isRunning ? 0.5 : 1)
+                        .help("Debug Current Test File (⌘⇧B)")
+
+                        Button {
                             appState.runActiveFile()
                         } label: {
                             Label("Run Test File", systemImage: "play.fill")
@@ -906,7 +1256,356 @@ private struct EditorTabBar: View {
         }
         .frame(height: 34)
         .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.68, bottomHairline: true)
+        .modifier(TabDragPointerModifier(isDragging: draggingTabPath != nil))
         .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: hasNavigationHistory)
+        .onChange(of: appState.openTabs.map(\.filePath)) { _, newPaths in
+            if draggingTabPath != nil {
+                resetDragState()
+            }
+            if let settling = settlingTabPath, !newPaths.contains(settling) {
+                settlingToken = nil
+                settlingTabPath = nil
+                settlingOffsetX = 0
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            if draggingTabPath != nil {
+                resetDragState()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tabPill(for tab: OpenDocumentTab, index: Int) -> some View {
+        let isActive = tab.filePath == appState.activeTabPath
+        let isDragged = draggingTabPath == tab.filePath
+        let isSettling = settlingTabPath == tab.filePath
+        let isAnyDragging = draggingTabPath != nil
+        let isHovered = !isAnyDragging && hoveredTabPath == tab.filePath
+        let isCloseHovered = !isAnyDragging && hoveredClosePath == tab.filePath
+
+        let siblingDisplacement: CGFloat = {
+            guard let draggingPath = draggingTabPath,
+                  let originIndex = dragOriginIndex,
+                  let targetIndex = dragTargetIndex,
+                  !isDragged else {
+                return 0
+            }
+            let draggedWidth = Double(tabWidths[draggingPath] ?? Self.fallbackTabWidth)
+            return CGFloat(
+                TabReorderEngine.displacement(
+                    forOriginalIndex: index,
+                    originIndex: originIndex,
+                    targetIndex: targetIndex,
+                    draggedWidth: draggedWidth,
+                    spacing: Double(Self.tabSpacing)
+                )
+            )
+        }()
+
+        let horizontalOffset: CGFloat = {
+            if isDragged {
+                return dragTranslationX
+            }
+            if isSettling {
+                return settlingOffsetX
+            }
+            return siblingDisplacement
+        }()
+
+        let tabZIndex: Double = {
+            if isDragged { return 100 }
+            if isSettling { return 50 }
+            if isActive { return 10 }
+            return 1
+        }()
+
+        HStack(spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: tab.category.symbolName)
+                    .font(.system(size: 10))
+                    .foregroundStyle(tab.isExecutableTestFile ? CeptraTheme.accent : CeptraTheme.textMuted)
+                Text(tab.name)
+                    .font(.system(size: 11.5, weight: (isActive || isDragged) ? .semibold : .regular))
+                    .foregroundStyle(
+                        (isActive || isDragged)
+                            ? CeptraTheme.textPrimary
+                            : (isHovered ? CeptraTheme.textPrimary.opacity(0.88) : CeptraTheme.textSecondary)
+                    )
+                    .lineLimit(1)
+                if tab.isDirty {
+                    Circle()
+                        .fill(CeptraTheme.accentWarm)
+                        .frame(width: 6, height: 6)
+                }
+            }
+            .padding(.leading, 9)
+            .padding(.trailing, 4)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .help(appState.openTabs.count > 1 ? "\(tab.relativePath) — Drag to reorder" : tab.relativePath)
+            .gesture(tabDragGesture(for: tab, index: index))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(tab.isDirty ? "\(tab.name), unsaved changes" : tab.name)
+            .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : [.isButton])
+            .accessibilityAction {
+                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                    appState.switchTab(to: tab.filePath)
+                }
+            }
+            .accessibilityAction(named: Text("Move Tab Left")) {
+                guard index > 0 else { return }
+                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                    _ = appState.moveTab(filePath: tab.filePath, toIndex: index - 1)
+                }
+            }
+            .accessibilityAction(named: Text("Move Tab Right")) {
+                guard index < appState.openTabs.count - 1 else { return }
+                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                    _ = appState.moveTab(filePath: tab.filePath, toIndex: index + 1)
+                }
+            }
+
+            Button {
+                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                    appState.closeTab(filePath: tab.filePath)
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(isCloseHovered ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
+                    .frame(width: 18, height: 18)
+                    .background(
+                        isCloseHovered ? Color.white.opacity(0.10) : Color.clear,
+                        in: Circle()
+                    )
+                    .contentShape(Circle())
+            }
+            .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.90))
+            .padding(.trailing, 5)
+            .help("Close Tab (⌘W)")
+            .accessibilityLabel("Close \(tab.name)")
+            .onHover { hovering in
+                withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
+                    hoveredClosePath = hovering ? tab.filePath : (hoveredClosePath == tab.filePath ? nil : hoveredClosePath)
+                }
+            }
+        }
+        .background {
+            if isActive {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(CeptraTheme.canvasBG.opacity(isDragged ? 0.98 : 0.92))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(
+                                isDragged
+                                    ? CeptraTheme.accentSpecularRim(CeptraTheme.accent)
+                                    : CeptraTheme.specularRimGradient,
+                                lineWidth: isDragged ? 0.9 : 0.7
+                            )
+                    )
+                    .matchedGeometryEffect(id: "active-editor-tab-bg", in: activeTabNamespace)
+            } else if isDragged {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(CeptraTheme.elevatedBG.opacity(0.96))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(CeptraTheme.accentSpecularRim(CeptraTheme.accent), lineWidth: 0.9)
+                    )
+            } else if isHovered {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(CeptraTheme.glassHoverOverlay)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if isActive {
+                Capsule()
+                    .fill(CeptraTheme.accent)
+                    .frame(height: 2)
+                    .padding(.horizontal, 8)
+                    .shadow(color: CeptraTheme.accent.opacity(0.65), radius: 4, y: 0)
+                    .matchedGeometryEffect(id: "active-editor-tab-indicator", in: activeTabNamespace)
+            }
+        }
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: TabWidthPreferenceKey.self,
+                    value: [tab.filePath: proxy.size.width]
+                )
+            }
+        )
+        .scaleEffect(isDragged ? (reduceMotion ? 1.0 : 1.02) : 1.0)
+        .shadow(
+            color: isDragged ? Color.black.opacity(0.45) : .clear,
+            radius: isDragged ? 8 : 0,
+            y: isDragged ? 3 : 0
+        )
+        .animation(
+            CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion),
+            value: isDragged
+        )
+        .padding(.vertical, 2)
+        .offset(x: horizontalOffset)
+        .zIndex(tabZIndex)
+        .animation(
+            isAnyDragging && !isDragged
+                ? CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)
+                : nil,
+            value: siblingDisplacement
+        )
+        .onHover { hovering in
+            guard draggingTabPath == nil else { return }
+            withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
+                hoveredTabPath = hovering ? tab.filePath : (hoveredTabPath == tab.filePath ? nil : hoveredTabPath)
+            }
+        }
+    }
+
+    private func tabDragGesture(for tab: OpenDocumentTab, index: Int) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.railCoordinateSpace))
+            .onChanged { value in
+                let dx = value.location.x - value.startLocation.x
+
+                // Begin drag once horizontal movement exceeds threshold and at least 2 tabs exist.
+                if draggingTabPath != tab.filePath {
+                    guard draggingTabPath == nil,
+                          appState.openTabs.count > 1,
+                          abs(dx) >= Self.dragActivationDistance else {
+                        return
+                    }
+                    // Cancel any in-flight settle glide before starting a fresh drag.
+                    settlingToken = nil
+                    settlingTabPath = nil
+                    settlingOffsetX = 0
+                    hoveredTabPath = nil
+                    hoveredClosePath = nil
+                    draggingTabPath = tab.filePath
+                    dragOriginIndex = index
+                    dragTargetIndex = index
+                }
+
+                guard let originIndex = dragOriginIndex,
+                      let currentTarget = dragTargetIndex else {
+                    return
+                }
+
+                let widths = orderedTabWidths
+                let clampedX = TabReorderEngine.clampedTranslation(
+                    rawTranslation: Double(dx),
+                    originIndex: originIndex,
+                    widths: widths,
+                    spacing: Double(Self.tabSpacing)
+                )
+                dragTranslationX = CGFloat(clampedX)
+
+                let nextTarget = TabReorderEngine.targetIndex(
+                    forOriginIndex: originIndex,
+                    currentTargetIndex: currentTarget,
+                    translationX: clampedX,
+                    widths: widths,
+                    spacing: Double(Self.tabSpacing)
+                )
+                if nextTarget != currentTarget {
+                    dragTargetIndex = nextTarget
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+                }
+            }
+            .onEnded { value in
+                if draggingTabPath == tab.filePath {
+                    commitTabDrag(for: tab)
+                } else {
+                    let dx = value.location.x - value.startLocation.x
+                    let dy = value.location.y - value.startLocation.y
+                    if abs(dx) < 16 && abs(dy) < 24 {
+                        settlingToken = nil
+                        settlingTabPath = nil
+                        settlingOffsetX = 0
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                            appState.switchTab(to: tab.filePath)
+                        }
+                    }
+                }
+            }
+    }
+
+    private func commitTabDrag(for tab: OpenDocumentTab) {
+        guard let originIndex = dragOriginIndex,
+              let targetIndex = dragTargetIndex,
+              appState.openTabs.indices.contains(originIndex) else {
+            resetDragState()
+            return
+        }
+
+        let widths = orderedTabWidths
+        let originalSlots = TabReorderEngine.slotFrames(
+            widths: widths,
+            spacing: Double(Self.tabSpacing),
+            leadingPadding: Double(Self.railHorizontalPadding)
+        )
+        let currentVisualMinX = originalSlots[originIndex].minX + Double(dragTranslationX)
+        let restingMinX = TabReorderEngine.targetSlotMinX(
+            originIndex: originIndex,
+            targetIndex: targetIndex,
+            widths: widths,
+            spacing: Double(Self.tabSpacing),
+            leadingPadding: Double(Self.railHorizontalPadding)
+        )
+        let remainingDelta = CGFloat(currentVisualMinX - restingMinX)
+
+        // Atomically commit the new order and hand off visual continuity to `settlingOffsetX`
+        // with animations disabled so siblings snap into their new layout slots at 0 visual delta.
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            if targetIndex != originIndex {
+                appState.moveTab(filePath: tab.filePath, toIndex: targetIndex)
+            }
+            draggingTabPath = nil
+            dragOriginIndex = nil
+            dragTargetIndex = nil
+            dragTranslationX = 0
+            if abs(remainingDelta) > 0.5 {
+                settlingTabPath = tab.filePath
+                settlingOffsetX = remainingDelta
+            } else {
+                settlingToken = nil
+                settlingTabPath = nil
+                settlingOffsetX = 0
+            }
+        }
+
+        guard abs(remainingDelta) > 0.5 else { return }
+        let settleID = UUID()
+        settlingToken = settleID
+        DispatchQueue.main.async {
+            guard settlingToken == settleID else { return }
+            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                settlingOffsetX = 0
+            }
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(280))
+            if settlingToken == settleID {
+                settlingToken = nil
+                settlingTabPath = nil
+                settlingOffsetX = 0
+            }
+        }
+    }
+
+    private func resetDragState() {
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            draggingTabPath = nil
+            dragOriginIndex = nil
+            dragTargetIndex = nil
+            dragTranslationX = 0
+            settlingToken = nil
+            settlingTabPath = nil
+            settlingOffsetX = 0
+        }
     }
 }
 
@@ -928,6 +1627,7 @@ private struct RunOptionsPopover: View {
                 Toggle("Enable AI Assistant (--ai)", isOn: $appState.runOptions.aiEnabled)
                 Toggle("Bail on First Failure (--bail)", isOn: $appState.runOptions.bailOnFail)
                 Toggle("Disable Timeouts (--no-timeouts)", isOn: $appState.runOptions.noTimeouts)
+                Toggle("Capture Time-Travel Trace (DOM, Network, Shots)", isOn: $appState.runOptions.timeTravelTrace)
                 Toggle("ESM/CJS Named-Export Compat (uuid, etc.)", isOn: $appState.runOptions.esmCjsCompat)
             }
             .toggleStyle(.checkbox)
@@ -1008,6 +1708,37 @@ private struct RunOptionsPopover: View {
                     TextField("Optional --serial pattern", text: $appState.runOptions.workerSerialPattern)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11.5))
+                }
+            }
+
+            Divider().overlay(CeptraTheme.border)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Debug Mode")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(CeptraTheme.accentWarm)
+
+                Toggle("Headed Browser (HEADLESS=false)", isOn: $appState.runOptions.debugLaunchOptions.headedBrowser)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 12))
+
+                HStack(spacing: 8) {
+                    Text("Exceptions:")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { appState.runOptions.debugLaunchOptions.breakOnExceptions },
+                            set: { appState.setExceptionBreakMode($0) }
+                        )
+                    ) {
+                        ForEach(ExceptionBreakMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
                 }
             }
 

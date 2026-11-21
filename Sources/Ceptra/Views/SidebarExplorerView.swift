@@ -28,8 +28,8 @@ struct SidebarExplorerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Top Mode Switcher + Tree Controls
-            HStack(spacing: 6) {
+            // Top Mode Switcher + Creation Controls
+            HStack(spacing: 5) {
                 CeptraGlassSegmentedControl(
                     options: ExplorerMode.allCases,
                     selection: $explorerMode,
@@ -41,48 +41,6 @@ struct SidebarExplorerView: View {
                 )
 
                 Spacer(minLength: 4)
-
-                if explorerMode == .projectTree {
-                    Button {
-                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
-                            revealActiveFileInTree()
-                        }
-                    } label: {
-                        Image(systemName: "scope")
-                            .font(.system(size: 11))
-                            .foregroundStyle(CeptraTheme.textSecondary)
-                            .frame(width: 24, height: 24)
-                    }
-                    .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45))
-                    .disabled(appState.activeTabPath == nil)
-                    .help("Reveal Active File in Tree")
-
-                    Button {
-                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
-                            toggleExpandCollapseAll()
-                        }
-                    } label: {
-                        Image(systemName: expandedFolders.isEmpty ? "chevron.down.square" : "chevron.up.square")
-                            .font(.system(size: 11))
-                            .foregroundStyle(CeptraTheme.textSecondary)
-                            .frame(width: 24, height: 24)
-                    }
-                    .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45))
-                    .help(expandedFolders.isEmpty ? "Expand All Folders" : "Collapse All Folders")
-
-                    Button {
-                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
-                            showHiddenEntries.toggle()
-                        }
-                    } label: {
-                        Image(systemName: showHiddenEntries ? "eye" : "eye.slash")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(showHiddenEntries ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
-                            .frame(width: 24, height: 24)
-                    }
-                    .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45, isActive: showHiddenEntries))
-                    .help(showHiddenEntries ? "Hide Dotfiles" : "Show Dotfiles (.github, .env, etc.)")
-                }
 
                 Button {
                     appState.presentNewFolderSheet(inDirectory: appState.activeFileParentRelativeDirectory ?? "")
@@ -290,7 +248,8 @@ struct SidebarExplorerView: View {
                     .foregroundStyle(CeptraTheme.textMuted)
                     .tracking(0.6)
                     .lineLimit(1)
-                Spacer()
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
                 if let tag {
                     Button {
                         appState.run(mode: .runTag(tag: tag))
@@ -302,25 +261,50 @@ struct SidebarExplorerView: View {
                     .buttonStyle(CeptraTactilePressStyle())
                     .disabled(appState.isRunning)
                 } else {
-                    Button {
-                        appState.presentNewFileSheet(inDirectory: "")
-                    } label: {
-                        Image(systemName: "doc.badge.plus")
-                            .font(.system(size: 10))
-                            .foregroundStyle(CeptraTheme.textMuted)
-                    }
-                    .buttonStyle(.plain)
-                    .help("New File in Project Root")
+                    HStack(spacing: 4) {
+                        Button {
+                            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                                revealActiveFileInTree()
+                            }
+                        } label: {
+                            Image(systemName: "scope")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(appState.activeTabPath == nil ? CeptraTheme.textMuted.opacity(0.45) : CeptraTheme.textMuted)
+                                .frame(width: 20, height: 20)
+                                .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        }
+                        .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.92))
+                        .disabled(appState.activeTabPath == nil)
+                        .help("Reveal Active File in Tree")
 
-                    Button {
-                        appState.presentNewFolderSheet(inDirectory: "")
-                    } label: {
-                        Image(systemName: "folder.badge.plus")
-                            .font(.system(size: 10))
-                            .foregroundStyle(CeptraTheme.textMuted)
+                        Button {
+                            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                                toggleExpandCollapseAll()
+                            }
+                        } label: {
+                            Image(systemName: expandedFolders.isEmpty ? "chevron.down.square" : "chevron.up.square")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(CeptraTheme.textMuted)
+                                .frame(width: 20, height: 20)
+                                .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        }
+                        .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.92))
+                        .help(expandedFolders.isEmpty ? "Expand All Folders" : "Collapse All Folders")
+
+                        Button {
+                            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                                showHiddenEntries.toggle()
+                            }
+                        } label: {
+                            Image(systemName: showHiddenEntries ? "eye" : "eye.slash")
+                                .font(.system(size: 10))
+                                .foregroundStyle(showHiddenEntries ? CeptraTheme.textSecondary : CeptraTheme.textMuted.opacity(0.65))
+                                .frame(width: 20, height: 20)
+                                .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        }
+                        .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.92))
+                        .help(showHiddenEntries ? "Hide Dotfiles" : "Show Dotfiles (.github, .env, etc.)")
                     }
-                    .buttonStyle(.plain)
-                    .help("New Folder in Project Root")
                 }
             }
             .padding(.horizontal, 8)

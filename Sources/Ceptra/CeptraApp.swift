@@ -26,7 +26,7 @@ struct CeptraApp: App {
             MainStudioView()
                 .environmentObject(appState)
                 .preferredColorScheme(.dark)
-                .frame(minWidth: 1080, minHeight: 680)
+                .frame(minWidth: 960, minHeight: 620)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1360, height: 840)
@@ -84,6 +84,63 @@ struct CeptraApp: App {
                 }
                 .keyboardShortcut("]", modifiers: [.command, .shift])
                 .disabled(appState.openTabs.count < 2)
+            }
+
+            CommandMenu("Debug") {
+                Button("Debug Current Test File") {
+                    appState.debugActiveFile()
+                }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+                .disabled(!appState.isActiveTabExecutableTestFile || appState.isRunning)
+
+                Button("Debug All Tests") {
+                    appState.debug(mode: .runAll)
+                }
+                .disabled(appState.workspace == nil || appState.isRunning)
+
+                Divider()
+
+                Button("Continue") {
+                    appState.debugContinue()
+                }
+                .keyboardShortcut("y", modifiers: [.control, .command])
+                .disabled(!appState.debugPhase.isPaused)
+
+                Button("Pause") {
+                    appState.debugPause()
+                }
+                .disabled(appState.debugPhase != .running)
+
+                Button("Step Over") {
+                    appState.debugStepOver()
+                }
+                .keyboardShortcut("'", modifiers: [.command, .shift])
+                .disabled(!appState.debugPhase.isPaused)
+
+                Button("Step Into") {
+                    appState.debugStepInto()
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .disabled(!appState.debugPhase.isPaused)
+
+                Button("Step Out") {
+                    appState.debugStepOut()
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(!appState.debugPhase.isPaused)
+
+                Divider()
+
+                Button(appState.isDebugInspectorVisible ? "Hide Debug Inspector" : "Show Debug Inspector") {
+                    appState.isDebugInspectorVisible.toggle()
+                }
+                .keyboardShortcut("j", modifiers: [.command, .option])
+                .disabled(appState.workspace == nil)
+
+                Button("Clear All Breakpoints") {
+                    appState.clearAllBreakpoints()
+                }
+                .disabled(appState.breakpoints.isEmpty)
             }
 
             CommandMenu("CodeceptJS") {

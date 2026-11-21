@@ -3,10 +3,16 @@ import CeptraCore
 import SwiftUI
 
 struct ConsoleDrawerView: View {
+    static let headerHeight: CGFloat = 38
+
     @EnvironmentObject var appState: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var bodyHeight: CGFloat = 220
+    var isResizing: Bool = false
+
     @State private var filterMode: ConsoleFilterMode = .all
     @State private var searchText: String = ""
+    @State private var pauseShellInput: String = ""
     @State private var isFilterSearchHovered = false
     @State private var isRecentHovered = false
     @FocusState private var isCommandFocused: Bool
@@ -192,7 +198,7 @@ struct ConsoleDrawerView: View {
                 }
 
                 Button {
-                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
                         appState.isConsoleVisible.toggle()
                     }
                 } label: {
@@ -200,7 +206,7 @@ struct ConsoleDrawerView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(CeptraTheme.textSecondary)
                         .rotationEffect(.degrees(appState.isConsoleVisible ? 0 : 180))
-                        .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: appState.isConsoleVisible)
+                        .animation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion), value: appState.isConsoleVisible)
                         .frame(width: 24, height: 22)
                 }
                 .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45))
@@ -208,10 +214,12 @@ struct ConsoleDrawerView: View {
                 .accessibilityLabel(appState.isConsoleVisible ? "Hide Console" : "Show Console")
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .frame(height: Self.headerHeight)
             .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.74, topHairline: true, bottomHairline: appState.isConsoleVisible)
 
-            if appState.isConsoleVisible {
+            // Smoothly animated drawer body: keeps fixed inner height so logs and input bar
+            // glide smoothly without reflowing, squishing, or tearing down view state.
+            VStack(spacing: 0) {
                 // Streaming Log Area
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -243,13 +251,107 @@ struct ConsoleDrawerView: View {
                 }
                 .background(Color(red: 0.058, green: 0.064, blue: 0.080))
 
-                // Interactive Workspace Command Prompt (npm update, npm install <pkg>, npx ..., etc.)
-                commandInputBar
+                // Interactive Workspace Command Prompt or Live CodeceptJS `pause()` Shell
+                if appState.isInteractivePauseShellActive {
+                    interactivePauseShellBar
+                } else {
+                    commandInputBar
+                }
             }
+            .frame(height: bodyHeight, alignment: .top)
+            .opacity(appState.isConsoleVisible ? 1 : 0)
+            .offset(y: appState.isConsoleVisible || reduceMotion ? 0 : 8)
+            .frame(height: appState.isConsoleVisible ? bodyHeight : 0, alignment: .top)
+            .clipped()
+            .allowsHitTesting(appState.isConsoleVisible)
+            .accessibilityHidden(!appState.isConsoleVisible)
+            .animation(
+                isResizing ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
+                value: appState.isConsoleVisible
+            )
         }
         .onChange(of: appState.focusCommandInputTrigger) { _, _ in
             isCommandFocused = true
         }
+    }
+
+    private var interactivePauseShellBar: some View {
+        HStack(spacing: 8) {
+            CeptraBadge(text: "pause() Shell", color: CeptraTheme.accentWarm, icon: "pause.circle.fill")
+
+            TextField("Send I.* command or => expr to paused CodeceptJS shell…", text: $pauseShellInput)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11.5, design: .monospaced))
+                .foregroundStyle(CeptraTheme.textPrimary)
+                .focused($isCommandFocused)
+                .onSubmit {
+                    submitPauseShellCommand()
+                }
+
+            Button {
+                appState.sendInteractiveShellCommand("")
+            } label: {
+                HStack(spacing: 3) {
+                    Text("Next Step")
+                        .font(.system(size: 10.5, weight: .semibold))
+                    Text("↵")
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                }
+                .foregroundStyle(CeptraTheme.accentWarm)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(
+                CeptraGlassButtonStyle(
+                    cornerRadius: 6,
+                    tint: CeptraTheme.accentWarm,
+                    tintOpacity: 0.14,
+                    accentBorder: CeptraTheme.accentWarm
+                )
+            )
+            .help("Advance to next CodeceptJS step")
+
+            Button {
+                appState.sendInteractiveShellCommand("exit")
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 9))
+                    Text("Resume")
+                        .font(.system(size: 10.5, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(CeptraTheme.success.opacity(0.90), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.75)
+                )
+            }
+            .buttonStyle(CeptraTactilePressStyle())
+            .help("Exit pause() shell and resume test execution")
+
+            Button {
+                submitPauseShellCommand()
+            } label: {
+                Image(systemName: "return")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(pauseShellInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? CeptraTheme.textMuted : CeptraTheme.accentWarm)
+                    .frame(width: 24, height: 22)
+            }
+            .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.50))
+            .help("Send Command to pause() Shell")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .ceptraGlassBar(tint: CeptraTheme.accentWarm, tintOpacity: 0.10, topHairline: true, bottomHairline: true)
+    }
+
+    private func submitPauseShellCommand() {
+        let cmd = pauseShellInput
+        pauseShellInput = ""
+        appState.sendInteractiveShellCommand(cmd)
     }
 
     private var commandInputBar: some View {

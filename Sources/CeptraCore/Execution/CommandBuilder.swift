@@ -28,7 +28,9 @@ public enum CommandBuilder {
         options: RunOptions,
         workspaceRoot: URL,
         configFilePath: String? = nil,
-        toolchain: ResolvedToolchain
+        toolchain: ResolvedToolchain,
+        debugOptions: DebugLaunchOptions? = nil,
+        traceOutputDirectory: URL? = nil
     ) -> BuiltCommand {
         var args: [String] = toolchain.prefixArguments
 
@@ -173,6 +175,28 @@ public enum CommandBuilder {
             )
         }
 
+        if let debugOptions, debugOptions.enabled, mode.supportsInteractiveDebugging {
+            if !args.contains("--no-timeouts") {
+                args.append("--no-timeouts")
+            }
+            let existingNodeOpts = (env["NODE_OPTIONS"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let inspectFlag = "--inspect-brk=127.0.0.1:0"
+            if !existingNodeOpts.contains("--inspect") {
+                env["NODE_OPTIONS"] = existingNodeOpts.isEmpty ? inspectFlag : "\(existingNodeOpts) \(inspectFlag)"
+            }
+            if debugOptions.headedBrowser && env["HEADLESS"] == nil {
+                env["HEADLESS"] = "false"
+            }
+        }
+
+        if let traceOutputDirectory,
+           options.timeTravelTrace,
+           supportsTimeTravelTrace(mode),
+           let pluginURL = TimeTravelRecorderLoader.ensurePluginFileURL() {
+            env["CEPTRA_TIME_TRAVEL_DIR"] = traceOutputDirectory.path
+            args.append(contentsOf: ["-o", TimeTravelRecorderLoader.overrideJSONArgument(pluginFileURL: pluginURL)])
+        }
+
         let displayParts = [URL(fileURLWithPath: toolchain.codeceptExecutable).lastPathComponent] + args.map { displayQuote($0) }
 
         return BuiltCommand(
@@ -255,6 +279,15 @@ public enum CommandBuilder {
             out.append(c)
         }
         return out
+    }
+
+    private static func supportsTimeTravelTrace(_ mode: CodeceptRunMode) -> Bool {
+        switch mode {
+        case .runAll, .runFile, .runScenario, .runTag, .runLastFailed, .runWorkers, .runMultiple:
+            return true
+        case .dryRun, .checkEnvironment, .generateDefinitions, .listActions:
+            return false
+        }
     }
 
     private static func displayQuote(_ arg: String) -> String {

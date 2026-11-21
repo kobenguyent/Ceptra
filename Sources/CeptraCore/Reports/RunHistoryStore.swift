@@ -39,9 +39,10 @@ public final class RunHistoryStore: @unchecked Sendable {
     }
 
     public func append(_ report: TestRunReport) -> [TestRunReport] {
+        let storedReport = report.traceBundlePath != nil ? report.strippingInlineDiagnostics() : report
         var existing = loadHistory(forProjectPath: report.projectPath)
         existing.removeAll { $0.id == report.id }
-        existing.insert(report, at: 0)
+        existing.insert(storedReport, at: 0)
         if existing.count > maxEntriesPerProject {
             existing = Array(existing.prefix(maxEntriesPerProject))
         }
