@@ -259,13 +259,51 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
         try "export const token = 'alias-token-ok';\n"
             .write(to: sandbox.appendingPathComponent("shared/auth/index.ts"), atomically: true, encoding: .utf8)
 
-        let specFile = sandbox.appendingPathComponent("tests/admin/accounts.spec.ts")
-        let specSource = """
-        import KeycloakApi from '../../services/keycloak.api';
-        import { token } from '@auth/index';
-        const api: KeycloakApi = new KeycloakApi();
-        export const combined = api.ping() + ':' + token;
+        // Nested upstream/downstream chain mirroring real-world TS repos (export =, dynamic require(), __dirname, non-type interface import)
+        try fm.createDirectory(at: sandbox.appendingPathComponent("environments"), withIntermediateDirectories: true)
+        try "export interface EnvCfg { url: string; }\n"
+            .write(to: sandbox.appendingPathComponent("environments/types.ts"), atomically: true, encoding: .utf8)
+        try "const envObj = { url: 'https://test.example.com' };\nexport = envObj;\n"
+            .write(to: sandbox.appendingPathComponent("environments/environment.TEST.ts"), atomically: true, encoding: .utf8)
+        let utilsTS = """
+        import { EnvCfg } from './environments/types';
+        const envName = 'TEST';
+        const loaded: EnvCfg = require(`./environments/environment.${envName}`);
+        loaded.url = loaded.url + '/api';
+        export const resolvedDir = __dirname;
+        export default loaded;
         """
+        try utilsTS.write(to: sandbox.appendingPathComponent("utils.ts"), atomically: true, encoding: .utf8)
+
+        // Symlink local TypeScript compiler if available so full TS transpilation path is also exercised
+        let localTSPath = "/Users/kobet/Desktop/projects/codeceptjs-rest-demo/node_modules/typescript"
+        let hasLocalTS = fm.fileExists(atPath: localTSPath)
+        if hasLocalTS {
+            try fm.createDirectory(at: sandbox.appendingPathComponent("node_modules"), withIntermediateDirectories: true)
+            try fm.createSymbolicLink(
+                at: sandbox.appendingPathComponent("node_modules/typescript"),
+                withDestinationURL: URL(fileURLWithPath: localTSPath)
+            )
+        }
+
+        let specFile = sandbox.appendingPathComponent("tests/admin/accounts.spec.ts")
+        let specSource: String
+        if hasLocalTS {
+            specSource = """
+            import KeycloakApi from '../../services/keycloak.api';
+            import { token } from '@auth/index';
+            import envData from '../../utils';
+            const api: KeycloakApi = new KeycloakApi();
+            export const combined = api.ping() + ':' + token + ':' + envData.url;
+            """
+        } else {
+            specSource = """
+            import KeycloakApi from '../../services/keycloak.api';
+            import { token } from '@auth/index';
+            const api: KeycloakApi = new KeycloakApi();
+            export const combined = api.ping() + ':' + token;
+            """
+        }
         try specSource.write(to: specFile, atomically: true, encoding: .utf8)
 
         let workerScript = sandbox.appendingPathComponent("worker.mjs")
@@ -316,7 +354,11 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
 
         let output = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         XCTAssertEqual(proc.terminationStatus, 0, "Expected exit 0, got output: \(output)")
-        XCTAssertTrue(output.contains(#""combined":"kc-ok:alias-token-ok""#), "Unexpected output: \(output)")
+        if hasLocalTS {
+            XCTAssertTrue(output.contains(#""combined":"kc-ok:alias-token-ok:https://test.example.com/api""#), "Unexpected output: \(output)")
+        } else {
+            XCTAssertTrue(output.contains(#""combined":"kc-ok:alias-token-ok""#), "Unexpected output: \(output)")
+        }
         XCTAssertTrue(output.contains(#""stackWritable":true"#), "Error.stack must remain writable in workers: \(output)")
     }
 

@@ -1,14 +1,18 @@
 import Foundation
 
-/// Provides a lightweight, zero-dependency Node.js ESM loader hook (`--import`) that:
+/// Provides a lightweight, zero-dependency Node.js ESM/CJS loader hook (`--import`) that:
 /// 1. Uses synchronous in-thread `module.registerHooks` (Node 22.15+/24/26) with automatic fallback
-///    to `module.register` on older Node versions — avoiding loader-worker error serialization that
-///    marks `ERR_MODULE_NOT_FOUND`'s `.stack` property read-only (which breaks CodeceptJS `fixErrorStack`
-///    inside `run-workers`) and eliminating `DEP0205` deprecation warnings.
-/// 2. Resolves extensionless TypeScript/JS relative imports (e.g. `../../services/keycloak.api` -> `.ts`,
-///    directory `/index.ts`, `.js` -> `.ts` remapping, and `tsconfig.json` `paths`/`baseUrl` aliases)
-///    when native Node ESM resolution fails inside main or `worker_threads` worker runs.
-/// 3. Resolves named imports from CommonJS `node_modules` packages whose exports use
+///    to `module.register` on older Node versions — and ensures `Error.stack` remains writable on
+///    resolution failures so CodeceptJS's `fixErrorStack` never crashes with
+///    `TypeError: Cannot assign to read only property 'stack'` inside `run-workers`.
+/// 2. Resolves complicated upstream & downstream extensionless TypeScript/JS relative imports
+///    (`../../../../utils`, `../../services/keycloak.api`, `../../pages` -> `/index.ts`,
+///    `.js` -> `.ts`, symlinked paths, query-string URLs, and `tsconfig.json` `paths`/`baseUrl`)
+///    for both ESM `import` and dynamic CJS `require()`.
+/// 3. Transpiles project `.ts`/`.tsx`/`.mts`/`.cts` files in-memory with the project's local
+///    `typescript` compiler when present — erasing non-`type` interface/type imports, supporting
+///    `enum` and `export =`, and providing safe `require()` / `__dirname` / `__filename` shims.
+/// 4. Resolves named imports from CommonJS `node_modules` packages whose exports use
 ///    `Object.defineProperty` getters, `Object.assign`, or `__exportStar` (such as `uuid` v3/v7/v8).
 public enum NodeCompatLoader {
     private static let directoryName = "ceptra-node-compat-v1"
@@ -17,7 +21,8 @@ public enum NodeCompatLoader {
 
     public static let preloadScriptSource: String = """
     import * as mod from 'node:module';
-    import { resolveSync, loadSync } from './\(hookFileName)';
+    import { installCjsResolveFallback, resolveSync, loadSync } from './\(hookFileName)';
+    installCjsResolveFallback(mod);
     if (typeof mod.registerHooks === 'function') {
       mod.registerHooks({ resolve: resolveSync, load: loadSync });
     } else if (typeof mod.register === 'function') {
@@ -43,8 +48,10 @@ public enum NodeCompatLoader {
     const FN_BUILTINS = new Set(['length', 'name', 'prototype', 'arguments', 'caller']);
     const SKIP_PACKAGES = /\\/node_modules\\/(?:codeceptjs|mocha|playwright|playwright-core|@playwright|puppeteer|puppeteer-core|webdriverio|appium|tsx|esbuild|typescript|@esbuild)\\//;
     const PROBE_EXTS = ['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs'];
+    const TS_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx']);
     const baseRequire = createRequire(import.meta.url);
     const tsConfigCache = new Map();
+    const tsCompilerCache = new Map();
 
     function isRegularFile(filePath) {
       try {
@@ -60,6 +67,21 @@ public enum NodeCompatLoader {
       } catch {
         return false;
       }
+    }
+
+    function makeStackWritable(err) {
+      if (!err || typeof err !== 'object') return;
+      try {
+        const desc = Object.getOwnPropertyDescriptor(err, 'stack');
+        if (desc && desc.writable === false && desc.configurable) {
+          Object.defineProperty(err, 'stack', {
+            value: desc.value,
+            writable: true,
+            enumerable: desc.enumerable,
+            configurable: true
+          });
+        }
+      } catch {}
     }
 
     function findExistingFile(basePath) {
@@ -153,13 +175,46 @@ public enum NodeCompatLoader {
       return found;
     }
 
+    function getTypeScriptCompiler(fromFilePath) {
+      const dir = path.dirname(fromFilePath);
+      if (tsCompilerCache.has(dir)) return tsCompilerCache.get(dir);
+      let ts = null;
+      try {
+        ts = createRequire(pathToFileURL(fromFilePath).href)('typescript');
+      } catch {
+        try {
+          ts = createRequire(pathToFileURL(path.join(process.cwd(), 'package.json')).href)('typescript');
+        } catch {
+          ts = null;
+        }
+      }
+      tsCompilerCache.set(dir, ts);
+      return ts;
+    }
+
     function resolveFallbackPath(specifier, parentURL) {
       if (!parentURL || !parentURL.startsWith('file://') || parentURL.includes('/node_modules/')) {
         return null;
       }
-      if (!specifier || specifier.startsWith('node:') || specifier.startsWith('data:') || specifier.startsWith('file:')) {
+      if (!specifier || specifier.startsWith('node:') || specifier.startsWith('data:')) {
         return null;
       }
+
+      let cleanSpec = specifier;
+      const qIdx = cleanSpec.search(/[?#]/);
+      const suffix = qIdx >= 0 ? cleanSpec.slice(qIdx) : '';
+      if (qIdx >= 0) cleanSpec = cleanSpec.slice(0, qIdx);
+
+      if (cleanSpec.startsWith('file:')) {
+        try {
+          const p = fileURLToPath(cleanSpec);
+          const found = isRegularFile(p) ? p : findExistingFile(p);
+          return found ? { filePath: found, suffix } : null;
+        } catch {
+          return null;
+        }
+      }
+
       let parentDir;
       try {
         parentDir = path.dirname(fileURLToPath(parentURL));
@@ -167,9 +222,18 @@ public enum NodeCompatLoader {
         return null;
       }
 
-      if (specifier.startsWith('./') || specifier.startsWith('../') || specifier.startsWith('/')) {
-        const basePath = specifier.startsWith('/') ? specifier : path.resolve(parentDir, specifier);
-        return findExistingFile(basePath);
+      if (cleanSpec.startsWith('./') || cleanSpec.startsWith('../') || cleanSpec.startsWith('/')) {
+        const basePath = cleanSpec.startsWith('/') ? cleanSpec : path.resolve(parentDir, cleanSpec);
+        const found = findExistingFile(basePath);
+        if (found) return { filePath: found, suffix };
+        try {
+          const realParent = fs.realpathSync(parentDir);
+          if (realParent !== parentDir) {
+            const realFound = findExistingFile(path.resolve(realParent, cleanSpec));
+            if (realFound) return { filePath: realFound, suffix };
+          }
+        } catch {}
+        return null;
       }
 
       // Check tsconfig.json paths / baseUrl aliases
@@ -184,12 +248,12 @@ public enum NodeCompatLoader {
           const starIdx = pattern.indexOf('*');
           let matchedWildcard = null;
           if (starIdx === -1) {
-            if (specifier === pattern) matchedWildcard = '';
+            if (cleanSpec === pattern) matchedWildcard = '';
           } else {
             const prefix = pattern.slice(0, starIdx);
-            const suffix = pattern.slice(starIdx + 1);
-            if (specifier.startsWith(prefix) && specifier.endsWith(suffix) && specifier.length >= prefix.length + suffix.length) {
-              matchedWildcard = specifier.slice(prefix.length, specifier.length - suffix.length);
+            const suffixPat = pattern.slice(starIdx + 1);
+            if (cleanSpec.startsWith(prefix) && cleanSpec.endsWith(suffixPat) && cleanSpec.length >= prefix.length + suffixPat.length) {
+              matchedWildcard = cleanSpec.slice(prefix.length, cleanSpec.length - suffixPat.length);
             }
           }
           if (matchedWildcard === null) continue;
@@ -197,19 +261,152 @@ public enum NodeCompatLoader {
             if (typeof target !== 'string') continue;
             const expanded = target.replace('*', matchedWildcard);
             const candidateBase = path.resolve(baseDir, expanded);
-            if (isRegularFile(candidateBase)) return candidateBase;
+            if (isRegularFile(candidateBase)) return { filePath: candidateBase, suffix };
             const found = findExistingFile(candidateBase);
-            if (found) return found;
+            if (found) return { filePath: found, suffix };
           }
         }
       }
 
       if (compilerOptions.baseUrl) {
-        const candidateBase = path.resolve(baseDir, specifier);
-        if (isRegularFile(candidateBase)) return candidateBase;
-        return findExistingFile(candidateBase);
+        const candidateBase = path.resolve(baseDir, cleanSpec);
+        if (isRegularFile(candidateBase)) return { filePath: candidateBase, suffix };
+        const found = findExistingFile(candidateBase);
+        if (found) return { filePath: found, suffix };
       }
       return null;
+    }
+
+    function unwrapRequiredModule(res) {
+      if (res && typeof res === 'object' && Object.prototype.toString.call(res) === '[object Module]') {
+        const keys = Object.keys(res);
+        if ('default' in res && keys.every(k => k === 'default' || k === '__esModule')) {
+          return res.default;
+        }
+        const copy = {};
+        if (res.default && typeof res.default === 'object') {
+          Object.assign(copy, res.default);
+        }
+        for (const k of keys) {
+          copy[k] = res[k];
+        }
+        return copy;
+      }
+      return res;
+    }
+
+    if (typeof globalThis.__ceptraMakeRequire !== 'function') {
+      globalThis.__ceptraMakeRequire = function(fromFileUrl) {
+        const rawReq = createRequire(fromFileUrl);
+        const fromDir = path.dirname(fileURLToPath(fromFileUrl));
+        const wrapped = (id) => {
+          try {
+            return unwrapRequiredModule(rawReq(id));
+          } catch (err) {
+            if (typeof id === 'string' && (id.startsWith('./') || id.startsWith('../') || id.startsWith('/'))) {
+              const base = id.startsWith('/') ? id : path.resolve(fromDir, id);
+              const found = isRegularFile(base) ? base : findExistingFile(base);
+              if (found) {
+                return unwrapRequiredModule(rawReq(found));
+              }
+            }
+            throw err;
+          }
+        };
+        wrapped.resolve = rawReq.resolve;
+        wrapped.cache = rawReq.cache;
+        return wrapped;
+      };
+    }
+
+    export function installCjsResolveFallback(modApi) {
+      const ModuleClass = modApi?.Module || modApi?.default;
+      const origResolve = ModuleClass?._resolveFilename;
+      if (typeof origResolve !== 'function' || origResolve.__ceptraPatched) return;
+      const patched = function(request, parent, isMain, options) {
+        try {
+          return origResolve.call(this, request, parent, isMain, options);
+        } catch (err) {
+          if (typeof request === 'string' && (request.startsWith('./') || request.startsWith('../') || request.startsWith('/'))) {
+            const parentFile = parent && typeof parent.filename === 'string' ? parent.filename : null;
+            if (!parentFile || !parentFile.includes('/node_modules/')) {
+              const fromDir = parentFile ? path.dirname(parentFile) : process.cwd();
+              const base = request.startsWith('/') ? request : path.resolve(fromDir, request);
+              const found = findExistingFile(base);
+              if (found) {
+                return origResolve.call(this, found, parent, isMain, options);
+              }
+            }
+          }
+          throw err;
+        }
+      };
+      patched.__ceptraPatched = true;
+      ModuleClass._resolveFilename = patched;
+    }
+
+    function maybeTranspileProjectTypeScript(url) {
+      if (!url.startsWith('file://') || url.includes('/node_modules/')) return null;
+      let filePath;
+      try {
+        filePath = fileURLToPath(url);
+      } catch {
+        return null;
+      }
+      const lower = filePath.toLowerCase();
+      if (lower.endsWith('.d.ts') || lower.endsWith('.d.mts') || lower.endsWith('.d.cts')) return null;
+      const ext = path.extname(lower);
+      if (!TS_EXTS.has(ext)) return null;
+
+      const ts = getTypeScriptCompiler(filePath);
+      if (!ts || typeof ts.transpileModule !== 'function') return null;
+
+      try {
+        let rawSource = fs.readFileSync(filePath, 'utf8');
+        rawSource = rawSource.replace(/^(\\s*)export\\s*=\\s*/m, '$1export default ');
+        const transpiled = ts.transpileModule(rawSource, {
+          fileName: filePath,
+          compilerOptions: {
+            module: ts.ModuleKind?.ESNext ?? 99,
+            target: ts.ScriptTarget?.ESNext ?? 99,
+            jsx: ext === '.tsx' ? (ts.JsxEmit?.ReactJSX ?? 4) : undefined,
+            esModuleInterop: true,
+            allowSyntheticDefaultImports: true,
+            verbatimModuleSyntax: false,
+            isolatedModules: false,
+            sourceMap: true,
+            inlineSourceMap: true,
+            inlineSources: true
+          }
+        });
+
+        let code = transpiled.outputText;
+        const usesRequire = /\\brequire\\s*\\(/.test(code);
+        const usesDirname = /\\b__dirname\\b/.test(code);
+        const usesFilename = /\\b__filename\\b/.test(code);
+        const usesModuleExports = /\\b(?:module\\.exports|exports\\.)/.test(code);
+
+        let prefix = '';
+        if ((usesRequire || usesModuleExports) && !/\\b(?:const|let|var|function)\\s+require\\b/.test(code)) {
+          prefix += `const require = globalThis.__ceptraMakeRequire(${JSON.stringify(pathToFileURL(filePath).href)});\\n`;
+        }
+        if (usesFilename && !/\\b(?:const|let|var)\\s+__filename\\b/.test(code)) {
+          prefix += `const __filename = ${JSON.stringify(filePath)};\\n`;
+        }
+        if (usesDirname && !/\\b(?:const|let|var)\\s+__dirname\\b/.test(code)) {
+          prefix += `const __dirname = ${JSON.stringify(path.dirname(filePath))};\\n`;
+        }
+        if (usesModuleExports && !/\\b(?:const|let|var)\\s+module\\b/.test(code)) {
+          prefix += `const module = { exports: {} };\\nconst exports = module.exports;\\n`;
+        }
+        if (prefix) code = prefix + code;
+        if (usesModuleExports && !/\\bexport\\s+default\\b/.test(code)) {
+          code += '\\nexport default module.exports;\\n';
+        }
+        return { format: 'module', shortCircuit: true, source: code };
+      } catch {
+        return null;
+      }
     }
 
     function maybeWrapCommonJSResult(url, result) {
@@ -277,15 +474,18 @@ public enum NodeCompatLoader {
       try {
         return nextResolve(specifier, context);
       } catch (err) {
-        const fallbackPath = resolveFallbackPath(specifier, context?.parentURL);
-        if (fallbackPath) {
-          return nextResolve(pathToFileURL(fallbackPath).href, context);
+        const resolved = resolveFallbackPath(specifier, context?.parentURL);
+        if (resolved) {
+          return nextResolve(pathToFileURL(resolved.filePath).href + resolved.suffix, context);
         }
+        makeStackWritable(err);
         throw err;
       }
     }
 
     export function loadSync(url, context, nextLoad) {
+      const tsResult = maybeTranspileProjectTypeScript(url);
+      if (tsResult) return tsResult;
       const result = nextLoad(url, context);
       return maybeWrapCommonJSResult(url, result);
     }
@@ -295,15 +495,18 @@ public enum NodeCompatLoader {
       try {
         return await nextResolve(specifier, context);
       } catch (err) {
-        const fallbackPath = resolveFallbackPath(specifier, context?.parentURL);
-        if (fallbackPath) {
-          return await nextResolve(pathToFileURL(fallbackPath).href, context);
+        const resolved = resolveFallbackPath(specifier, context?.parentURL);
+        if (resolved) {
+          return await nextResolve(pathToFileURL(resolved.filePath).href + resolved.suffix, context);
         }
+        makeStackWritable(err);
         throw err;
       }
     }
 
     export async function load(url, context, nextLoad) {
+      const tsResult = maybeTranspileProjectTypeScript(url);
+      if (tsResult) return tsResult;
       const result = await nextLoad(url, context);
       return maybeWrapCommonJSResult(url, result);
     }
