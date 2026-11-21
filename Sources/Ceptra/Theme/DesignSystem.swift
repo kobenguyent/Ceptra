@@ -3,20 +3,74 @@ import SwiftUI
 import CeptraCore
 
 enum CeptraTheme {
-    // Surface palette (Minimalist Obsidian Studio)
-    static let canvasBG = Color(red: 0.075, green: 0.082, blue: 0.102)
-    static let sidebarBG = Color(red: 0.094, green: 0.102, blue: 0.128)
-    static let panelBG = Color(red: 0.112, green: 0.122, blue: 0.152)
-    static let elevatedBG = Color(red: 0.145, green: 0.158, blue: 0.195)
-    static let border = Color.white.opacity(0.085)
-    static let subtleBorder = Color.white.opacity(0.05)
+    private static func dynamic(
+        dark: (CGFloat, CGFloat, CGFloat, CGFloat),
+        light: (CGFloat, CGFloat, CGFloat, CGFloat)
+    ) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let c = isDark ? dark : light
+            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: c.3)
+        })
+    }
 
-    // Apple Liquid Glass specular rims & tints
-    static let glassTopHighlight = Color.white.opacity(0.20)
-    static let glassMidHighlight = Color.white.opacity(0.06)
-    static let glassBottomEdge = Color.white.opacity(0.02)
-    static let glassHoverOverlay = Color.white.opacity(0.055)
-    static let glassActiveOverlay = Color.white.opacity(0.09)
+    // Surface palette (Adaptive Obsidian Matte Dark & Paper Daylight Light)
+    static let frameBG = dynamic(
+        dark: (0.043, 0.051, 0.063, 1.0),    // #0B0D10
+        light: (0.949, 0.953, 0.965, 1.0)    // #F2F3F6
+    )
+    static let canvasBG = dynamic(
+        dark: (0.067, 0.078, 0.102, 1.0),    // #11141A
+        light: (1.000, 1.000, 1.000, 1.0)    // #FFFFFF
+    )
+    static let sidebarBG = dynamic(
+        dark: (0.082, 0.094, 0.125, 1.0),    // #151820
+        light: (0.980, 0.980, 0.984, 1.0)    // #FAFAFB
+    )
+    static let panelBG = dynamic(
+        dark: (0.094, 0.108, 0.141, 1.0),    // #181B24
+        light: (0.961, 0.965, 0.976, 1.0)    // #F5F6F9
+    )
+    static let elevatedBG = dynamic(
+        dark: (0.110, 0.129, 0.173, 1.0),    // #1C212C
+        light: (0.914, 0.922, 0.941, 1.0)    // #E9EBF0
+    )
+    static let hoverBG = dynamic(
+        dark: (1.0, 1.0, 1.0, 0.055),
+        light: (0.059, 0.090, 0.165, 0.050)
+    )
+    static let activeBG = dynamic(
+        dark: (1.0, 1.0, 1.0, 0.095),
+        light: (0.059, 0.090, 0.165, 0.085)
+    )
+    static let border = dynamic(
+        dark: (1.0, 1.0, 1.0, 0.075),
+        light: (0.059, 0.090, 0.165, 0.085)
+    )
+    static let borderStrong = dynamic(
+        dark: (1.0, 1.0, 1.0, 0.140),
+        light: (0.059, 0.090, 0.165, 0.150)
+    )
+    static let subtleBorder = dynamic(
+        dark: (1.0, 1.0, 1.0, 0.050),
+        light: (0.059, 0.090, 0.165, 0.055)
+    )
+
+    // Apple Liquid Glass specular rims & tints (adaptive for overlays/popovers)
+    static let glassTopHighlight = dynamic(
+        dark: (1.0, 1.0, 1.0, 0.18),
+        light: (1.0, 1.0, 1.0, 0.85)
+    )
+    static let glassMidHighlight = dynamic(
+        dark: (1.0, 1.0, 1.0, 0.06),
+        light: (0.059, 0.090, 0.165, 0.06)
+    )
+    static let glassBottomEdge = dynamic(
+        dark: (1.0, 1.0, 1.0, 0.02),
+        light: (0.059, 0.090, 0.165, 0.10)
+    )
+    static let glassHoverOverlay = hoverBG
+    static let glassActiveOverlay = activeBG
 
     static var specularRimGradient: LinearGradient {
         LinearGradient(
@@ -35,18 +89,48 @@ enum CeptraTheme {
     }
 
     // Typography colors
-    static let textPrimary = Color(red: 0.94, green: 0.95, blue: 0.98)
-    static let textSecondary = Color(red: 0.62, green: 0.66, blue: 0.74)
-    static let textMuted = Color(red: 0.44, green: 0.48, blue: 0.56)
+    static let textPrimary = dynamic(
+        dark: (0.945, 0.953, 0.969, 1.0),    // #F1F3F7
+        light: (0.075, 0.086, 0.110, 1.0)    // #13161C
+    )
+    static let textSecondary = dynamic(
+        dark: (0.584, 0.620, 0.690, 1.0),    // #959EB0
+        light: (0.306, 0.337, 0.400, 1.0)    // #4E5666
+    )
+    static let textMuted = dynamic(
+        dark: (0.365, 0.400, 0.471, 1.0),    // #5D6678
+        light: (0.545, 0.580, 0.647, 1.0)    // #8B94A5
+    )
 
-    // Accents
-    static let accent = Color(red: 0.42, green: 0.58, blue: 1.00)        // Crisp electric indigo
-    static let accentWarm = Color(red: 0.98, green: 0.72, blue: 0.30)    // Warm amber
-    static let success = Color(red: 0.24, green: 0.84, blue: 0.58)       // Emerald
-    static let failure = Color(red: 0.96, green: 0.39, blue: 0.44)       // Coral red
-    static let warning = Color(red: 0.96, green: 0.76, blue: 0.28)       // Gold
-    static let violet = Color(red: 0.70, green: 0.54, blue: 0.98)        // Violet (Gherkin / Tags)
-    static let cyan = Color(red: 0.30, green: 0.82, blue: 0.92)          // Network / Navigation
+    // Semantic Truth Accents
+    static let accent = dynamic(
+        dark: (0.369, 0.557, 1.000, 1.0),    // #5E8EFF
+        light: (0.145, 0.388, 0.922, 1.0)    // #2563EB
+    )
+    static let accentWarm = dynamic(
+        dark: (0.949, 0.729, 0.306, 1.0),    // #F2BA4E
+        light: (0.851, 0.467, 0.024, 1.0)    // #D97706
+    )
+    static let success = dynamic(
+        dark: (0.188, 0.816, 0.541, 1.0),    // #30D08A
+        light: (0.020, 0.588, 0.412, 1.0)    // #059669
+    )
+    static let failure = dynamic(
+        dark: (0.949, 0.400, 0.439, 1.0),    // #F26670
+        light: (0.863, 0.149, 0.149, 1.0)    // #DC2626
+    )
+    static let warning = dynamic(
+        dark: (0.949, 0.729, 0.306, 1.0),    // #F2BA4E
+        light: (0.851, 0.467, 0.024, 1.0)    // #D97706
+    )
+    static let violet = dynamic(
+        dark: (0.706, 0.592, 0.980, 1.0),    // #B497FA
+        light: (0.486, 0.227, 0.929, 1.0)    // #7C3AED
+    )
+    static let cyan = dynamic(
+        dark: (0.220, 0.741, 0.973, 1.0),    // #38BDF8
+        light: (0.008, 0.518, 0.780, 1.0)    // #0284C7
+    )
 
     static func color(for status: ExecutionStatus) -> Color {
         switch status {
@@ -243,6 +327,7 @@ struct CeptraSplitResizeHandle: View {
 
     let axis: Axis
     var cursorDirection: CursorDirection = .both
+    var isSoftGap: Bool = false
     let onDragStart: () -> Void
     let onDragChanged: (CGFloat) -> Void
     let onDragEnd: () -> Void
@@ -258,12 +343,12 @@ struct CeptraSplitResizeHandle: View {
         ZStack {
             Color.clear
 
-            // Crisp 1pt resting seam -> glowing 2pt accent hairline on hover/drag
+            // Crisp 1pt resting seam (hidden inside soft rounded window gaps) -> accent hairline on hover/drag
             Rectangle()
                 .fill(
                     isDragging
-                        ? CeptraTheme.accent.opacity(0.90)
-                        : (isHovering ? CeptraTheme.accent.opacity(0.60) : CeptraTheme.border)
+                        ? CeptraTheme.accent.opacity(0.85)
+                        : (isHovering ? CeptraTheme.accent.opacity(0.45) : (isSoftGap ? Color.clear : CeptraTheme.border))
                 )
                 .frame(
                     width: axis == .horizontal ? (isActive ? 2 : 1) : nil,
@@ -1122,7 +1207,82 @@ struct CeptraGlassSegmentedControl<Option: Identifiable & Hashable>: View {
     }
 }
 
+struct CeptraPaneWindowModifier: ViewModifier {
+    var subtle: Bool = false
+    var cornerRadius: CGFloat = 11
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background(subtle ? CeptraTheme.sidebarBG : CeptraTheme.canvasBG)
+            .clipShape(shape)
+            .overlay(
+                shape.strokeBorder(CeptraTheme.border, lineWidth: 1)
+            )
+            .shadow(
+                color: Color.black.opacity(colorScheme == .dark ? 0.22 : 0.055),
+                radius: colorScheme == .dark ? 10 : 6,
+                x: 0,
+                y: colorScheme == .dark ? 3 : 2
+            )
+    }
+}
+
+/// Uniform 28×26pt monochrome static titlebar icon button for Ceptra's calm 40pt chrome.
+struct CeptraTitlebarIconButton: View {
+    let systemImage: String
+    var isActive: Bool = false
+    var showEmeraldIndicator: Bool = false
+    var helpText: String
+    var accessibilityLabelText: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .bottom) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(
+                        isActive || isHovered
+                            ? CeptraTheme.textPrimary
+                            : CeptraTheme.textMuted
+                    )
+                    .frame(width: 28, height: 26)
+
+                if showEmeraldIndicator && isActive {
+                    Capsule()
+                        .fill(CeptraTheme.success)
+                        .frame(width: 10, height: 1.8)
+                        .padding(.bottom, 2)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isActive ? CeptraTheme.activeBG : (isHovered ? CeptraTheme.hoverBG : Color.clear))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.94))
+        .help(helpText)
+        .accessibilityLabel(accessibilityLabelText)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .onHover { hovering in
+            withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
 extension View {
+    func ceptraPaneWindow(subtle: Bool = false, cornerRadius: CGFloat = 11) -> some View {
+        modifier(CeptraPaneWindowModifier(subtle: subtle, cornerRadius: cornerRadius))
+    }
+
     func ceptraGlassSurface(
         cornerRadius: CGFloat = 10,
         tint: Color = CeptraTheme.panelBG,

@@ -12,6 +12,21 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Appearance & Workspace") {
+                Picker("Theme", selection: $appState.settings.appearance) {
+                    ForEach(WorkspaceAppearance.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Toggle("Auto-open Replay on Run", isOn: $appState.settings.modulePreferences.autoOpenReplayOnRun)
+                Toggle("Show Bottom Module & Status Strip", isOn: Binding(
+                    get: { appState.isStatusBarVisible },
+                    set: { appState.setStatusBarVisible($0) }
+                ))
+            }
+
             Section("Editor") {
                 HStack {
                     Text("Font Size")
@@ -154,7 +169,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 580, height: 600)
+        .frame(width: 580, height: 640)
         .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: appState.resolvedToolchain?.codeceptExecutable)
         .onAppear {
             customConfigDraft = appState.activeWorkspaceCustomConfigSetting

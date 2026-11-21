@@ -3,7 +3,7 @@ import CeptraCore
 import SwiftUI
 
 struct ConsoleDrawerView: View {
-    static let headerHeight: CGFloat = 38
+    static let headerHeight: CGFloat = 32
 
     @EnvironmentObject var appState: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -39,44 +39,53 @@ struct ConsoleDrawerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header Strip
+            // Clean Matte 32pt Header Strip
             HStack(spacing: 10) {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(appState.isRunning ? CeptraTheme.accent : CeptraTheme.textMuted)
-                        .frame(width: 7, height: 7)
-                    Text(appState.isRunning ? "Running: \(appState.activeRunLabel)" : "Console & Commands")
+                        .fill(appState.isRunning ? CeptraTheme.accent : CeptraTheme.success)
+                        .frame(width: 6.5, height: 6.5)
+                    Text(appState.isRunning ? "Running: \(appState.activeRunLabel)" : "Terminal & Logs")
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(CeptraTheme.textPrimary)
                         .lineLimit(1)
                 }
 
-                CeptraGlassSegmentedControl(
-                    options: ConsoleFilterMode.allCases,
-                    selection: $filterMode,
-                    label: { $0.rawValue },
-                    horizontalPadding: 9,
-                    verticalPadding: 3.5,
-                    fontSize: 11
-                )
+                HStack(spacing: 2) {
+                    ForEach(ConsoleFilterMode.allCases) { mode in
+                        let isSelected = filterMode == mode
+                        Button {
+                            filterMode = mode
+                        } label: {
+                            Text(mode.rawValue)
+                                .font(.system(size: 10.5, weight: isSelected ? .semibold : .regular))
+                                .foregroundStyle(isSelected ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(
+                                    isSelected ? CeptraTheme.activeBG : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
 
                 TextField("Filter logs…", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 11))
                     .foregroundStyle(CeptraTheme.textPrimary)
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .ceptraGlassSurface(
-                        cornerRadius: 6,
-                        tint: CeptraTheme.panelBG,
-                        tintOpacity: 0.56,
-                        isHovered: isFilterSearchHovered
+                    .padding(.vertical, 3.5)
+                    .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(isFilterSearchHovered ? CeptraTheme.borderStrong : CeptraTheme.border, lineWidth: 1)
                     )
-                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isFilterSearchHovered)
                     .onHover { hovering in
                         isFilterSearchHovered = hovering
                     }
-                    .frame(maxWidth: 160)
+                    .frame(maxWidth: 150)
 
                 Spacer()
 
@@ -238,23 +247,28 @@ struct ConsoleDrawerView: View {
 
                 Button {
                     withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                        appState.isConsoleVisible.toggle()
+                        appState.toggleTerminal()
                     }
                 } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(CeptraTheme.textSecondary)
-                        .rotationEffect(.degrees(appState.isConsoleVisible ? 0 : 180))
-                        .animation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion), value: appState.isConsoleVisible)
-                        .frame(width: 24, height: 22)
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(CeptraTheme.textMuted)
+                        .frame(width: 22, height: 22)
+                        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 }
-                .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.45))
-                .help(appState.isConsoleVisible ? "Hide Console (⌘J)" : "Show Console (⌘J)")
-                .accessibilityLabel(appState.isConsoleVisible ? "Hide Console" : "Show Console")
+                .buttonStyle(.plain)
+                .help("Hide Terminal & Logs (⌘J)")
+                .accessibilityLabel("Hide Terminal")
             }
             .padding(.horizontal, 12)
             .frame(height: Self.headerHeight)
-            .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.74, topHairline: true, bottomHairline: appState.isConsoleVisible)
+            .background(CeptraTheme.sidebarBG)
+            .overlay(alignment: .top) {
+                Rectangle().fill(CeptraTheme.border).frame(height: 1)
+            }
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(CeptraTheme.border).frame(height: 1)
+            }
 
             // Smoothly animated drawer body: keeps fixed inner height so logs and input bar
             // glide smoothly without reflowing, squishing, or tearing down view state.
@@ -288,7 +302,7 @@ struct ConsoleDrawerView: View {
                         }
                     }
                 }
-                .background(Color(red: 0.058, green: 0.064, blue: 0.080))
+                .background(CeptraTheme.canvasBG)
 
                 // Interactive Workspace Command Prompt or Live CodeceptJS `pause()` Shell
                 if appState.isInteractivePauseShellActive {

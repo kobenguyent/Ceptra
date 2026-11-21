@@ -3,12 +3,18 @@ import CeptraCore
 import SwiftUI
 
 final class CeptraAppDelegate: NSObject, NSApplicationDelegate {
+    static var onWillTerminate: (() -> Void)?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.regular)
         if let icon = CeptraAppIconRenderer.makeNSImage(pixelSize: 512) {
             NSApplication.shared.applicationIconImage = icon
         }
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Self.onWillTerminate?()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -21,12 +27,27 @@ struct CeptraApp: App {
     @NSApplicationDelegateAdaptor(CeptraAppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
 
+    private var resolvedColorScheme: ColorScheme? {
+        switch appState.settings.appearance {
+        case .dark: return .dark
+        case .light: return .light
+        case .system: return nil
+        }
+    }
+
     var body: some Scene {
         Window("Ceptra", id: "studio") {
             MainStudioView()
                 .environmentObject(appState)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(resolvedColorScheme)
                 .frame(minWidth: 960, minHeight: 620)
+                .onAppear {
+                    CeptraAppDelegate.onWillTerminate = { [weak appState] in
+                        Task { @MainActor in
+                            appState?.stopCodeceptUIServer()
+                        }
+                    }
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1360, height: 840)
@@ -131,8 +152,8 @@ struct CeptraApp: App {
 
                 Divider()
 
-                Button(appState.isDebugInspectorVisible ? "Hide Debug Inspector" : "Show Debug Inspector") {
-                    appState.isDebugInspectorVisible.toggle()
+                Button(appState.isRightSidebarVisible && appState.activeRightTab == .debug ? "Hide Debug Inspector" : "Show Debug Inspector") {
+                    appState.toggleRightTab(.debug)
                 }
                 .keyboardShortcut("j", modifiers: [.command, .option])
                 .disabled(appState.workspace == nil)
@@ -336,15 +357,54 @@ struct CeptraApp: App {
 
                 Divider()
 
-                Button("Toggle Sidebar") {
-                    appState.isSidebarVisible.toggle()
+                Button("Toggle Explorer Sidebar") {
+                    appState.toggleLeftSidebar()
                 }
                 .keyboardShortcut("b", modifiers: .command)
 
-                Button("Toggle Console") {
-                    appState.isConsoleVisible.toggle()
+                Button("Toggle Terminal & Logs") {
+                    appState.toggleTerminal()
                 }
                 .keyboardShortcut("j", modifiers: .command)
+
+                Button("Toggle Right Sidebar") {
+                    appState.toggleRightSidebar()
+                }
+                .keyboardShortcut("b", modifiers: [.command, .option])
+
+                Divider()
+
+                Button("Open Replay Inspector") {
+                    appState.toggleRightTab(.replay)
+                }
+                .keyboardShortcut("t", modifiers: [.command, .option])
+                .disabled(appState.workspace == nil)
+
+                Button("Open CodeceptUI Live") {
+                    appState.toggleRightTab(.codeceptUI)
+                }
+                .keyboardShortcut("u", modifiers: [.command, .option])
+                .disabled(appState.workspace == nil)
+
+                Button("Open Flow Outline") {
+                    appState.toggleRightTab(.outline)
+                }
+                .keyboardShortcut("o", modifiers: [.command, .option])
+                .disabled(appState.workspace == nil)
+
+                Divider()
+
+                Button("Command Palette…") {
+                    appState.showingCommandPalette.toggle()
+                }
+                .keyboardShortcut("k", modifiers: .command)
+                .disabled(appState.workspace == nil)
+
+                Button("Quick Open File…") {
+                    appState.showingCommandPalette = true
+                }
+                .keyboardShortcut("p", modifiers: .command)
+                .disabled(appState.workspace == nil)
             }
 
             CommandGroup(after: .appInfo) {
@@ -358,7 +418,7 @@ struct CeptraApp: App {
         Settings {
             SettingsView()
                 .environmentObject(appState)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(resolvedColorScheme)
         }
     }
 }

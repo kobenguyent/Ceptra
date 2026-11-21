@@ -1,5 +1,70 @@
 import Foundation
 
+public enum WorkspaceAppearance: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
+    case dark
+    case light
+    case system
+
+    public var displayName: String {
+        switch self {
+        case .dark: return "Obsidian Dark"
+        case .light: return "Paper Light"
+        case .system: return "Match macOS"
+        }
+    }
+}
+
+public enum RightInspectorTab: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
+    case replay
+    case codeceptUI
+    case outline
+    case debug
+
+    public var displayTitle: String {
+        switch self {
+        case .replay: return "Replay"
+        case .codeceptUI: return "CodeceptUI"
+        case .outline: return "Outline"
+        case .debug: return "Debug"
+        }
+    }
+}
+
+public struct WorkspaceModulePreferences: Codable, Equatable, Sendable {
+    public var showLeftSidebar: Bool
+    public var showTerminal: Bool
+    public var showRightSidebar: Bool
+    public var showStatusBar: Bool
+    public var activeRightTab: RightInspectorTab
+    public var autoOpenReplayOnRun: Bool
+
+    public init(
+        showLeftSidebar: Bool = true,
+        showTerminal: Bool = false,
+        showRightSidebar: Bool = false,
+        showStatusBar: Bool = true,
+        activeRightTab: RightInspectorTab = .replay,
+        autoOpenReplayOnRun: Bool = true
+    ) {
+        self.showLeftSidebar = showLeftSidebar
+        self.showTerminal = showTerminal
+        self.showRightSidebar = showRightSidebar
+        self.showStatusBar = showStatusBar
+        self.activeRightTab = activeRightTab
+        self.autoOpenReplayOnRun = autoOpenReplayOnRun
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.showLeftSidebar = try c.decodeIfPresent(Bool.self, forKey: .showLeftSidebar) ?? true
+        self.showTerminal = try c.decodeIfPresent(Bool.self, forKey: .showTerminal) ?? false
+        self.showRightSidebar = try c.decodeIfPresent(Bool.self, forKey: .showRightSidebar) ?? false
+        self.showStatusBar = try c.decodeIfPresent(Bool.self, forKey: .showStatusBar) ?? true
+        self.activeRightTab = try c.decodeIfPresent(RightInspectorTab.self, forKey: .activeRightTab) ?? .replay
+        self.autoOpenReplayOnRun = try c.decodeIfPresent(Bool.self, forKey: .autoOpenReplayOnRun) ?? true
+    }
+}
+
 public struct AppSettings: Codable, Equatable, Sendable {
     public var recentProjectPaths: [String]
     public var workspaceConfigPaths: [String: String]
@@ -14,6 +79,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var consoleExecutionMode: ConsoleExecutionMode
     public var customTerminalAppPath: String
     public var defaultRunOptions: RunOptions
+    public var appearance: WorkspaceAppearance
+    public var modulePreferences: WorkspaceModulePreferences
 
     public init(
         recentProjectPaths: [String] = [],
@@ -28,7 +95,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         customCodeceptPath: String = "",
         consoleExecutionMode: ConsoleExecutionMode = .builtIn,
         customTerminalAppPath: String = "",
-        defaultRunOptions: RunOptions = RunOptions()
+        defaultRunOptions: RunOptions = RunOptions(),
+        appearance: WorkspaceAppearance = .dark,
+        modulePreferences: WorkspaceModulePreferences = WorkspaceModulePreferences()
     ) {
         self.recentProjectPaths = recentProjectPaths
         self.workspaceConfigPaths = workspaceConfigPaths
@@ -43,6 +112,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.consoleExecutionMode = consoleExecutionMode
         self.customTerminalAppPath = customTerminalAppPath
         self.defaultRunOptions = defaultRunOptions
+        self.appearance = appearance
+        self.modulePreferences = modulePreferences
     }
 
     public init(from decoder: Decoder) throws {
@@ -60,6 +131,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.consoleExecutionMode = try c.decodeIfPresent(ConsoleExecutionMode.self, forKey: .consoleExecutionMode) ?? .builtIn
         self.customTerminalAppPath = try c.decodeIfPresent(String.self, forKey: .customTerminalAppPath) ?? ""
         self.defaultRunOptions = try c.decodeIfPresent(RunOptions.self, forKey: .defaultRunOptions) ?? RunOptions()
+        self.appearance = try c.decodeIfPresent(WorkspaceAppearance.self, forKey: .appearance) ?? .dark
+        self.modulePreferences = try c.decodeIfPresent(WorkspaceModulePreferences.self, forKey: .modulePreferences) ?? WorkspaceModulePreferences()
     }
 
     public mutating func recordRecentProject(_ path: String) {

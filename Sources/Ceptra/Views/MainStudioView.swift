@@ -1,3 +1,4 @@
+import AppKit
 import CeptraCore
 import SwiftUI
 
@@ -5,25 +6,21 @@ struct MainStudioView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var sidebarWidth: CGFloat = 280
-    @State private var sidebarDragStartWidth: CGFloat = 280
+    @State private var sidebarWidth: CGFloat = 252
+    @State private var sidebarDragStartWidth: CGFloat = 252
     @State private var isResizingSidebar = false
 
-    @State private var debugInspectorWidth: CGFloat = 320
-    @State private var inspectorDragStartWidth: CGFloat = 320
+    @State private var rightInspectorWidth: CGFloat = 336
+    @State private var inspectorDragStartWidth: CGFloat = 336
     @State private var isResizingInspector = false
 
-    @State private var consoleBodyHeight: CGFloat = 220
-    @State private var consoleDragStartHeight: CGFloat = 220
+    @State private var consoleBodyHeight: CGFloat = 190
+    @State private var consoleDragStartHeight: CGFloat = 190
     @State private var isResizingConsole = false
-
-    @State private var splitVisualizerWidth: CGFloat = 420
-    @State private var splitVisualizerDragStartWidth: CGFloat = 420
-    @State private var isResizingSplitVisualizer = false
 
     var body: some View {
         ZStack(alignment: .top) {
-            CeptraTheme.canvasBG.ignoresSafeArea()
+            CeptraTheme.frameBG.ignoresSafeArea()
 
             VStack(spacing: 0) {
                 TopStudioBar()
@@ -32,15 +29,21 @@ struct MainStudioView: View {
                     WelcomeView()
                         .transition(.opacity)
                 } else {
-                    workspaceContent
+                    threeWindowStage
                         .transition(.opacity)
+
+                    if appState.isStatusBarVisible {
+                        BottomModuleStatusStrip()
+                            .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    }
                 }
             }
             .animation(CeptraMotion.resolve(CeptraMotion.smooth, reduceMotion: reduceMotion), value: appState.workspace == nil)
+            .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: appState.isStatusBarVisible)
 
             if let message = appState.bannerMessage {
                 ToastBanner(message: message, isError: appState.bannerIsError)
-                    .padding(.top, 54)
+                    .padding(.top, 48)
                     .transition(
                         reduceMotion
                             ? .opacity
@@ -65,27 +68,68 @@ struct MainStudioView: View {
             UpdateSheetView()
                 .environmentObject(appState)
         }
+        .sheet(isPresented: $appState.showingCommandPalette) {
+            CommandPaletteView()
+                .environmentObject(appState)
+        }
+        .sheet(isPresented: $appState.showingReportsSheet) {
+            VStack(spacing: 0) {
+                HStack {
+                    Label("Run History, Reports & Artifacts", systemImage: "chart.bar.doc.horizontal")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(CeptraTheme.textPrimary)
+                    Spacer()
+                    Button("Done") {
+                        appState.showingReportsSheet = false
+                    }
+                    .keyboardShortcut(.escape, modifiers: [])
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(CeptraTheme.sidebarBG)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(CeptraTheme.border).frame(height: 1)
+                }
+
+                ReportsDashboardView()
+                    .environmentObject(appState)
+            }
+            .frame(minWidth: 880, minHeight: 580)
+        }
     }
 
-    private var workspaceContent: some View {
+    // MARK: - Three Soft-Edged Vertical Windows
+
+    private var threeWindowStage: some View {
         GeometryReader { rootGeo in
-            let handleThickness = CeptraSplitResizeHandle.hitThickness
-            let sidebarHandleW: CGFloat = appState.isSidebarVisible ? handleThickness : 0
-            let availableRootW = max(0, rootGeo.size.width - sidebarHandleW)
-            let minSidebarWidth: CGFloat = 235
-            let maxSidebarWidth: CGFloat = max(minSidebarWidth, min(380, availableRootW * 0.36))
-            let effectiveSidebarWidth = min(max(sidebarWidth, minSidebarWidth), maxSidebarWidth)
-            let sidebarCursor: CeptraSplitResizeHandle.CursorDirection =
-                effectiveSidebarWidth <= minSidebarWidth + 0.5
+            let outerPadding: CGFloat = 8
+            let gapW: CGFloat = 8
+            let usableW = max(0, rootGeo.size.width - outerPadding * 2)
+
+            let minLeftW: CGFloat = 216
+            let maxLeftW: CGFloat = max(minLeftW, min(360, usableW * 0.32))
+            let effectiveLeftW = min(max(sidebarWidth, minLeftW), maxLeftW)
+            let leftCursor: CeptraSplitResizeHandle.CursorDirection =
+                effectiveLeftW <= minLeftW + 0.5
                     ? .onlyTrailingOrDown
-                    : (effectiveSidebarWidth >= maxSidebarWidth - 0.5 ? .onlyLeadingOrUp : .both)
+                    : (effectiveLeftW >= maxLeftW - 0.5 ? .onlyLeadingOrUp : .both)
+
+            let minRightW: CGFloat = 280
+            let maxRightW: CGFloat = max(minRightW, min(480, usableW * 0.40))
+            let effectiveRightW = min(max(rightInspectorWidth, minRightW), maxRightW)
+            let rightCursor: CeptraSplitResizeHandle.CursorDirection =
+                effectiveRightW <= minRightW + 0.5
+                    ? .onlyLeadingOrUp
+                    : (effectiveRightW >= maxRightW - 0.5 ? .onlyTrailingOrDown : .both)
 
             HStack(spacing: 0) {
+                // WINDOW 1 (LEFT): Soft-Edged Smart Explorer
                 SidebarExplorerView()
-                    .frame(width: effectiveSidebarWidth)
+                    .ceptraPaneWindow(subtle: true)
+                    .frame(width: effectiveLeftW)
                     .opacity(appState.isSidebarVisible ? 1 : 0)
-                    .offset(x: appState.isSidebarVisible || reduceMotion ? 0 : -12)
-                    .frame(width: appState.isSidebarVisible ? effectiveSidebarWidth : 0, alignment: .trailing)
+                    .offset(x: appState.isSidebarVisible || reduceMotion ? 0 : -10)
+                    .frame(width: appState.isSidebarVisible ? effectiveLeftW : 0, alignment: .trailing)
                     .clipped()
                     .allowsHitTesting(appState.isSidebarVisible)
                     .accessibilityHidden(!appState.isSidebarVisible)
@@ -93,243 +137,167 @@ struct MainStudioView: View {
                 if appState.isSidebarVisible {
                     CeptraSplitResizeHandle(
                         axis: .horizontal,
-                        cursorDirection: sidebarCursor,
+                        cursorDirection: leftCursor,
+                        isSoftGap: true,
                         onDragStart: {
                             isResizingSidebar = true
-                            sidebarDragStartWidth = effectiveSidebarWidth
+                            sidebarDragStartWidth = effectiveLeftW
                         },
                         onDragChanged: { delta in
-                            sidebarWidth = min(max(sidebarDragStartWidth + delta, minSidebarWidth), maxSidebarWidth)
+                            sidebarWidth = min(max(sidebarDragStartWidth + delta, minLeftW), maxLeftW)
                         },
                         onDragEnd: {
                             isResizingSidebar = false
                         },
                         onDoubleClick: {
                             withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                                sidebarWidth = 280
+                                sidebarWidth = 252
                             }
                         }
                     )
+                    .frame(width: gapW)
                 }
 
-                GeometryReader { columnGeo in
-                    let consoleHandleH: CGFloat = appState.isConsoleVisible ? handleThickness : 0
-                    let minConsoleBody: CGFloat = 135
-                    let maxConsoleBody = max(
-                        minConsoleBody,
-                        min(440, columnGeo.size.height - ConsoleDrawerView.headerHeight - consoleHandleH - 220)
-                    )
-                    let effectiveConsoleBody = min(max(consoleBodyHeight, minConsoleBody), maxConsoleBody)
-                    let consoleCursor: CeptraSplitResizeHandle.CursorDirection =
-                        effectiveConsoleBody <= minConsoleBody + 0.5
-                            ? .onlyLeadingOrUp
-                            : (effectiveConsoleBody >= maxConsoleBody - 0.5 ? .onlyTrailingOrDown : .both)
+                // WINDOW 2 (CENTER): Soft-Edged In-Window Tabs + Code Editor + Terminal Drawer
+                centerSoftWindow
+                    .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
 
-                    let inspectorHandleW: CGFloat = appState.isDebugInspectorVisible ? handleThickness : 0
-                    let availableMainW = max(0, columnGeo.size.width - inspectorHandleW)
-                    let minInspectorWidth: CGFloat = 270
-                    let maxInspectorWidth: CGFloat = max(
-                        minInspectorWidth,
-                        min(420, min(availableMainW * 0.42, availableMainW - 360))
-                    )
-                    let effectiveInspectorWidth = min(max(debugInspectorWidth, minInspectorWidth), maxInspectorWidth)
-                    let inspectorCursor: CeptraSplitResizeHandle.CursorDirection =
-                        effectiveInspectorWidth <= minInspectorWidth + 0.5
-                            ? .onlyLeadingOrUp
-                            : (effectiveInspectorWidth >= maxInspectorWidth - 0.5 ? .onlyTrailingOrDown : .both)
-
-                    VStack(spacing: 0) {
-                        if appState.debugPhase.isActive {
-                            HStack {
-                                Spacer(minLength: 0)
-                                DebugFloatingControlBar()
-                                Spacer(minLength: 0)
+                if appState.isRightSidebarVisible {
+                    CeptraSplitResizeHandle(
+                        axis: .horizontal,
+                        cursorDirection: rightCursor,
+                        isSoftGap: true,
+                        onDragStart: {
+                            isResizingInspector = true
+                            inspectorDragStartWidth = effectiveRightW
+                        },
+                        onDragChanged: { delta in
+                            rightInspectorWidth = min(max(inspectorDragStartWidth - delta, minRightW), maxRightW)
+                        },
+                        onDragEnd: {
+                            isResizingInspector = false
+                        },
+                        onDoubleClick: {
+                            withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                                rightInspectorWidth = 336
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(CeptraTheme.canvasBG)
-                            .transition(
-                                reduceMotion
-                                    ? .opacity
-                                    : .move(edge: .top).combined(with: .opacity)
-                            )
                         }
-
-                        HStack(spacing: 0) {
-                            centerPane
-                                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
-
-                            if appState.isDebugInspectorVisible {
-                                CeptraSplitResizeHandle(
-                                    axis: .horizontal,
-                                    cursorDirection: inspectorCursor,
-                                    onDragStart: {
-                                        isResizingInspector = true
-                                        inspectorDragStartWidth = effectiveInspectorWidth
-                                    },
-                                    onDragChanged: { delta in
-                                        debugInspectorWidth = min(max(inspectorDragStartWidth - delta, minInspectorWidth), maxInspectorWidth)
-                                    },
-                                    onDragEnd: {
-                                        isResizingInspector = false
-                                    },
-                                    onDoubleClick: {
-                                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                                            debugInspectorWidth = 320
-                                        }
-                                    }
-                                )
-                            }
-
-                            DebugInspectorView()
-                                .frame(width: effectiveInspectorWidth)
-                                .opacity(appState.isDebugInspectorVisible ? 1 : 0)
-                                .offset(x: appState.isDebugInspectorVisible || reduceMotion ? 0 : 12)
-                                .frame(width: appState.isDebugInspectorVisible ? effectiveInspectorWidth : 0, alignment: .leading)
-                                .clipped()
-                                .allowsHitTesting(appState.isDebugInspectorVisible)
-                                .accessibilityHidden(!appState.isDebugInspectorVisible)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .animation(
-                            isResizingInspector ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
-                            value: appState.isDebugInspectorVisible
-                        )
-
-                        if appState.isConsoleVisible {
-                            CeptraSplitResizeHandle(
-                                axis: .vertical,
-                                cursorDirection: consoleCursor,
-                                onDragStart: {
-                                    isResizingConsole = true
-                                    consoleDragStartHeight = effectiveConsoleBody
-                                },
-                                onDragChanged: { delta in
-                                    consoleBodyHeight = min(max(consoleDragStartHeight - delta, minConsoleBody), maxConsoleBody)
-                                },
-                                onDragEnd: {
-                                    isResizingConsole = false
-                                },
-                                onDoubleClick: {
-                                    withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                                        consoleBodyHeight = 220
-                                    }
-                                }
-                            )
-                        }
-
-                        ConsoleDrawerView(
-                            bodyHeight: effectiveConsoleBody,
-                            isResizing: isResizingConsole
-                        )
-                    }
-                    .animation(
-                        isResizingConsole ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
-                        value: appState.isConsoleVisible
                     )
-                    .animation(
-                        CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion),
-                        value: appState.debugPhase.isActive
-                    )
+                    .frame(width: gapW)
                 }
+
+                // WINDOW 3 (RIGHT): Soft-Edged Single-Slot Inspector (Replay · CodeceptUI · Outline · Debug)
+                RightInspectorWindowView()
+                    .frame(width: effectiveRightW)
+                    .opacity(appState.isRightSidebarVisible ? 1 : 0)
+                    .offset(x: appState.isRightSidebarVisible || reduceMotion ? 0 : 10)
+                    .frame(width: appState.isRightSidebarVisible ? effectiveRightW : 0, alignment: .leading)
+                    .clipped()
+                    .allowsHitTesting(appState.isRightSidebarVisible)
+                    .accessibilityHidden(!appState.isRightSidebarVisible)
             }
+            .padding(.horizontal, outerPadding)
+            .padding(.top, 2)
+            .padding(.bottom, appState.isStatusBarVisible ? 6 : 8)
             .animation(
                 isResizingSidebar ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
                 value: appState.isSidebarVisible
             )
+            .animation(
+                isResizingInspector ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
+                value: appState.isRightSidebarVisible
+            )
         }
     }
 
-    @ViewBuilder
-    private var centerPane: some View {
-        Group {
-            if appState.workspaceMode == .reports {
-                ReportsDashboardView()
-                    .transition(.opacity)
-            } else {
-                VStack(spacing: 0) {
-                    EditorTabBar()
+    private var centerSoftWindow: some View {
+        GeometryReader { colGeo in
+            let handleH: CGFloat = appState.isConsoleVisible ? CeptraSplitResizeHandle.hitThickness : 0
+            let minConsoleBody: CGFloat = 120
+            let maxConsoleBody = max(
+                minConsoleBody,
+                min(420, colGeo.size.height - ConsoleDrawerView.headerHeight - handleH - 200)
+            )
+            let effectiveConsoleBody = min(max(consoleBodyHeight, minConsoleBody), maxConsoleBody)
+            let consoleCursor: CeptraSplitResizeHandle.CursorDirection =
+                effectiveConsoleBody <= minConsoleBody + 0.5
+                    ? .onlyLeadingOrUp
+                    : (effectiveConsoleBody >= maxConsoleBody - 0.5 ? .onlyTrailingOrDown : .both)
 
-                    if let activeTab = appState.activeTab {
-                        switch appState.workspaceMode {
-                        case .code:
-                            editorSurface(for: activeTab)
-                        case .visual:
-                            FlowVisualizerView(
-                                file: appState.activeWorkspaceFile,
-                                features: appState.activeFeaturesForCurrentTab
-                            )
-                        case .split:
-                            GeometryReader { splitGeo in
-                                let availableSplit = max(0, splitGeo.size.width - CeptraSplitResizeHandle.hitThickness)
-                                let preferredMinEditor: CGFloat = 340
-                                let preferredMinVisual: CGFloat = 320
-                                let splitBounds: (minVisual: CGFloat, maxVisual: CGFloat) = {
-                                    if availableSplit >= preferredMinEditor + preferredMinVisual {
-                                        let cappedMax = min(availableSplit - preferredMinEditor, availableSplit * 0.62)
-                                        return (preferredMinVisual, max(preferredMinVisual, cappedMax))
-                                    }
-                                    // Balanced fallback when sidebar + debug inspector narrow the split area
-                                    let safeVisualFloor = min(preferredMinVisual, max(240, availableSplit * 0.44))
-                                    let safeEditorFloor = min(preferredMinEditor, max(240, availableSplit * 0.44))
-                                    return (safeVisualFloor, max(safeVisualFloor, availableSplit - safeEditorFloor))
-                                }()
-                                let minVisual = splitBounds.minVisual
-                                let maxVisual = splitBounds.maxVisual
-                                let effectiveVisualWidth = min(max(splitVisualizerWidth, minVisual), maxVisual)
-                                let splitCursor: CeptraSplitResizeHandle.CursorDirection = {
-                                    if maxVisual - minVisual <= 0.5 { return .both }
-                                    if effectiveVisualWidth <= minVisual + 0.5 { return .onlyLeadingOrUp }
-                                    if effectiveVisualWidth >= maxVisual - 0.5 { return .onlyTrailingOrDown }
-                                    return .both
-                                }()
+            VStack(spacing: 0) {
+                EditorTabBar()
 
-                                HStack(spacing: 0) {
-                                    editorSurface(for: activeTab)
-                                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
-
-                                    CeptraSplitResizeHandle(
-                                        axis: .horizontal,
-                                        cursorDirection: splitCursor,
-                                        onDragStart: {
-                                            isResizingSplitVisualizer = true
-                                            splitVisualizerDragStartWidth = effectiveVisualWidth
-                                        },
-                                        onDragChanged: { delta in
-                                            splitVisualizerWidth = min(max(splitVisualizerDragStartWidth - delta, minVisual), maxVisual)
-                                        },
-                                        onDragEnd: {
-                                            isResizingSplitVisualizer = false
-                                        },
-                                        onDoubleClick: {
-                                            withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                                                splitVisualizerWidth = 420
-                                            }
-                                        }
-                                    )
-
-                                    FlowVisualizerView(
-                                        file: appState.activeWorkspaceFile,
-                                        features: appState.activeFeaturesForCurrentTab
-                                    )
-                                    .frame(width: effectiveVisualWidth)
-                                }
-                            }
-                        case .reports:
-                            EmptyView()
-                        }
-                    } else {
-                        emptyEditorPlaceholder
+                if appState.debugPhase.isActive {
+                    HStack {
+                        Spacer(minLength: 0)
+                        DebugFloatingControlBar()
+                        Spacer(minLength: 0)
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(CeptraTheme.canvasBG)
+                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                 }
-                .transition(.opacity)
+
+                if let activeTab = appState.activeTab {
+                    editorSurface(for: activeTab)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    emptyEditorPlaceholder
+                }
+
+                if appState.isConsoleVisible {
+                    CeptraSplitResizeHandle(
+                        axis: .vertical,
+                        cursorDirection: consoleCursor,
+                        onDragStart: {
+                            isResizingConsole = true
+                            consoleDragStartHeight = effectiveConsoleBody
+                        },
+                        onDragChanged: { delta in
+                            consoleBodyHeight = min(max(consoleDragStartHeight - delta, minConsoleBody), maxConsoleBody)
+                        },
+                        onDragEnd: {
+                            isResizingConsole = false
+                        },
+                        onDoubleClick: {
+                            withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                                consoleBodyHeight = 190
+                            }
+                        }
+                    )
+
+                    ConsoleDrawerView(
+                        bodyHeight: effectiveConsoleBody,
+                        isResizing: isResizingConsole
+                    )
+                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                }
             }
+            .ceptraPaneWindow(subtle: false)
+            .animation(
+                isResizingConsole ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
+                value: appState.isConsoleVisible
+            )
+            .animation(
+                CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion),
+                value: appState.debugPhase.isActive
+            )
         }
-        .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: appState.workspaceMode)
     }
 
     private func editorSurface(for tab: OpenDocumentTab) -> some View {
         let boundPath = tab.filePath
+        let scenarioMarkers: [Int: (title: String, status: ExecutionStatus)] = {
+            var map: [Int: (title: String, status: ExecutionStatus)] = [:]
+            for feature in appState.activeFeaturesForCurrentTab {
+                for sc in feature.scenarios {
+                    map[sc.lineNumber] = (sc.cleanTitle, appState.statusForScenario(sc))
+                }
+            }
+            return map
+        }()
+
         return CodeEditorView(
             documentID: boundPath,
             text: Binding(
@@ -349,6 +317,7 @@ struct MainStudioView: View {
             },
             breakpointsByLine: appState.breakpointsByLine(forFilePath: tab.filePath),
             pausedLine: appState.activePausedLine(forFilePath: tab.filePath),
+            scenariosByLine: scenarioMarkers,
             onToggleBreakpoint: { line in
                 appState.toggleBreakpoint(filePath: tab.filePath, line: line)
             },
@@ -357,6 +326,16 @@ struct MainStudioView: View {
             },
             onRemoveBreakpoint: { id in
                 appState.removeBreakpoint(id: id)
+            },
+            onRunScenario: { scenarioTitle in
+                let relPath = appState.activeWorkspaceFile?.relativePath ?? tab.relativePath
+                appState.run(mode: .runScenario(relativePath: relPath, scenarioTitle: scenarioTitle))
+            },
+            onCursorChanged: { line, col in
+                if appState.cursorLine != line || appState.cursorColumn != col {
+                    appState.cursorLine = line
+                    appState.cursorColumn = col
+                }
             }
         )
     }
@@ -364,632 +343,202 @@ struct MainStudioView: View {
     private var emptyEditorPlaceholder: some View {
         VStack(spacing: 12) {
             Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 32, weight: .light))
+                .font(.system(size: 30, weight: .light))
                 .foregroundStyle(CeptraTheme.textMuted)
-            Text("Select a test suite, feature, or config file")
-                .font(.system(size: 14, weight: .medium))
+            Text("Select a test suite, feature, or page object")
+                .font(.system(size: 13.5, weight: .medium))
                 .foregroundStyle(CeptraTheme.textSecondary)
-            Button("New File from Template…") {
-                appState.showingNewFileSheet = true
+            HStack(spacing: 8) {
+                Button("Quick Open (⌘P)") {
+                    appState.showingCommandPalette = true
+                }
+                .buttonStyle(.bordered)
+
+                Button("New File…") {
+                    appState.presentNewFileSheet(inDirectory: appState.activeFileParentRelativeDirectory)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(CeptraTheme.accent)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(CeptraTheme.accent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CeptraTheme.canvasBG)
     }
 }
 
-// MARK: - Top Studio Toolbar
+// MARK: - Calm Static 40pt Titlebar (Zero Dynamic Header Button Bloat)
 
 private struct TopStudioBar: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var isRunMenuHovered = false
     @State private var leadingTrafficLightReserve: CGFloat = 76
+    @State private var showingRunMenu = false
 
     var body: some View {
         HStack(spacing: 8) {
+            // Left: Left Sidebar Toggle + Clean projectName › activeFile Breadcrumb
             if appState.workspace != nil {
-                Button {
+                CeptraTitlebarIconButton(
+                    systemImage: "sidebar.leading",
+                    isActive: appState.isSidebarVisible,
+                    helpText: "Toggle Explorer Sidebar (⌘B)",
+                    accessibilityLabelText: "Toggle Explorer Sidebar"
+                ) {
                     withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                        appState.isSidebarVisible.toggle()
-                    }
-                } label: {
-                    Image(systemName: "sidebar.leading")
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(appState.isSidebarVisible ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
-                        .frame(width: 28, height: 26)
-                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                }
-                .buttonStyle(
-                    CeptraGlassButtonStyle(
-                        cornerRadius: 7,
-                        tint: CeptraTheme.panelBG,
-                        tintOpacity: 0.50,
-                        isActive: appState.isSidebarVisible
-                    )
-                )
-                .help("Toggle Sidebar (⌘B)")
-            }
-
-            CeptraGlassDropdown(minWidth: 260, maxWidth: 320) { isOpen in
-                CeptraMenuPillLabel(
-                    title: appState.workspace?.config.projectName ?? "Ceptra",
-                    subtitle: appState.workspace?.config.packageCodeceptVersion,
-                    maxTitleWidth: 155,
-                    isOpen: isOpen
-                ) {
-                    Circle()
-                        .fill(CeptraTheme.accent)
-                        .frame(width: 7, height: 7)
-                        .shadow(color: CeptraTheme.accent.opacity(0.75), radius: 3.5)
-                }
-            } content: {
-                CeptraDropdownItem(
-                    title: "Open Workspace Folder…",
-                    systemImage: "folder.badge.plus",
-                    shortcut: "⌘O"
-                ) {
-                    appState.openWorkspacePanel()
-                }
-                CeptraDropdownItem(
-                    title: "Create Sample CodeceptJS 4.x Workspace…",
-                    systemImage: "sparkles",
-                    iconColor: CeptraTheme.accent
-                ) {
-                    appState.createSampleWorkspacePanel()
-                }
-
-                if !appState.settings.recentProjectPaths.isEmpty {
-                    CeptraDropdownDivider()
-                    CeptraDropdownSectionHeader(title: "Recent Workspaces")
-                    ForEach(appState.settings.recentProjectPaths, id: \.self) { path in
-                        let url = URL(fileURLWithPath: path)
-                        let isCurrent = appState.workspace?.rootURL.path == path
-                        CeptraDropdownItem(
-                            title: url.lastPathComponent,
-                            subtitle: url.deletingLastPathComponent().path.replacingOccurrences(of: NSHomeDirectory(), with: "~"),
-                            systemImage: "folder",
-                            isSelected: isCurrent
-                        ) {
-                            appState.openWorkspace(at: url)
-                        }
-                    }
-                }
-
-                if appState.workspace != nil {
-                    CeptraDropdownDivider()
-                    CeptraDropdownItem(
-                        title: "Rescan Workspace",
-                        systemImage: "arrow.clockwise"
-                    ) {
-                        appState.rescanWorkspace()
-                    }
-                    CeptraDropdownItem(
-                        title: "Reveal in Finder",
-                        systemImage: "macwindow"
-                    ) {
-                        if let root = appState.workspace?.rootURL {
-                            NSWorkspace.shared.activateFileViewerSelecting([root])
-                        }
+                        appState.toggleLeftSidebar()
                     }
                 }
             }
-            .fixedSize()
-            .help("Switch or Manage Workspace")
-            .accessibilityLabel("Workspace Menu")
 
-            // Active Config File Switcher (supports custom names, nested paths, and external paths)
-            if let ws = appState.workspace {
-                let activeLabel = ws.config.displayConfigPath(relativeTo: ws.rootURL) ?? "Select Config…"
-                CeptraGlassDropdown(minWidth: 250, maxWidth: 340) { isOpen in
-                    CeptraMenuPillLabel(
-                        title: activeLabel,
-                        titleFont: .system(size: 11, design: .monospaced),
-                        titleColor: ws.config.configFilePath == nil ? CeptraTheme.warning : CeptraTheme.textSecondary,
-                        maxTitleWidth: 155,
-                        accentBorder: ws.config.isCustomConfigOverride ? CeptraTheme.accentWarm : nil,
-                        horizontalPadding: 9,
-                        verticalPadding: 5,
-                        cornerRadius: 8,
-                        isOpen: isOpen
-                    ) {
-                        Image(systemName: ws.config.configFilePath == nil ? "exclamationmark.triangle" : "gearshape")
-                            .font(.system(size: 10))
-                            .foregroundStyle(
-                                ws.config.configFilePath == nil
-                                    ? CeptraTheme.warning
-                                    : (ws.config.isCustomConfigOverride ? CeptraTheme.accentWarm : CeptraTheme.textMuted)
-                            )
-                    }
+            HStack(spacing: 6) {
+                CeptraGlassDropdown(minWidth: 255, maxWidth: 320) { _ in
+                    Text(appState.workspace?.config.projectName ?? "Ceptra")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(CeptraTheme.textPrimary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 3)
+                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 } content: {
-                    if !ws.discoveredConfigPaths.isEmpty {
-                        CeptraDropdownSectionHeader(title: "Detected Configs")
-                        ForEach(ws.discoveredConfigPaths, id: \.self) { path in
-                            let isActive = path == ws.config.configFilePath
-                            let label = displayPath(path, relativeTo: ws.rootURL)
+                    CeptraDropdownItem(
+                        title: "Open Workspace Folder…",
+                        systemImage: "folder.badge.plus",
+                        shortcut: "⌘O"
+                    ) {
+                        appState.openWorkspacePanel()
+                    }
+                    CeptraDropdownItem(
+                        title: "Create Sample CodeceptJS 4.x Workspace…",
+                        systemImage: "sparkles",
+                        iconColor: CeptraTheme.accent
+                    ) {
+                        appState.createSampleWorkspacePanel()
+                    }
+
+                    if !appState.settings.recentProjectPaths.isEmpty {
+                        CeptraDropdownDivider()
+                        CeptraDropdownSectionHeader(title: "Recent Workspaces")
+                        ForEach(appState.settings.recentProjectPaths, id: \.self) { path in
+                            let url = URL(fileURLWithPath: path)
+                            let isCurrent = appState.workspace?.rootURL.path == path
                             CeptraDropdownItem(
-                                title: label,
-                                systemImage: "doc.text",
-                                isSelected: isActive,
-                                isMonospaced: true
+                                title: url.lastPathComponent,
+                                subtitle: url.deletingLastPathComponent().path.replacingOccurrences(of: NSHomeDirectory(), with: "~"),
+                                systemImage: "folder",
+                                isSelected: isCurrent
                             ) {
-                                appState.setCustomConfigFile(path: path)
+                                appState.openWorkspace(at: url)
                             }
                         }
+                    }
+
+                    if appState.workspace != nil {
                         CeptraDropdownDivider()
-                    }
-
-                    CeptraDropdownItem(
-                        title: "Choose Custom Config File…",
-                        systemImage: "folder"
-                    ) {
-                        appState.selectCustomConfigPanel()
-                    }
-
-                    if ws.config.configFilePath != nil {
                         CeptraDropdownItem(
-                            title: "Open Active Config in Editor",
-                            systemImage: "square.and.pencil"
+                            title: "Select Custom Config (-c)…",
+                            systemImage: "gearshape",
+                            shortcut: "⌘⇧C"
                         ) {
-                            appState.openActiveConfigFile()
+                            appState.selectCustomConfigPanel()
                         }
-                    }
-
-                    if ws.config.isCustomConfigOverride {
-                        CeptraDropdownDivider()
                         CeptraDropdownItem(
-                            title: "Reset to Auto-Detect",
-                            systemImage: "arrow.counterclockwise",
-                            iconColor: CeptraTheme.accentWarm
+                            title: "Rescan Workspace",
+                            systemImage: "arrow.clockwise"
                         ) {
-                            appState.setCustomConfigFile(path: nil)
+                            appState.rescanWorkspace()
+                        }
+                        CeptraDropdownItem(
+                            title: "Reveal in Finder",
+                            systemImage: "macwindow"
+                        ) {
+                            if let root = appState.workspace?.rootURL {
+                                NSWorkspace.shared.activateFileViewerSelecting([root])
+                            }
                         }
                     }
                 }
                 .fixedSize()
-                .help(ws.config.configFilePath ?? "Choose a custom CodeceptJS config file (-c)")
-                .accessibilityLabel("Active Config File Switcher")
+                .help("Switch or Manage Workspace")
 
-                // Runtime (Node vs Bun) & Console Target (Built-in vs System Console) Switcher
-                let toolchain = appState.resolvedToolchain
-                let runtime = appState.settings.jsRuntime
-                let runtimeAvailable = toolchain?.isActiveRuntimeAvailable ?? true
-                let runtimeAccent = runtime == .bun ? CeptraTheme.accentWarm : CeptraTheme.success
-                CeptraGlassDropdown(minWidth: 270, maxWidth: 350) { isOpen in
-                    CeptraMenuPillLabel(
-                        title: appState.isSystemConsoleMode ? "\(runtime.shortName) · Sys" : runtime.shortName,
-                        titleFont: .system(size: 11, weight: .medium, design: .monospaced),
-                        titleColor: runtimeAvailable ? CeptraTheme.textPrimary : CeptraTheme.warning,
-                        accentBorder: appState.isSystemConsoleMode ? CeptraTheme.cyan : (runtime == .bun ? CeptraTheme.accentWarm : nil),
-                        tint: appState.isSystemConsoleMode ? CeptraTheme.cyan : runtimeAccent,
-                        tintOpacity: 0.12,
-                        horizontalPadding: 8,
-                        verticalPadding: 5,
-                        cornerRadius: 8,
-                        isOpen: isOpen
-                    ) {
-                        Circle()
-                            .fill(runtimeAvailable ? runtimeAccent : CeptraTheme.warning)
-                            .frame(width: 6.5, height: 6.5)
-                    }
-                } content: {
-                    CeptraDropdownSectionHeader(title: "JavaScript Runtime")
-                    CeptraDropdownItem(
-                        title: "Node.js",
-                        subtitle: toolchain?.nodePath ?? "Not found in PATH",
-                        systemImage: "hexagon.fill",
-                        iconColor: toolchain?.nodePath != nil ? CeptraTheme.success : CeptraTheme.warning,
-                        isSelected: runtime == .node,
-                        isMonospaced: false
-                    ) {
-                        appState.setJSRuntime(.node)
-                    }
-                    CeptraDropdownItem(
-                        title: "Bun",
-                        subtitle: toolchain?.bunPath ?? "Not found — install bun or set path in Settings",
-                        systemImage: "bolt.fill",
-                        iconColor: toolchain?.bunPath != nil ? CeptraTheme.accentWarm : CeptraTheme.warning,
-                        isSelected: runtime == .bun,
-                        isMonospaced: false
-                    ) {
-                        appState.setJSRuntime(.bun)
-                    }
+                if let activeTab = appState.activeTab {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(CeptraTheme.textMuted)
 
-                    CeptraDropdownDivider()
-                    CeptraDropdownSectionHeader(title: "Console Target")
-                    CeptraDropdownItem(
-                        title: "Built-in Console",
-                        subtitle: "Live steps, scenario badges & Time-Travel reports",
-                        systemImage: "rectangle.bottomthird.inset.filled",
-                        iconColor: CeptraTheme.accent,
-                        isSelected: !appState.isSystemConsoleMode
-                    ) {
-                        appState.setConsoleExecutionMode(.builtIn)
+                    Button {
+                        appState.showingCommandPalette = true
+                    } label: {
+                        Text(activeTab.name)
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundStyle(CeptraTheme.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 3)
+                            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
-                    CeptraDropdownItem(
-                        title: "System Console (\(appState.activeTerminalDisplayName))",
-                        subtitle: "Native TTY colors, login shell & interactive prompt",
-                        systemImage: "terminal",
-                        iconColor: CeptraTheme.cyan,
-                        isSelected: appState.isSystemConsoleMode
-                    ) {
-                        appState.setConsoleExecutionMode(.systemTerminal)
-                    }
-
-                    CeptraDropdownDivider()
-                    CeptraDropdownItem(
-                        title: "Open Workspace in \(appState.activeTerminalDisplayName)",
-                        subtitle: ws.rootURL.lastPathComponent,
-                        systemImage: "arrow.up.forward.app",
-                        iconColor: CeptraTheme.cyan,
-                        shortcut: "⌘⇧T"
-                    ) {
-                        appState.openWorkspaceInSystemTerminal()
-                    }
+                    .buttonStyle(.plain)
+                    .help("Quick Jump / Command Palette (⌘K / ⌘P)")
                 }
-                .fixedSize()
-                .help("Runtime: \(runtime.displayName) (\(toolchain?.activeRuntimePath ?? "not found")) • Console: \(appState.isSystemConsoleMode ? appState.activeTerminalDisplayName : "Built-in")")
-                .accessibilityLabel("Runtime and Console Switcher")
             }
 
-            Spacer()
+            Spacer(minLength: 12)
 
-            // Center Segmented Workspace Switcher
-            if appState.workspace != nil {
-                CeptraGlassSegmentedControl(
-                    options: WorkspaceViewMode.allCases,
-                    selection: $appState.workspaceMode,
-                    label: { $0.rawValue },
-                    symbol: { $0.symbolName }
-                )
-            }
-
-            Spacer()
-
-            // Right Execution & Update Cluster
+            // Right: Primary ▶ Run ▾ + Hairline + Strictly 3 Static 28×26 Icons (>_ · ◨ · ⊞)
             if appState.workspace != nil {
                 HStack(spacing: 6) {
-                    if appState.isRunning {
-                        Button {
-                            appState.stopActiveRun()
-                        } label: {
-                            HStack(spacing: 5) {
-                                ProgressView().controlSize(.mini).scaleEffect(0.75)
-                                Text("Stop")
-                                    .font(.system(size: 11.5, weight: .semibold))
-                            }
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(CeptraTheme.failure.opacity(0.92), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .strokeBorder(CeptraTheme.specularRimGradient, lineWidth: 0.75)
-                            )
-                            .shadow(color: CeptraTheme.failure.opacity(0.28), radius: 6, y: 2)
-                        }
-                        .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.96))
-                        .help("Stop Running Tests (⌘.)")
-                    } else {
-                        Button {
-                            appState.run(mode: .runAll)
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: "play.fill")
-                                    .font(.system(size: 10))
-                                Text("Run All")
-                                    .font(.system(size: 11.5, weight: .semibold))
-                            }
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(CeptraTheme.success.opacity(0.88), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .strokeBorder(CeptraTheme.specularRimGradient, lineWidth: 0.75)
-                            )
-                            .shadow(color: CeptraTheme.success.opacity(0.24), radius: 6, y: 2)
-                        }
-                        .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.96))
-                        .help("Run All Tests (⌘R)")
+                    runSplitPill
 
-                        Button {
-                            if appState.isActiveTabExecutableTestFile {
-                                appState.debugActiveFile()
-                            } else {
-                                appState.debug(mode: .runAll)
-                            }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: "ladybug.fill")
-                                    .font(.system(size: 10))
-                                Text("Debug")
-                                    .font(.system(size: 11.5, weight: .semibold))
-                            }
-                            .foregroundStyle(CeptraTheme.accentWarm)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
+                    Rectangle()
+                        .fill(CeptraTheme.borderStrong)
+                        .frame(width: 1, height: 14)
+                        .padding(.horizontal, 2)
+
+                    // 1. Terminal & Logs Toggle
+                    CeptraTitlebarIconButton(
+                        systemImage: "terminal",
+                        isActive: appState.isConsoleVisible,
+                        showEmeraldIndicator: true,
+                        helpText: "Toggle Terminal & Logs (⌘J)",
+                        accessibilityLabelText: "Toggle Terminal and Logs"
+                    ) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleTerminal()
                         }
-                        .buttonStyle(
-                            CeptraGlassButtonStyle(
-                                cornerRadius: 7,
-                                tint: CeptraTheme.accentWarm,
-                                tintOpacity: 0.16,
-                                accentBorder: CeptraTheme.accentWarm
-                            )
-                        )
-                        .help(appState.isActiveTabExecutableTestFile ? "Debug Current Test File (⌘⇧B)" : "Debug All Tests")
-
-                        CeptraGlassDropdown(minWidth: 265, maxWidth: 340) { isOpen in
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(isOpen || isRunMenuHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
-                                .rotationEffect(.degrees(isOpen ? 180 : 0))
-                                .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: isOpen)
-                                .frame(width: 26, height: 26)
-                                .ceptraGlassSurface(
-                                    cornerRadius: 7,
-                                    tint: CeptraTheme.panelBG,
-                                    tintOpacity: 0.56,
-                                    isHovered: isRunMenuHovered,
-                                    isActive: isOpen
-                                )
-                                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isRunMenuHovered)
-                                .onHover { hovering in
-                                    isRunMenuHovered = hovering
-                                }
-                                .onDisappear {
-                                    isRunMenuHovered = false
-                                }
-                        } content: {
-                            CeptraDropdownSectionHeader(title: "Run Modes")
-                            if appState.isActiveTabExecutableTestFile {
-                                CeptraDropdownItem(
-                                    title: "Run Current Test File",
-                                    systemImage: "play.circle",
-                                    iconColor: CeptraTheme.success,
-                                    shortcut: "⌘⇧R"
-                                ) {
-                                    appState.runActiveFile()
-                                }
-                            }
-                            CeptraDropdownItem(
-                                title: "Dry Run (Validate & List)",
-                                systemImage: "checklist",
-                                shortcut: "⌘⇧D"
-                            ) {
-                                appState.run(mode: .dryRun(relativePath: nil))
-                            }
-                            CeptraDropdownItem(
-                                title: "Re-run Last Failed",
-                                systemImage: "arrow.counterclockwise.circle",
-                                iconColor: CeptraTheme.warning
-                            ) {
-                                appState.run(mode: .runLastFailed)
-                            }
-
-                            CeptraDropdownDivider()
-                            CeptraDropdownSectionHeader(title: "Parallel & Multi-Suite")
-                            CeptraDropdownItem(
-                                title: "Run Workers",
-                                subtitle: "\(appState.runOptions.workerCount)x \(appState.runOptions.workerStrategy.rawValue) (codeceptjs run-workers)",
-                                systemImage: "cpu",
-                                iconColor: CeptraTheme.cyan,
-                                shortcut: "⌘⇧W"
-                            ) {
-                                appState.runWorkersWithCurrentOptions()
-                            }
-                            CeptraDropdownItem(
-                                title: "Configure Workers…",
-                                subtitle: "Strategy, --serial, --last-failed",
-                                systemImage: "slider.horizontal.3"
-                            ) {
-                                appState.presentParallelRunSheet(tab: .workers)
-                            }
-                            CeptraDropdownItem(
-                                title: "Run Multiple — All Suites",
-                                subtitle: "codeceptjs run-multiple --all",
-                                systemImage: "square.stack.3d.up",
-                                iconColor: CeptraTheme.success,
-                                shortcut: "⌘⇧M"
-                            ) {
-                                appState.run(mode: .runMultiple(suites: [], runAll: true))
-                            }
-                            if let suites = appState.workspace?.config.multipleSuites, !suites.isEmpty {
-                                ForEach(suites) { suite in
-                                    CeptraDropdownItem(
-                                        title: "Run Multiple: \(suite.name)",
-                                        subtitle: suite.browsers.isEmpty ? "all configured browsers" : suite.browsers.joined(separator: ", "),
-                                        systemImage: "play.square.stack",
-                                        iconColor: CeptraTheme.accent,
-                                        isMonospaced: true
-                                    ) {
-                                        appState.run(mode: .runMultiple(suites: [suite.name], runAll: false))
-                                    }
-                                }
-                            }
-                            CeptraDropdownItem(
-                                title: "Configure Multiple Run…",
-                                subtitle: "Select suites & suite:browser targets",
-                                systemImage: "square.stack.3d.up.fill"
-                            ) {
-                                appState.presentParallelRunSheet(tab: .multiple)
-                            }
-
-                            CeptraDropdownDivider()
-                            CeptraDropdownSectionHeader(title: "CodeceptJS Tools")
-                            CeptraDropdownItem(
-                                title: "Check Environment",
-                                subtitle: "codeceptjs check",
-                                systemImage: "stethoscope"
-                            ) {
-                                appState.run(mode: .checkEnvironment)
-                            }
-                            CeptraDropdownItem(
-                                title: "Generate Type Defs",
-                                subtitle: "codeceptjs def",
-                                systemImage: "curlybraces"
-                            ) {
-                                appState.run(mode: .generateDefinitions)
-                            }
-                            CeptraDropdownItem(
-                                title: "List I.* Actions",
-                                subtitle: "codeceptjs list",
-                                systemImage: "list.bullet.rectangle"
-                            ) {
-                                appState.run(mode: .listActions)
-                            }
-                            if let pm = appState.workspace?.packageManager {
-                                CeptraDropdownDivider()
-                                CeptraDropdownSectionHeader(title: "Dependencies (\(pm.rawValue))")
-                                CeptraDropdownItem(
-                                    title: "Install Dependencies",
-                                    subtitle: "\(pm.rawValue) install",
-                                    systemImage: "arrow.down.circle"
-                                ) {
-                                    appState.runDependencyAction(.install)
-                                }
-                                CeptraDropdownItem(
-                                    title: "Update Dependencies",
-                                    subtitle: PackageManagerSupport.commandPreview(for: .update, packageManager: pm),
-                                    systemImage: "arrow.triangle.2.circlepath"
-                                ) {
-                                    appState.runDependencyAction(.update)
-                                }
-                                CeptraDropdownItem(
-                                    title: "Update CodeceptJS (@latest)",
-                                    systemImage: "arrow.up.circle",
-                                    iconColor: CeptraTheme.accent
-                                ) {
-                                    appState.runDependencyAction(.upgradeCodeceptJS)
-                                }
-                            }
-                        }
-                        .fixedSize()
-                        .help("More Run & Dependency Actions")
-                        .accessibilityLabel("More Run Actions")
                     }
 
-                    Button {
-                        appState.showingRunOptionsPopover.toggle()
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 12))
-                            .foregroundStyle(appState.showingRunOptionsPopover ? CeptraTheme.accent : CeptraTheme.textSecondary)
-                            .frame(width: 28, height: 26)
-                            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    // 2. Right Sidebar Toggle
+                    CeptraTitlebarIconButton(
+                        systemImage: "sidebar.trailing",
+                        isActive: appState.isRightSidebarVisible,
+                        helpText: "Toggle Right Sidebar (⌘⌥B)",
+                        accessibilityLabelText: "Toggle Right Sidebar"
+                    ) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleRightSidebar()
+                        }
                     }
-                    .buttonStyle(
-                        CeptraGlassButtonStyle(
-                            cornerRadius: 7,
-                            tint: CeptraTheme.panelBG,
-                            tintOpacity: 0.56,
-                            accentBorder: appState.showingRunOptionsPopover ? CeptraTheme.accent : nil,
-                            isActive: appState.showingRunOptionsPopover
-                        )
-                    )
-                    .help("CodeceptJS Run Options")
-                    .popover(isPresented: $appState.showingRunOptionsPopover) {
-                        RunOptionsPopover()
+
+                    // 3. Tools & Modules Popover (Never spawns extra header icons!)
+                    CeptraTitlebarIconButton(
+                        systemImage: "square.grid.2x2",
+                        isActive: appState.showingToolsPopover,
+                        helpText: "Tools & Modules",
+                        accessibilityLabelText: "Tools and Modules"
+                    ) {
+                        appState.showingToolsPopover.toggle()
+                    }
+                    .popover(isPresented: $appState.showingToolsPopover, arrowEdge: .bottom) {
+                        ToolsControlPopover()
                             .environmentObject(appState)
                     }
-
-                    Button {
-                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                            appState.isConsoleVisible.toggle()
-                        }
-                    } label: {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 12))
-                            .foregroundStyle(appState.isConsoleVisible ? CeptraTheme.accent : CeptraTheme.textSecondary)
-                            .frame(width: 28, height: 26)
-                            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    }
-                    .buttonStyle(
-                        CeptraGlassButtonStyle(
-                            cornerRadius: 7,
-                            tint: CeptraTheme.panelBG,
-                            tintOpacity: 0.56,
-                            accentBorder: appState.isConsoleVisible ? CeptraTheme.accent : nil,
-                            isActive: appState.isConsoleVisible
-                        )
-                    )
-                    .help("Toggle Console (⌘J)")
-
-                    Button {
-                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                            appState.isDebugInspectorVisible.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: appState.debugPhase.isActive ? "ladybug.fill" : "ladybug")
-                                .font(.system(size: 11.5))
-                            if !appState.breakpoints.isEmpty {
-                                Text("\(appState.breakpoints.count)")
-                                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                                    .monospacedDigit()
-                            }
-                        }
-                        .foregroundStyle(
-                            appState.debugPhase.isActive
-                                ? CeptraTheme.accentWarm
-                                : (appState.isDebugInspectorVisible ? CeptraTheme.accent : CeptraTheme.textSecondary)
-                        )
-                        .padding(.horizontal, appState.breakpoints.isEmpty ? 0 : 7)
-                        .frame(minWidth: 28, minHeight: 26)
-                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    }
-                    .buttonStyle(
-                        CeptraGlassButtonStyle(
-                            cornerRadius: 7,
-                            tint: appState.debugPhase.isActive ? CeptraTheme.accentWarm : CeptraTheme.panelBG,
-                            tintOpacity: appState.debugPhase.isActive ? 0.16 : 0.56,
-                            accentBorder: appState.debugPhase.isActive
-                                ? CeptraTheme.accentWarm
-                                : (appState.isDebugInspectorVisible ? CeptraTheme.accent : nil),
-                            isActive: appState.isDebugInspectorVisible
-                        )
-                    )
-                    .help("Toggle Debug Inspector")
                 }
             }
-
-            // Update pill button
-            Button {
-                appState.showingUpdateSheet = true
-                if case .idle = appState.updateState {
-                    Task { await appState.checkForUpdates(userInitiated: true) }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: appState.updateState.hasActionableUpdate ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
-                        .font(.system(size: 11.5))
-                    if appState.updateState.hasActionableUpdate {
-                        Text("Update")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                }
-                .foregroundStyle(appState.updateState.hasActionableUpdate ? CeptraTheme.accentWarm : CeptraTheme.textMuted)
-                .padding(.horizontal, appState.updateState.hasActionableUpdate ? 9 : 7)
-                .padding(.vertical, 5)
-            }
-            .buttonStyle(
-                CeptraGlassButtonStyle(
-                    cornerRadius: 999,
-                    tint: appState.updateState.hasActionableUpdate ? CeptraTheme.accentWarm : CeptraTheme.panelBG,
-                    tintOpacity: appState.updateState.hasActionableUpdate ? 0.16 : 0.42,
-                    accentBorder: appState.updateState.hasActionableUpdate ? CeptraTheme.accentWarm : nil
-                )
-            )
-            .help("Check for Updates via GitHub Releases")
         }
         .padding(.leading, leadingTrafficLightReserve)
-        .padding(.trailing, 14)
-        .frame(height: 44)
+        .padding(.trailing, 12)
+        .frame(height: 40)
         .background(
             CeptraWindowTitlebarDragArea { newReserve in
                 withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
@@ -997,21 +546,655 @@ private struct TopStudioBar: View {
                 }
             }
         )
-        .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.72, bottomHairline: true)
+        .popover(isPresented: $appState.showingRunOptionsPopover, arrowEdge: .bottom) {
+            RunOptionsPopover()
+                .environmentObject(appState)
+        }
+    }
+
+    private var runSplitPill: some View {
+        let isRunning = appState.isRunning
+        let fill = isRunning ? CeptraTheme.failure : CeptraTheme.success
+        let fg: Color = isRunning ? .white : Color(red: 0.02, green: 0.12, blue: 0.07)
+
+        return HStack(spacing: 0) {
+            Button {
+                if isRunning {
+                    appState.stopActiveRun()
+                } else if appState.isActiveTabExecutableTestFile {
+                    appState.runActiveFile()
+                } else {
+                    appState.run(mode: .runAll)
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    if isRunning {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 8.5, weight: .bold))
+                    } else {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    Text(isRunning ? "Stop" : "Run")
+                        .font(.system(size: 11.5, weight: .semibold))
+                }
+                .foregroundStyle(fg)
+                .padding(.leading, 10)
+                .padding(.trailing, 8)
+                .frame(height: 26)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isRunning ? "Stop Running Tests (⌘.)" : (appState.isActiveTabExecutableTestFile ? "Run Active Test File (⌘⇧R)" : "Run All Tests (⌘R)"))
+
+            Rectangle()
+                .fill(Color.black.opacity(0.18))
+                .frame(width: 1, height: 15)
+
+            Button {
+                showingRunMenu.toggle()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(fg)
+                    .frame(width: 22, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Run Modes, Workers, Multiple, Debug & Options")
+            .popover(isPresented: $showingRunMenu, arrowEdge: .bottom) {
+                RunSplitMenuPopover(isPresented: $showingRunMenu)
+                    .environmentObject(appState)
+            }
+        }
+        .background(fill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .shadow(color: fill.opacity(0.22), radius: 5, y: 1.5)
+    }
+}
+
+// MARK: - Run Split Menu Popover (▶ Run ▾)
+
+private struct RunSplitMenuPopover: View {
+    @EnvironmentObject var appState: AppState
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                CeptraDropdownSectionHeader(title: "Run Modes")
+                if appState.isActiveTabExecutableTestFile {
+                    menuRow("Run Active Test File", icon: "play.circle", color: CeptraTheme.success, shortcut: "⌘⇧R") {
+                        appState.runActiveFile()
+                    }
+                }
+                menuRow("Run All Tests", icon: "play.fill", color: CeptraTheme.success, shortcut: "⌘R") {
+                    appState.run(mode: .runAll)
+                }
+                menuRow("Re-run Last Failed", icon: "arrow.counterclockwise.circle", color: CeptraTheme.warning) {
+                    appState.run(mode: .runLastFailed)
+                }
+                menuRow("Dry Run (Validate & List)", icon: "checklist", shortcut: "⌘⇧D") {
+                    appState.run(mode: .dryRun(relativePath: nil))
+                }
+
+                CeptraDropdownDivider()
+                CeptraDropdownSectionHeader(title: "Debug & Parallel")
+                menuRow(
+                    appState.isActiveTabExecutableTestFile ? "Debug Active Test File" : "Debug All Tests",
+                    icon: "ladybug.fill",
+                    color: CeptraTheme.accentWarm,
+                    shortcut: "⌘⇧B"
+                ) {
+                    if appState.isActiveTabExecutableTestFile {
+                        appState.debugActiveFile()
+                    } else {
+                        appState.debug(mode: .runAll)
+                    }
+                }
+                menuRow(
+                    "Run Workers (\(appState.runOptions.workerCount)× \(appState.runOptions.workerStrategy.rawValue))",
+                    icon: "cpu",
+                    color: CeptraTheme.cyan,
+                    shortcut: "⌘⇧W"
+                ) {
+                    appState.runWorkersWithCurrentOptions()
+                }
+                menuRow("Configure Workers…", icon: "slider.horizontal.3") {
+                    appState.presentParallelRunSheet(tab: .workers)
+                }
+                menuRow("Run Multiple — All Suites", icon: "square.stack.3d.up", color: CeptraTheme.success, shortcut: "⌘⇧M") {
+                    appState.run(mode: .runMultiple(suites: [], runAll: true))
+                }
+                if let suites = appState.workspace?.config.multipleSuites, !suites.isEmpty {
+                    ForEach(suites) { suite in
+                        menuRow("Multiple: \(suite.name)", icon: "play.square.stack", color: CeptraTheme.accent) {
+                            appState.run(mode: .runMultiple(suites: [suite.name], runAll: false))
+                        }
+                    }
+                }
+                menuRow("Configure Multiple Run…", icon: "square.stack.3d.up.fill") {
+                    appState.presentParallelRunSheet(tab: .multiple)
+                }
+
+                CeptraDropdownDivider()
+                CeptraDropdownSectionHeader(title: "Runtime & Console")
+
+                HStack(spacing: 8) {
+                    Text("Runtime")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                        .frame(width: 50, alignment: .leading)
+                    Picker("", selection: Binding(
+                        get: { appState.settings.jsRuntime },
+                        set: { appState.setJSRuntime($0) }
+                    )) {
+                        ForEach(JSRuntimeKind.allCases) { rt in
+                            Text(rt.shortName).tag(rt)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+
+                HStack(spacing: 8) {
+                    Text("Console")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                        .frame(width: 50, alignment: .leading)
+                    Picker("", selection: Binding(
+                        get: { appState.settings.consoleExecutionMode },
+                        set: { appState.setConsoleExecutionMode($0) }
+                    )) {
+                        Text("Built-in").tag(ConsoleExecutionMode.builtIn)
+                        Text(appState.activeTerminalDisplayName).tag(ConsoleExecutionMode.systemTerminal)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+
+                menuRow("Open Workspace in \(appState.activeTerminalDisplayName)", icon: "arrow.up.forward.app", color: CeptraTheme.cyan, shortcut: "⌘⇧T") {
+                    appState.openWorkspaceInSystemTerminal()
+                }
+
+                CeptraDropdownDivider()
+                CeptraDropdownSectionHeader(title: "Replay & Run Settings")
+
+                Toggle(isOn: Binding(
+                    get: { appState.settings.modulePreferences.autoOpenReplayOnRun },
+                    set: { appState.setAutoOpenReplayOnRun($0) }
+                )) {
+                    Text("Auto-open Replay on Run")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+
+                Toggle(isOn: Binding(
+                    get: { appState.runOptions.debugLaunchOptions.headedBrowser },
+                    set: {
+                        appState.runOptions.debugLaunchOptions.headedBrowser = $0
+                        appState.saveSettings()
+                    }
+                )) {
+                    Text("Headed Browser")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+
+                menuRow("CodeceptJS Run Options…", icon: "slider.horizontal.3", color: CeptraTheme.accent) {
+                    appState.showingRunOptionsPopover = true
+                }
+
+                CeptraDropdownDivider()
+                CeptraDropdownSectionHeader(title: "CodeceptJS CLI Tools")
+                menuRow("Check Environment (codeceptjs check)", icon: "stethoscope") {
+                    appState.run(mode: .checkEnvironment)
+                }
+                menuRow("Generate Type Defs (codeceptjs def)", icon: "curlybraces") {
+                    appState.run(mode: .generateDefinitions)
+                }
+                menuRow("List I.* Actions (codeceptjs list)", icon: "list.bullet.rectangle") {
+                    appState.run(mode: .listActions)
+                }
+            }
+            .padding(8)
+        }
+        .frame(width: 288)
+        .frame(maxHeight: 460)
+        .background(CeptraTheme.panelBG)
+    }
+
+    private func menuRow(_ title: String, icon: String, color: Color = CeptraTheme.textSecondary, shortcut: String? = nil, action: @escaping () -> Void) -> some View {
+        Button {
+            isPresented = false
+            action()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(color)
+                    .frame(width: 16)
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(CeptraTheme.textPrimary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                if let shortcut {
+                    Text(shortcut)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(CeptraTheme.textMuted)
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(appState.isRunning && title.hasPrefix("Run"))
+    }
+}
+
+// MARK: - ⊞ Tools & Modules Popover (Zero Dynamic Header Spawning)
+
+private struct ToolsControlPopover: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Tools & Modules")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(CeptraTheme.textPrimary)
+                        Text("Toggle any module — header stays clean")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(CeptraTheme.textMuted)
+                    }
+                    Spacer()
+                }
+                .padding(.bottom, 2)
+
+                VStack(spacing: 4) {
+                    moduleSwitchRow("Explorer Sidebar", subtitle: "Suites, Files & Pages", shortcut: "⌘B", isOn: Binding(
+                        get: { appState.isSidebarVisible },
+                        set: { _ in appState.toggleLeftSidebar() }
+                    ))
+                    moduleSwitchRow("Terminal & Logs", subtitle: "Streaming output, scripts & pause()", shortcut: "⌘J", isOn: Binding(
+                        get: { appState.isConsoleVisible },
+                        set: { _ in appState.toggleTerminal() }
+                    ))
+                    moduleSwitchRow("Replay", subtitle: "Visual, DOM, Network & Console player", shortcut: "⌘⌥T", isOn: Binding(
+                        get: { appState.isRightSidebarVisible && appState.activeRightTab == .replay },
+                        set: { _ in appState.toggleRightTab(.replay) }
+                    ))
+                    moduleSwitchRow("CodeceptUI Live", subtitle: "Embedded @codeceptjs/ui dashboard", shortcut: "⌘⌥U", isOn: Binding(
+                        get: { appState.isRightSidebarVisible && appState.activeRightTab == .codeceptUI },
+                        set: { _ in appState.toggleRightTab(.codeceptUI) }
+                    ))
+                    moduleSwitchRow("Flow Outline", subtitle: "Flat hooks & scenario pipeline", shortcut: "⌘⌥O", isOn: Binding(
+                        get: { appState.isRightSidebarVisible && appState.activeRightTab == .outline },
+                        set: { _ in appState.toggleRightTab(.outline) }
+                    ))
+                    moduleSwitchRow("Debug & Breakpoints", subtitle: "CDP inspector, locals & stepping", shortcut: "⌘⌥J", isOn: Binding(
+                        get: { appState.isRightSidebarVisible && appState.activeRightTab == .debug },
+                        set: { _ in appState.toggleRightTab(.debug) }
+                    ))
+                }
+
+                Divider().overlay(CeptraTheme.border)
+
+                VStack(spacing: 4) {
+                    moduleSwitchRow("Bottom Module Strip", subtitle: "28pt 1-click ON/OFF module bar", shortcut: nil, isOn: Binding(
+                        get: { appState.isStatusBarVisible },
+                        set: { appState.setStatusBarVisible($0) }
+                    ))
+                    moduleSwitchRow("Auto-open Replay on Run", subtitle: "Open Replay automatically when running", shortcut: nil, isOn: Binding(
+                        get: { appState.settings.modulePreferences.autoOpenReplayOnRun },
+                        set: { appState.setAutoOpenReplayOnRun($0) }
+                    ))
+                }
+
+                Divider().overlay(CeptraTheme.border)
+
+                // Quick Editor & Workspace Actions
+                VStack(spacing: 3) {
+                    quickActionRow("Command Palette…", icon: "magnifyingglass", shortcut: "⌘K") {
+                        appState.showingToolsPopover = false
+                        appState.showingCommandPalette = true
+                    }
+                    quickActionRow("Run History & Artifacts…", icon: "chart.bar.doc.horizontal") {
+                        appState.showingToolsPopover = false
+                        appState.showingReportsSheet = true
+                    }
+                    quickActionRow("CodeceptJS Run Options…", icon: "slider.horizontal.3") {
+                        appState.showingToolsPopover = false
+                        appState.showingRunOptionsPopover = true
+                    }
+                    if appState.activeTab != nil {
+                        HStack(spacing: 6) {
+                            Button {
+                                appState.triggerEditorFold(.collapseAll)
+                            } label: {
+                                Label("Fold All", systemImage: "rectangle.compress.vertical")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 5)
+                                    .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(CeptraTheme.border, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                appState.triggerEditorFold(.expandAll)
+                            } label: {
+                                Label("Unfold All", systemImage: "rectangle.expand.vertical")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 5)
+                                    .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(CeptraTheme.border, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.top, 2)
+
+                        Menu {
+                            ForEach(CodeSnippetItem.builtInSnippets) { snippet in
+                                Button(snippet.title) {
+                                    appState.insertSnippet(snippet)
+                                    appState.showingToolsPopover = false
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "curlybraces.square")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(CeptraTheme.textSecondary)
+                                Text("Insert CodeceptJS Snippet…")
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(CeptraTheme.textPrimary)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(CeptraTheme.textMuted)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Divider().overlay(CeptraTheme.border)
+
+                // Appearance Switcher
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("APPEARANCE")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .tracking(0.6)
+                        .foregroundStyle(CeptraTheme.textMuted)
+                    Picker("", selection: Binding(
+                        get: { appState.settings.appearance },
+                        set: {
+                            appState.settings.appearance = $0
+                            appState.saveSettings()
+                        }
+                    )) {
+                        Text("Dark").tag(WorkspaceAppearance.dark)
+                        Text("Light").tag(WorkspaceAppearance.light)
+                        Text("System").tag(WorkspaceAppearance.system)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+            }
+            .padding(14)
+        }
+        .frame(width: 320)
+        .frame(maxHeight: 540)
+        .background(CeptraTheme.panelBG)
+    }
+
+    private func moduleSwitchRow(_ title: String, subtitle: String, shortcut: String?, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CeptraTheme.textPrimary)
+                    if let shortcut {
+                        Text(shortcut)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(CeptraTheme.textMuted)
+                    }
+                }
+                Text(subtitle)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(CeptraTheme.textMuted)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 6)
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+    }
+
+    private func quickActionRow(_ title: String, icon: String, shortcut: String? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(CeptraTheme.textSecondary)
+                    .frame(width: 16)
+                Text(title)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(CeptraTheme.textPrimary)
+                Spacer()
+                if let shortcut {
+                    Text(shortcut)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(CeptraTheme.textMuted)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Slim 28pt Bottom 1-Click Module Dock & Balanced Status Strip
+
+private struct BottomModuleStatusStrip: View {
+    @EnvironmentObject var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        GeometryReader { geo in
+            let isCompact = geo.size.width < 1040
+
+            HStack(spacing: 10) {
+                // Left: 1-Click ON/OFF Module Pills
+                HStack(spacing: 3) {
+                    dockPill("Explorer", isOn: appState.isSidebarVisible) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleLeftSidebar()
+                        }
+                    }
+                    dockPill("Terminal", isOn: appState.isConsoleVisible) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleTerminal()
+                        }
+                    }
+                    dockPill("Replay", isOn: appState.isRightSidebarVisible && appState.activeRightTab == .replay) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleRightTab(.replay)
+                        }
+                    }
+                    dockPill("CodeceptUI", isOn: appState.isRightSidebarVisible && appState.activeRightTab == .codeceptUI) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleRightTab(.codeceptUI)
+                        }
+                    }
+                    if !isCompact {
+                        dockPill("Outline", isOn: appState.isRightSidebarVisible && appState.activeRightTab == .outline) {
+                            withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                                appState.toggleRightTab(.outline)
+                            }
+                        }
+                        dockPill("Debug", isOn: appState.debugPhase.isActive || (appState.isRightSidebarVisible && appState.activeRightTab == .debug)) {
+                            withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                                appState.toggleRightTab(.debug)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                // Right: ● Playwright | Ln X, Col Y · Replay ON · v1.4
+                HStack(spacing: 10) {
+                    if let ws = appState.workspace {
+                        CeptraGlassDropdown(arrowEdge: .top, minWidth: 240, maxWidth: 320) { _ in
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(CeptraTheme.success)
+                                    .frame(width: 6, height: 6)
+                                Text(appState.activeHelperDisplayName)
+                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(CeptraTheme.success)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        } content: {
+                            if !ws.discoveredConfigPaths.isEmpty {
+                                CeptraDropdownSectionHeader(title: "Active Config (-c)")
+                                ForEach(ws.discoveredConfigPaths, id: \.self) { path in
+                                    let isActive = path == ws.config.configFilePath
+                                    let label = displayPath(path, relativeTo: ws.rootURL)
+                                    CeptraDropdownItem(
+                                        title: label,
+                                        systemImage: "doc.text",
+                                        isSelected: isActive,
+                                        isMonospaced: true
+                                    ) {
+                                        appState.setCustomConfigFile(path: path)
+                                    }
+                                }
+                                CeptraDropdownDivider()
+                            }
+                            CeptraDropdownItem(title: "Choose Custom Config File…", systemImage: "folder", shortcut: "⌘⇧C") {
+                                appState.selectCustomConfigPanel()
+                            }
+                            if ws.config.configFilePath != nil {
+                                CeptraDropdownItem(title: "Open Active Config in Editor", systemImage: "square.and.pencil") {
+                                    appState.openActiveConfigFile()
+                                }
+                            }
+                            if ws.config.isCustomConfigOverride {
+                                CeptraDropdownDivider()
+                                CeptraDropdownItem(title: "Reset to Auto-Detect", systemImage: "arrow.counterclockwise", iconColor: CeptraTheme.accentWarm) {
+                                    appState.setCustomConfigFile(path: nil)
+                                }
+                            }
+                        }
+                        .fixedSize()
+                        .help("Active Helper: \(appState.activeHelperDisplayName) — Click to open or switch CodeceptJS config")
+                    }
+
+                    Rectangle()
+                        .fill(CeptraTheme.borderStrong)
+                        .frame(width: 1, height: 11)
+
+                    Text("Ln \(appState.cursorLine), Col \(appState.cursorColumn)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundStyle(CeptraTheme.textMuted)
+
+                    if !isCompact {
+                        Text(appState.settings.modulePreferences.autoOpenReplayOnRun ? "Replay ON" : "Replay OFF")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(appState.settings.modulePreferences.autoOpenReplayOnRun ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                    }
+
+                    Button {
+                        appState.showingUpdateSheet = true
+                        if case .idle = appState.updateState {
+                            Task { await appState.checkForUpdates(userInitiated: true) }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            if appState.updateState.hasActionableUpdate {
+                                Circle()
+                                    .fill(CeptraTheme.accentWarm)
+                                    .frame(width: 6, height: 6)
+                            }
+                            Text(appState.updateState.hasActionableUpdate ? "Update" : "v\(AppMetadata.currentVersionString)")
+                                .font(.system(size: 10.5, weight: appState.updateState.hasActionableUpdate ? .semibold : .regular, design: .monospaced))
+                                .foregroundStyle(appState.updateState.hasActionableUpdate ? CeptraTheme.accentWarm : CeptraTheme.textMuted)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Ceptra v\(AppMetadata.currentVersionString) — Check for Updates")
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(height: 28)
+        .overlay(alignment: .top) {
+            Rectangle().fill(CeptraTheme.border).frame(height: 1)
+        }
+    }
+
+    private func dockPill(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(isOn ? CeptraTheme.success : CeptraTheme.textMuted.opacity(0.6))
+                    .frame(width: 6, height: 6)
+                Text(title)
+                    .font(.system(size: 10.5, weight: isOn ? .medium : .regular))
+                    .foregroundStyle(isOn ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 7)
+            .frame(height: 20)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isOn ? CeptraTheme.hoverBG : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     private func displayPath(_ path: String, relativeTo root: URL) -> String {
         let stdPath = URL(fileURLWithPath: path).standardizedFileURL.path
         let stdRoot = root.standardizedFileURL.path
         let prefix = stdRoot.hasSuffix("/") ? stdRoot : stdRoot + "/"
-        if stdPath.hasPrefix(prefix) {
-            return String(stdPath.dropFirst(prefix.count))
-        }
-        return stdPath
+        return stdPath.hasPrefix(prefix) ? String(stdPath.dropFirst(prefix.count)) : stdPath
     }
 }
 
-// MARK: - Editor Tab Bar
+// MARK: - Clean In-Window Editor Tab Bar (Drag-to-Reorder · Zero Duplicate Toolbar Clutter)
 
 private struct TabWidthPreferenceKey: PreferenceKey {
     static var defaultValue: [String: CGFloat] = [:]
@@ -1053,27 +1236,24 @@ private struct EditorTabBar: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @Namespace private var activeTabNamespace
     @State private var hoveredTabPath: String?
     @State private var hoveredClosePath: String?
     @State private var tabWidths: [String: CGFloat] = [:]
 
-    // Direct-manipulation horizontal rail drag state
     @State private var draggingTabPath: String?
     @State private var dragOriginIndex: Int?
     @State private var dragTargetIndex: Int?
     @State private var dragTranslationX: CGFloat = 0
 
-    // Post-drop settle glide state (runs after atomic array commit)
     @State private var settlingTabPath: String?
     @State private var settlingOffsetX: CGFloat = 0
     @State private var settlingToken: UUID?
 
     private static let railCoordinateSpace = "EditorTabRail"
-    private static let tabSpacing: CGFloat = 3
-    private static let railHorizontalPadding: CGFloat = 4
+    private static let tabSpacing: CGFloat = 0
+    private static let railHorizontalPadding: CGFloat = 0
     private static let dragActivationDistance: CGFloat = 5
-    private static let fallbackTabWidth: CGFloat = 120
+    private static let fallbackTabWidth: CGFloat = 132
 
     private var hasNavigationHistory: Bool {
         appState.canNavigateBack || appState.canNavigateForward
@@ -1110,7 +1290,6 @@ private struct EditorTabBar: View {
         let currentIndexByPath = indexByPath
 
         HStack(spacing: 0) {
-            // Back / Forward import-navigation history buttons
             if hasNavigationHistory {
                 HStack(spacing: 2) {
                     Button {
@@ -1120,9 +1299,8 @@ private struct EditorTabBar: View {
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(appState.canNavigateBack ? CeptraTheme.textSecondary : CeptraTheme.textMuted.opacity(0.4))
                             .frame(width: 22, height: 24)
-                            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     }
-                    .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.92))
+                    .buttonStyle(.plain)
                     .disabled(!appState.canNavigateBack)
                     .help("Navigate Back (⌃-)")
 
@@ -1133,42 +1311,25 @@ private struct EditorTabBar: View {
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(appState.canNavigateForward ? CeptraTheme.textSecondary : CeptraTheme.textMuted.opacity(0.4))
                             .frame(width: 22, height: 24)
-                            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     }
-                    .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.92))
+                    .buttonStyle(.plain)
                     .disabled(!appState.canNavigateForward)
                     .help("Navigate Forward (⌃⇧-)")
                 }
-                .padding(.leading, 6)
-                .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
-
-                Divider()
-                    .frame(height: 16)
-                    .overlay(CeptraTheme.border)
-                    .padding(.horizontal, 4)
-                    .transition(.opacity)
+                .padding(.horizontal, 6)
+                .overlay(alignment: .trailing) {
+                    Rectangle().fill(CeptraTheme.border).frame(width: 1)
+                }
             }
 
             ScrollViewReader { scrollProxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     ZStack(alignment: .leading) {
-                        // Recessed target drop-slot indicator behind sliding tabs
                         if let slot = dropSlotIndicatorRect {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            Rectangle()
                                 .fill(CeptraTheme.accent.opacity(0.08))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .strokeBorder(
-                                            CeptraTheme.accent.opacity(0.32),
-                                            style: StrokeStyle(lineWidth: 1, dash: [3, 3])
-                                        )
-                                )
-                                .frame(width: slot.width, height: 26)
+                                .frame(width: slot.width, height: 36)
                                 .offset(x: slot.minX)
-                                .animation(
-                                    CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion),
-                                    value: dragTargetIndex
-                                )
                                 .allowsHitTesting(false)
                                 .zIndex(0)
                         }
@@ -1176,11 +1337,10 @@ private struct EditorTabBar: View {
                         HStack(spacing: Self.tabSpacing) {
                             ForEach(appState.openTabs) { tab in
                                 let tabIndex = currentIndexByPath[tab.filePath] ?? 0
-                                tabPill(for: tab, index: tabIndex)
+                                tabCell(for: tab, index: tabIndex)
                                     .id(tab.filePath)
                             }
                         }
-                        .padding(.horizontal, Self.railHorizontalPadding)
                     }
                     .coordinateSpace(name: Self.railCoordinateSpace)
                 }
@@ -1211,134 +1371,33 @@ private struct EditorTabBar: View {
             if let tab = appState.activeTab {
                 HStack(spacing: 8) {
                     if tab.isDirty {
-                        Button {
+                        Button("Save") {
                             appState.saveActiveFile()
-                        } label: {
-                            Text("Save")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(CeptraTheme.accentWarm)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
                         }
-                        .buttonStyle(
-                            CeptraGlassButtonStyle(
-                                cornerRadius: 6,
-                                tint: CeptraTheme.accentWarm,
-                                tintOpacity: 0.14,
-                                accentBorder: CeptraTheme.accentWarm
-                            )
-                        )
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(CeptraTheme.accentWarm)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(CeptraTheme.accentWarm.opacity(0.14), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .buttonStyle(.plain)
+                        .help("Save \(tab.name) (⌘S)")
                     }
 
-                    if appState.workspaceMode == .code || appState.workspaceMode == .split {
-                        HStack(spacing: 4) {
-                            Button {
-                                appState.triggerEditorFold(.collapseAll)
-                            } label: {
-                                Image(systemName: "rectangle.compress.vertical")
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(CeptraTheme.textSecondary)
-                                    .frame(width: 24, height: 22)
-                            }
-                            .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.48))
-                            .help("Collapse All Blocks (⌘⌥⇧[)")
-
-                            Button {
-                                appState.triggerEditorFold(.expandAll)
-                            } label: {
-                                Image(systemName: "rectangle.expand.vertical")
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(CeptraTheme.textSecondary)
-                                    .frame(width: 24, height: 22)
-                            }
-                            .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 6, tint: CeptraTheme.panelBG, tintOpacity: 0.48))
-                            .help("Expand All Blocks (⌘⌥⇧])")
-                        }
-                    }
-
-                    if tab.isExecutableTestFile || tab.language == "javascript" || tab.language == "typescript" {
-                        CeptraGlassDropdown(minWidth: 260, maxWidth: 340) { isOpen in
-                            CeptraMenuPillLabel(
-                                title: "Snippet",
-                                titleFont: .system(size: 11, weight: .medium),
-                                titleColor: CeptraTheme.textSecondary,
-                                horizontalPadding: 8,
-                                verticalPadding: 3,
-                                cornerRadius: 6,
-                                isOpen: isOpen
-                            ) {
-                                Image(systemName: "curlybraces.square")
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(CeptraTheme.textSecondary)
-                            }
-                        } content: {
-                            CeptraDropdownSectionHeader(title: "Insert Code Snippet")
-                            ForEach(CodeSnippetItem.builtInSnippets) { snippet in
-                                CeptraDropdownItem(
-                                    title: snippet.title,
-                                    subtitle: snippet.subtitle,
-                                    systemImage: "curlybraces"
-                                ) {
-                                    appState.insertSnippet(snippet)
-                                }
-                            }
-                        }
-                        .fixedSize()
-                        .help("Insert CodeceptJS Snippet")
-                        .accessibilityLabel("Insert Code Snippet")
-                    }
-
-                    // Show execution button ONLY for CodeceptJS test suites and Gherkin feature files
-                    if appState.isActiveTabExecutableTestFile {
-                        Button {
-                            appState.debugActiveFile()
-                        } label: {
-                            Image(systemName: "ladybug.fill")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(CeptraTheme.accentWarm)
-                                .frame(width: 24, height: 22)
-                        }
-                        .buttonStyle(
-                            CeptraGlassButtonStyle(
-                                cornerRadius: 6,
-                                tint: CeptraTheme.accentWarm,
-                                tintOpacity: 0.14,
-                                accentBorder: CeptraTheme.accentWarm
-                            )
-                        )
-                        .disabled(appState.isRunning)
-                        .opacity(appState.isRunning ? 0.5 : 1)
-                        .help("Debug Current Test File (⌘⇧B)")
-
-                        Button {
-                            appState.runActiveFile()
-                        } label: {
-                            Label("Run Test File", systemImage: "play.fill")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(CeptraTheme.success)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                        }
-                        .buttonStyle(
-                            CeptraGlassButtonStyle(
-                                cornerRadius: 6,
-                                tint: CeptraTheme.success,
-                                tintOpacity: 0.12,
-                                accentBorder: CeptraTheme.success
-                            )
-                        )
-                        .disabled(appState.isRunning)
-                        .opacity(appState.isRunning ? 0.5 : 1)
-                        .help("Run \(tab.name) (⌘⇧R)")
-                    }
+                    Text(tab.relativePath)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(CeptraTheme.textMuted)
+                        .lineLimit(1)
+                        .truncationMode(.head)
                 }
-                .padding(.trailing, 10)
+                .padding(.trailing, 12)
             }
         }
-        .frame(height: 34)
-        .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.68, bottomHairline: true)
+        .frame(height: 36)
+        .background(CeptraTheme.sidebarBG)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(CeptraTheme.border).frame(height: 1)
+        }
         .modifier(TabDragPointerModifier(isDragging: draggingTabPath != nil))
-        .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: hasNavigationHistory)
         .onChange(of: appState.openTabs.map(\.filePath)) { _, newPaths in
             if draggingTabPath != nil {
                 resetDragState()
@@ -1357,7 +1416,7 @@ private struct EditorTabBar: View {
     }
 
     @ViewBuilder
-    private func tabPill(for tab: OpenDocumentTab, index: Int) -> some View {
+    private func tabCell(for tab: OpenDocumentTab, index: Int) -> some View {
         let isActive = tab.filePath == appState.activeTabPath
         let isDragged = draggingTabPath == tab.filePath
         let isSettling = settlingTabPath == tab.filePath
@@ -1369,83 +1428,46 @@ private struct EditorTabBar: View {
             guard let draggingPath = draggingTabPath,
                   let originIndex = dragOriginIndex,
                   let targetIndex = dragTargetIndex,
-                  !isDragged else {
-                return 0
-            }
+                  !isDragged else { return 0 }
             let draggedWidth = Double(tabWidths[draggingPath] ?? Self.fallbackTabWidth)
-            return CGFloat(
-                TabReorderEngine.displacement(
-                    forOriginalIndex: index,
-                    originIndex: originIndex,
-                    targetIndex: targetIndex,
-                    draggedWidth: draggedWidth,
-                    spacing: Double(Self.tabSpacing)
-                )
-            )
+            return CGFloat(TabReorderEngine.displacement(
+                forOriginalIndex: index,
+                originIndex: originIndex,
+                targetIndex: targetIndex,
+                draggedWidth: draggedWidth,
+                spacing: Double(Self.tabSpacing)
+            ))
         }()
 
-        let horizontalOffset: CGFloat = {
-            if isDragged {
-                return dragTranslationX
-            }
-            if isSettling {
-                return settlingOffsetX
-            }
-            return siblingDisplacement
-        }()
+        let horizontalOffset: CGFloat = isDragged ? dragTranslationX : (isSettling ? settlingOffsetX : siblingDisplacement)
+        let tabZIndex: Double = isDragged ? 100 : (isSettling ? 50 : (isActive ? 10 : 1))
+        let tagInfo = shortTag(for: tab)
 
-        let tabZIndex: Double = {
-            if isDragged { return 100 }
-            if isSettling { return 50 }
-            if isActive { return 10 }
-            return 1
-        }()
-
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: tab.category.symbolName)
-                    .font(.system(size: 10))
-                    .foregroundStyle(tab.isExecutableTestFile ? CeptraTheme.accent : CeptraTheme.textMuted)
+                Text(tagInfo.label)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(tagInfo.color)
                 Text(tab.name)
-                    .font(.system(size: 11.5, weight: (isActive || isDragged) ? .semibold : .regular))
+                    .font(.system(size: 11.5, weight: (isActive || isDragged) ? .medium : .regular))
                     .foregroundStyle(
                         (isActive || isDragged)
                             ? CeptraTheme.textPrimary
-                            : (isHovered ? CeptraTheme.textPrimary.opacity(0.88) : CeptraTheme.textSecondary)
+                            : (isHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
                     )
                     .lineLimit(1)
                 if tab.isDirty {
                     Circle()
                         .fill(CeptraTheme.accentWarm)
-                        .frame(width: 6, height: 6)
+                        .frame(width: 5.5, height: 5.5)
                 }
             }
-            .padding(.leading, 9)
-            .padding(.trailing, 4)
-            .padding(.vertical, 6)
+            .padding(.leading, 12)
+            .padding(.trailing, 2)
+            .frame(height: 36)
             .contentShape(Rectangle())
             .help(appState.openTabs.count > 1 ? "\(tab.relativePath) — Drag to reorder" : tab.relativePath)
             .gesture(tabDragGesture(for: tab, index: index))
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(tab.isDirty ? "\(tab.name), unsaved changes" : tab.name)
-            .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : [.isButton])
-            .accessibilityAction {
-                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
-                    appState.switchTab(to: tab.filePath)
-                }
-            }
-            .accessibilityAction(named: Text("Move Tab Left")) {
-                guard index > 0 else { return }
-                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
-                    _ = appState.moveTab(filePath: tab.filePath, toIndex: index - 1)
-                }
-            }
-            .accessibilityAction(named: Text("Move Tab Right")) {
-                guard index < appState.openTabs.count - 1 else { return }
-                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
-                    _ = appState.moveTab(filePath: tab.filePath, toIndex: index + 1)
-                }
-            }
 
             Button {
                 withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
@@ -1453,93 +1475,49 @@ private struct EditorTabBar: View {
                 }
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 8.5, weight: .bold))
+                    .font(.system(size: 8.5, weight: .semibold))
                     .foregroundStyle(isCloseHovered ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
+                    .opacity(isActive || isHovered || isCloseHovered ? 1.0 : 0.45)
                     .frame(width: 18, height: 18)
-                    .background(
-                        isCloseHovered ? Color.white.opacity(0.10) : Color.clear,
-                        in: Circle()
-                    )
-                    .contentShape(Circle())
+                    .background(isCloseHovered ? CeptraTheme.hoverBG : Color.clear, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
             }
-            .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.90))
-            .padding(.trailing, 5)
+            .buttonStyle(.plain)
+            .padding(.trailing, 8)
             .help("Close Tab (⌘W)")
-            .accessibilityLabel("Close \(tab.name)")
             .onHover { hovering in
-                withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
-                    hoveredClosePath = hovering ? tab.filePath : (hoveredClosePath == tab.filePath ? nil : hoveredClosePath)
-                }
+                hoveredClosePath = hovering ? tab.filePath : (hoveredClosePath == tab.filePath ? nil : hoveredClosePath)
             }
         }
-        .background {
-            if isActive {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(CeptraTheme.canvasBG.opacity(isDragged ? 0.98 : 0.92))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(
-                                isDragged
-                                    ? CeptraTheme.accentSpecularRim(CeptraTheme.accent)
-                                    : CeptraTheme.specularRimGradient,
-                                lineWidth: isDragged ? 0.9 : 0.7
-                            )
-                    )
-                    .matchedGeometryEffect(id: "active-editor-tab-bg", in: activeTabNamespace)
-            } else if isDragged {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(CeptraTheme.elevatedBG.opacity(0.96))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(CeptraTheme.accentSpecularRim(CeptraTheme.accent), lineWidth: 0.9)
-                    )
-            } else if isHovered {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(CeptraTheme.glassHoverOverlay)
-            }
-        }
-        .overlay(alignment: .bottom) {
-            if isActive {
-                Capsule()
-                    .fill(CeptraTheme.accent)
-                    .frame(height: 2)
-                    .padding(.horizontal, 8)
-                    .shadow(color: CeptraTheme.accent.opacity(0.65), radius: 4, y: 0)
-                    .matchedGeometryEffect(id: "active-editor-tab-indicator", in: activeTabNamespace)
-            }
+        .background(isActive ? CeptraTheme.canvasBG : (isHovered ? CeptraTheme.hoverBG : Color.clear))
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(CeptraTheme.border).frame(width: 1)
         }
         .background(
             GeometryReader { proxy in
-                Color.clear.preference(
-                    key: TabWidthPreferenceKey.self,
-                    value: [tab.filePath: proxy.size.width]
-                )
+                Color.clear.preference(key: TabWidthPreferenceKey.self, value: [tab.filePath: proxy.size.width])
             }
         )
-        .scaleEffect(isDragged ? (reduceMotion ? 1.0 : 1.02) : 1.0)
-        .shadow(
-            color: isDragged ? Color.black.opacity(0.45) : .clear,
-            radius: isDragged ? 8 : 0,
-            y: isDragged ? 3 : 0
-        )
-        .animation(
-            CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion),
-            value: isDragged
-        )
-        .padding(.vertical, 2)
         .offset(x: horizontalOffset)
         .zIndex(tabZIndex)
         .animation(
-            isAnyDragging && !isDragged
-                ? CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)
-                : nil,
+            isAnyDragging && !isDragged ? CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion) : nil,
             value: siblingDisplacement
         )
         .onHover { hovering in
             guard draggingTabPath == nil else { return }
-            withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
-                hoveredTabPath = hovering ? tab.filePath : (hoveredTabPath == tab.filePath ? nil : hoveredTabPath)
-            }
+            hoveredTabPath = hovering ? tab.filePath : (hoveredTabPath == tab.filePath ? nil : hoveredTabPath)
+        }
+    }
+
+    private func shortTag(for tab: OpenDocumentTab) -> (label: String, color: Color) {
+        switch tab.category {
+        case .pageObject: return ("PO", CeptraTheme.violet)
+        case .gherkinFeature: return ("BDD", CeptraTheme.violet)
+        case .config: return ("CFG", CeptraTheme.accentWarm)
+        case .helper: return ("HLP", CeptraTheme.cyan)
+        default:
+            let ext = URL(fileURLWithPath: tab.filePath).pathExtension.uppercased()
+            return (ext.isEmpty ? "TXT" : String(ext.prefix(3)), CeptraTheme.accent)
         }
     }
 
@@ -1547,15 +1525,10 @@ private struct EditorTabBar: View {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.railCoordinateSpace))
             .onChanged { value in
                 let dx = value.location.x - value.startLocation.x
-
-                // Begin drag once horizontal movement exceeds threshold and at least 2 tabs exist.
                 if draggingTabPath != tab.filePath {
                     guard draggingTabPath == nil,
                           appState.openTabs.count > 1,
-                          abs(dx) >= Self.dragActivationDistance else {
-                        return
-                    }
-                    // Cancel any in-flight settle glide before starting a fresh drag.
+                          abs(dx) >= Self.dragActivationDistance else { return }
                     settlingToken = nil
                     settlingTabPath = nil
                     settlingOffsetX = 0
@@ -1566,11 +1539,7 @@ private struct EditorTabBar: View {
                     dragTargetIndex = index
                 }
 
-                guard let originIndex = dragOriginIndex,
-                      let currentTarget = dragTargetIndex else {
-                    return
-                }
-
+                guard let originIndex = dragOriginIndex, let currentTarget = dragTargetIndex else { return }
                 let widths = orderedTabWidths
                 let clampedX = TabReorderEngine.clampedTranslation(
                     rawTranslation: Double(dx),
@@ -1634,8 +1603,6 @@ private struct EditorTabBar: View {
         )
         let remainingDelta = CGFloat(currentVisualMinX - restingMinX)
 
-        // Atomically commit the new order and hand off visual continuity to `settlingOffsetX`
-        // with animations disabled so siblings snap into their new layout slots at 0 visual delta.
         var tx = Transaction()
         tx.disablesAnimations = true
         withTransaction(tx) {
@@ -1751,7 +1718,7 @@ private struct RunOptionsPopover: View {
                 Toggle("Enable AI Assistant (--ai)", isOn: $appState.runOptions.aiEnabled)
                 Toggle("Bail on First Failure (--bail)", isOn: $appState.runOptions.bailOnFail)
                 Toggle("Disable Timeouts (--no-timeouts)", isOn: $appState.runOptions.noTimeouts)
-                Toggle("Capture Time-Travel Trace (DOM, Network, Shots)", isOn: $appState.runOptions.timeTravelTrace)
+                Toggle("Capture Replay Trace (DOM, Network, Shots)", isOn: $appState.runOptions.timeTravelTrace)
                     .disabled(appState.isSystemConsoleMode)
                 Toggle(
                     appState.settings.jsRuntime == .bun
@@ -1901,7 +1868,7 @@ private struct RunOptionsPopover: View {
         }
         .padding(16)
         .frame(width: 340)
-        .presentationBackground(.ultraThinMaterial)
+        .background(CeptraTheme.panelBG)
         .onDisappear { appState.saveSettings() }
     }
 }
@@ -1924,7 +1891,7 @@ private struct ToastBanner: View {
         .ceptraGlassSurface(
             cornerRadius: 999,
             tint: CeptraTheme.elevatedBG,
-            tintOpacity: 0.68,
+            tintOpacity: 0.78,
             accentBorder: isError ? CeptraTheme.failure : CeptraTheme.success,
             elevatedShadow: true
         )

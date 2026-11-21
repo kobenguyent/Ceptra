@@ -9,6 +9,8 @@ import SwiftUI
 /// - Symlink-like `⌘+Click` & `F12` navigation across imports, `require()`, config paths, `include` objects, and custom steps
 /// - Sibling line-number & fold gutter, high-contrast syntax highlighting, and Find & Replace (`⌘F`)
 struct CodeEditorView: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
+
     var documentID: String
     @Binding var text: String
     var language: String
@@ -22,9 +24,12 @@ struct CodeEditorView: NSViewRepresentable {
     var onNavigate: (NavigationTarget, Int) -> Void
     var breakpointsByLine: [Int: DebugBreakpoint] = [:]
     var pausedLine: Int? = nil
+    var scenariosByLine: [Int: (title: String, status: ExecutionStatus)] = [:]
     var onToggleBreakpoint: ((Int) -> Void)? = nil
     var onEditBreakpoint: ((DebugBreakpoint) -> Void)? = nil
     var onRemoveBreakpoint: ((UUID) -> Void)? = nil
+    var onRunScenario: ((String) -> Void)? = nil
+    var onCursorChanged: ((Int, Int) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -36,6 +41,7 @@ struct CodeEditorView: NSViewRepresentable {
             text: text,
             language: language,
             fontSize: fontSize,
+            isDarkMode: colorScheme == .dark,
             delegate: context.coordinator
         )
         context.coordinator.container = container
@@ -50,6 +56,7 @@ struct CodeEditorView: NSViewRepresentable {
             breakpointsByLine: breakpointsByLine,
             pausedLine: pausedLine
         )
+        container.setScenarioMarkers(scenariosByLine)
         if let pausedLine {
             container.scrollToLine(pausedLine)
         }
@@ -60,6 +67,12 @@ struct CodeEditorView: NSViewRepresentable {
         let coord = context.coordinator
         coord.parent = self
         let textView = container.textView
+
+        let isDark = colorScheme == .dark
+        let themeChanged = container.isDarkMode != isDark
+        if themeChanged {
+            container.applyTheme(isDark: isDark)
+        }
 
         let documentChanged = coord.currentDocumentID != documentID
         let languageChanged = textView.editorLanguage != language
@@ -132,13 +145,15 @@ struct CodeEditorView: NSViewRepresentable {
             textView.setSelectedRange(NSRange(location: safeLoc, length: 0))
             container.updateGutter()
             coord.isProgrammaticUpdate = false
-        } else if languageChanged || fontChanged {
+        } else if languageChanged || fontChanged || themeChanged {
             let prevCollapsed = container.collapsedStartLines
             textView.restyleAllText()
             container.refreshFolds(restoringCollapsedStartLines: prevCollapsed)
             container.relayoutDocument()
             container.updateGutter()
         }
+
+        container.setScenarioMarkers(scenariosByLine)
 
         if let targetLine = jumpToLine {
             container.scrollToLine(targetLine)
@@ -280,6 +295,10 @@ struct CodeEditorView: NSViewRepresentable {
             container.gutterView.onRemoveBreakpoint = { [weak self] id in
                 self?.parent.onRemoveBreakpoint?(id)
             }
+
+            container.gutterView.onRunScenario = { [weak self] scenarioTitle in
+                self?.parent.onRunScenario?(scenarioTitle)
+            }
         }
 
         func observe(container: CeptraEditorContainerView) {
@@ -344,6 +363,12 @@ struct CodeEditorView: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             container?.gutterView.needsDisplay = true
             container?.textView.needsDisplay = true
+            if let tv = container?.textView, let onCursorChanged = parent.onCursorChanged {
+                let pos = tv.currentLineAndColumn()
+                DispatchQueue.main.async {
+                    onCursorChanged(pos.line, pos.column)
+                }
+            }
             if !isProgrammaticUpdate && completionController.isVisible {
                 refreshCompletions(forceShow: false)
             }
@@ -580,12 +605,13 @@ final class CeptraEditorContainerView: NSView {
     var hasCompletedInitialLayout = false
     var pendingInitialScrollOrigin: CGPoint? = .zero
     var pendingInitialJumpLine: Int? = nil
+    private(set) var isDarkMode: Bool
 
-    init(documentID: String, text: String, language: String, fontSize: CGFloat, delegate: NSTextViewDelegate) {
+    init(documentID: String, text: String, language: String, fontSize: CGFloat, isDarkMode: Bool = true, delegate: NSTextViewDelegate) {
+        self.isDarkMode = isDarkMode
         self.scrollView = NSScrollView()
         let clipView = FlippedClipView()
         clipView.drawsBackground = true
-        clipView.backgroundColor = NSColor(red: 0.075, green: 0.082, blue: 0.102, alpha: 1.0)
         self.scrollView.contentView = clipView
 
         self.lineLayoutDelegate.fontSize = fontSize
@@ -603,10 +629,8 @@ final class CeptraEditorContainerView: NSView {
 
         super.init(frame: .zero)
 
-        appearance = NSAppearance(named: .darkAqua)
         clipsToBounds = true
         wantsLayer = true
-        layer?.backgroundColor = NSColor(red: 0.075, green: 0.082, blue: 0.102, alpha: 1.0).cgColor
 
         textView.delegate = delegate
         textView.currentFileURL = URL(fileURLWithPath: documentID)
@@ -617,10 +641,12 @@ final class CeptraEditorContainerView: NSView {
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
+        scrollView.scrollerStyle = .overlay
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
-        scrollView.backgroundColor = NSColor(red: 0.075, green: 0.082, blue: 0.102, alpha: 1.0)
         scrollView.borderType = .noBorder
+
+        applyTheme(isDark: isDarkMode)
 
         textView.string = text
         textView.restyleAllText()
@@ -633,6 +659,35 @@ final class CeptraEditorContainerView: NSView {
         relayoutDocument()
         scrollToClampedOrigin(.zero)
         updateGutter()
+    }
+
+    func applyTheme(isDark: Bool) {
+        isDarkMode = isDark
+        let bg = isDark
+            ? NSColor(srgbRed: 0.067, green: 0.078, blue: 0.102, alpha: 1.0)
+            : NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
+        appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        layer?.backgroundColor = bg.cgColor
+        scrollView.backgroundColor = bg
+        scrollView.contentView.backgroundColor = bg
+        textView.isDarkMode = isDark
+        textView.backgroundColor = bg
+        textView.insertionPointColor = isDark
+            ? NSColor(srgbRed: 0.369, green: 0.557, blue: 1.0, alpha: 1.0)
+            : NSColor(srgbRed: 0.145, green: 0.388, blue: 0.922, alpha: 1.0)
+        textView.selectedTextAttributes = [
+            .backgroundColor: isDark
+                ? NSColor(srgbRed: 0.25, green: 0.38, blue: 0.68, alpha: 0.42)
+                : NSColor(srgbRed: 0.145, green: 0.388, blue: 0.922, alpha: 0.18)
+        ]
+        gutterView.isDarkMode = isDark
+        gutterView.needsDisplay = true
+        textView.needsDisplay = true
+    }
+
+    func setScenarioMarkers(_ markers: [Int: (title: String, status: ExecutionStatus)]) {
+        gutterView.scenariosByLine = markers
+        gutterView.needsDisplay = true
     }
 
     required init?(coder: NSCoder) {
@@ -958,17 +1013,26 @@ final class LineNumberGutterView: NSView {
     weak var scrollView: NSScrollView?
 
     var documentFilePath: String = ""
+    var isDarkMode: Bool = true
     var lineIndex = LineIndexTable(text: "")
     var regionsByStartLine: [Int: FoldableRegion] = [:]
     var collapsedStartLines: Set<Int> = []
     var breakpointsByLine: [Int: DebugBreakpoint] = [:]
     var pausedLine: Int? = nil
+    var scenariosByLine: [Int: (title: String, status: ExecutionStatus)] = [:]
 
     var onToggleFold: ((Int) -> Void)?
     var onSelectLine: ((Int) -> Void)?
     var onToggleBreakpoint: ((Int) -> Void)?
     var onEditBreakpoint: ((DebugBreakpoint) -> Void)?
     var onRemoveBreakpoint: ((UUID) -> Void)?
+    var onRunScenario: ((String) -> Void)?
+
+    private struct ScenarioRunHitItem {
+        let lineNumber: Int
+        let title: String
+        let buttonRect: NSRect
+    }
 
     private struct FoldHitItem {
         let region: FoldableRegion
@@ -984,9 +1048,11 @@ final class LineNumberGutterView: NSView {
 
     private var visibleFoldItems: [FoldHitItem] = []
     private var visibleLineItems: [LineHitItem] = []
+    private var visibleScenarioItems: [ScenarioRunHitItem] = []
     private var isMouseInside = false
     private var hoveredFoldLine: Int? = nil
     private var hoveredBreakpointLine: Int? = nil
+    private var hoveredScenarioLine: Int? = nil
 
     private let breakpointMarginWidth: CGFloat = 14
     private let foldColumnWidth: CGFloat = 18
@@ -1035,6 +1101,7 @@ final class LineNumberGutterView: NSView {
         isMouseInside = false
         hoveredFoldLine = nil
         hoveredBreakpointLine = nil
+        hoveredScenarioLine = nil
         toolTip = nil
         NSCursor.arrow.set()
         needsDisplay = true
@@ -1042,6 +1109,11 @@ final class LineNumberGutterView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let pt = convert(event.locationInWindow, from: nil)
+
+        if let scHit = visibleScenarioItems.first(where: { $0.buttonRect.contains(pt) }) {
+            onRunScenario?(scHit.title)
+            return
+        }
 
         if let foldHit = visibleFoldItems.first(where: { $0.chevronRect.contains(pt) }) {
             onToggleFold?(foldHit.region.startLine)
@@ -1243,10 +1315,21 @@ final class LineNumberGutterView: NSView {
 
     private func updateHover(atWindowPoint windowPoint: NSPoint) {
         let pt = convert(windowPoint, from: nil)
+        if let scHit = visibleScenarioItems.first(where: { $0.buttonRect.contains(pt) }) {
+            let changed = hoveredScenarioLine != scHit.lineNumber || hoveredFoldLine != nil || hoveredBreakpointLine != nil
+            hoveredScenarioLine = scHit.lineNumber
+            hoveredFoldLine = nil
+            hoveredBreakpointLine = nil
+            if changed { needsDisplay = true }
+            toolTip = "Run scenario \"\(scHit.title)\""
+            NSCursor.pointingHand.set()
+            return
+        }
         if let hit = visibleFoldItems.first(where: { $0.chevronRect.contains(pt) }) {
-            let changed = hoveredFoldLine != hit.region.startLine || hoveredBreakpointLine != nil
+            let changed = hoveredFoldLine != hit.region.startLine || hoveredBreakpointLine != nil || hoveredScenarioLine != nil
             hoveredFoldLine = hit.region.startLine
             hoveredBreakpointLine = nil
+            hoveredScenarioLine = nil
             if changed {
                 needsDisplay = true
             }
@@ -1293,11 +1376,18 @@ final class LineNumberGutterView: NSView {
 
         visibleFoldItems.removeAll(keepingCapacity: true)
         visibleLineItems.removeAll(keepingCapacity: true)
+        visibleScenarioItems.removeAll(keepingCapacity: true)
 
-        NSColor(red: 0.088, green: 0.096, blue: 0.120, alpha: 1.0).setFill()
+        let gutterBG = isDarkMode
+            ? NSColor(srgbRed: 0.082, green: 0.094, blue: 0.125, alpha: 1.0)
+            : NSColor(srgbRed: 0.980, green: 0.980, blue: 0.984, alpha: 1.0)
+        gutterBG.setFill()
         dirtyRect.fill()
 
-        NSColor.white.withAlphaComponent(0.07).setFill()
+        let gutterBorder = isDarkMode
+            ? NSColor.white.withAlphaComponent(0.075)
+            : NSColor(srgbRed: 0.059, green: 0.090, blue: 0.165, alpha: 0.085)
+        gutterBorder.setFill()
         NSRect(x: bounds.width - 1, y: dirtyRect.minY, width: 1, height: dirtyRect.height).fill()
 
         guard let textView,
@@ -1325,15 +1415,21 @@ final class LineNumberGutterView: NSView {
 
         let normalAttrs: [NSAttributedString.Key: Any] = [
             .font: normalFont,
-            .foregroundColor: NSColor(red: 0.52, green: 0.57, blue: 0.67, alpha: 0.92)
+            .foregroundColor: isDarkMode
+                ? NSColor(srgbRed: 0.44, green: 0.49, blue: 0.59, alpha: 0.92)
+                : NSColor(srgbRed: 0.54, green: 0.58, blue: 0.65, alpha: 0.92)
         ]
         let activeAttrs: [NSAttributedString.Key: Any] = [
             .font: activeFont,
-            .foregroundColor: NSColor(red: 0.88, green: 0.93, blue: 1.0, alpha: 1.0)
+            .foregroundColor: isDarkMode
+                ? NSColor(srgbRed: 0.92, green: 0.95, blue: 1.0, alpha: 1.0)
+                : NSColor(srgbRed: 0.10, green: 0.13, blue: 0.18, alpha: 1.0)
         ]
         let pausedAttrs: [NSAttributedString.Key: Any] = [
             .font: activeFont,
-            .foregroundColor: NSColor(red: 1.0, green: 0.88, blue: 0.56, alpha: 1.0)
+            .foregroundColor: isDarkMode
+                ? NSColor(srgbRed: 1.0, green: 0.88, blue: 0.56, alpha: 1.0)
+                : NSColor(srgbRed: 0.72, green: 0.42, blue: 0.02, alpha: 1.0)
         ]
 
         let numberRightEdge = bounds.width - foldColumnWidth - 3
@@ -1365,6 +1461,32 @@ final class LineNumberGutterView: NSView {
             let breakpoint = breakpointsByLine[lineNumber]
             if let breakpoint {
                 drawBreakpoint(breakpoint, in: marginRect)
+            } else if let scenarioInfo = scenariosByLine[lineNumber], !isPaused {
+                let btnSize: CGFloat = 14
+                let btnRect = NSRect(
+                    x: marginRect.midX - btnSize * 0.5 + 1,
+                    y: marginRect.midY - btnSize * 0.5,
+                    width: btnSize,
+                    height: btnSize
+                )
+                visibleScenarioItems.append(ScenarioRunHitItem(lineNumber: lineNumber, title: scenarioInfo.title, buttonRect: btnRect))
+                let isFailed = scenarioInfo.status == .failed
+                let isHov = hoveredScenarioLine == lineNumber
+                let baseTint = isFailed
+                    ? NSColor(srgbRed: 0.949, green: 0.400, blue: 0.439, alpha: 1.0)
+                    : NSColor(srgbRed: 0.188, green: 0.816, blue: 0.541, alpha: 1.0)
+                baseTint.withAlphaComponent(isHov ? 0.30 : 0.16).setFill()
+                NSBezierPath(ovalIn: btnRect).fill()
+
+                let tri = NSBezierPath()
+                let cx = btnRect.midX + 0.6
+                let cy = btnRect.midY
+                tri.move(to: NSPoint(x: cx - 2.3, y: cy - 3.0))
+                tri.line(to: NSPoint(x: cx + 3.0, y: cy))
+                tri.line(to: NSPoint(x: cx - 2.3, y: cy + 3.0))
+                tri.close()
+                baseTint.setFill()
+                tri.fill()
             } else if hoveredBreakpointLine == lineNumber && !isPaused {
                 drawBreakpointHoverPreview(in: marginRect)
             }
@@ -1658,11 +1780,21 @@ final class CeptraCodeTextView: NSTextView {
         addTrackingArea(area)
     }
 
+    var isDarkMode: Bool = true
+
     func currentLineNumber() -> Int {
+        currentLineAndColumn().line
+    }
+
+    func currentLineAndColumn() -> (line: Int, column: Int) {
         let ns = string as NSString
         let loc = min(selectedRange().location, ns.length)
-        guard loc > 0 else { return 1 }
-        return ns.substring(to: loc).components(separatedBy: "\n").count
+        guard loc > 0 else { return (1, 1) }
+        let prefix = ns.substring(to: loc)
+        let comps = prefix.components(separatedBy: "\n")
+        let line = comps.count
+        let col = (comps.last?.count ?? 0) + 1
+        return (line, col)
     }
 
     override func drawBackground(in rect: NSRect) {
@@ -1981,14 +2113,30 @@ final class CeptraCodeTextView: NSTextView {
             paragraph.maximumLineHeight = m.lineHeight
         }
 
-        let baseColor = NSColor(red: 0.89, green: 0.91, blue: 0.96, alpha: 1.0)
-        let keywordColor = NSColor(red: 0.76, green: 0.56, blue: 0.98, alpha: 1.0)
-        let dslColor = NSColor(red: 0.34, green: 0.82, blue: 0.96, alpha: 1.0)
-        let actorColor = NSColor(red: 0.26, green: 0.86, blue: 0.62, alpha: 1.0)
-        let stringColor = NSColor(red: 0.98, green: 0.76, blue: 0.42, alpha: 1.0)
-        let numberColor = NSColor(red: 0.96, green: 0.56, blue: 0.48, alpha: 1.0)
-        let tagColor = NSColor(red: 0.98, green: 0.50, blue: 0.72, alpha: 1.0)
-        let commentColor = NSColor(red: 0.45, green: 0.50, blue: 0.58, alpha: 1.0)
+        let baseColor = isDarkMode
+            ? NSColor(srgbRed: 0.91, green: 0.93, blue: 0.97, alpha: 1.0)
+            : NSColor(srgbRed: 0.08, green: 0.10, blue: 0.14, alpha: 1.0)
+        let keywordColor = isDarkMode
+            ? NSColor(srgbRed: 0.76, green: 0.56, blue: 0.98, alpha: 1.0)
+            : NSColor(srgbRed: 0.486, green: 0.227, blue: 0.929, alpha: 1.0)
+        let dslColor = isDarkMode
+            ? NSColor(srgbRed: 0.34, green: 0.82, blue: 0.96, alpha: 1.0)
+            : NSColor(srgbRed: 0.145, green: 0.388, blue: 0.922, alpha: 1.0)
+        let actorColor = isDarkMode
+            ? NSColor(srgbRed: 0.26, green: 0.86, blue: 0.62, alpha: 1.0)
+            : NSColor(srgbRed: 0.008, green: 0.518, blue: 0.780, alpha: 1.0)
+        let stringColor = isDarkMode
+            ? NSColor(srgbRed: 0.43, green: 0.90, blue: 0.72, alpha: 1.0)
+            : NSColor(srgbRed: 0.016, green: 0.471, blue: 0.341, alpha: 1.0)
+        let numberColor = isDarkMode
+            ? NSColor(srgbRed: 0.96, green: 0.56, blue: 0.48, alpha: 1.0)
+            : NSColor(srgbRed: 0.851, green: 0.467, blue: 0.024, alpha: 1.0)
+        let tagColor = isDarkMode
+            ? NSColor(srgbRed: 0.95, green: 0.73, blue: 0.31, alpha: 1.0)
+            : NSColor(srgbRed: 0.78, green: 0.36, blue: 0.02, alpha: 1.0)
+        let commentColor = isDarkMode
+            ? NSColor(srgbRed: 0.42, green: 0.47, blue: 0.56, alpha: 1.0)
+            : NSColor(srgbRed: 0.55, green: 0.60, blue: 0.68, alpha: 1.0)
 
         storage.beginEditing()
         storage.setAttributes([
