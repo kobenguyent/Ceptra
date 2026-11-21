@@ -168,6 +168,7 @@ private struct ScenarioFlowCard: View {
     @State private var isHeaderHovered = false
     @State private var isJumpHovered = false
     @State private var isPlayHovered = false
+    @State private var isDebugHovered = false
 
     let scenario: ParsedScenario
     let file: WorkspaceFile?
@@ -250,6 +251,29 @@ private struct ScenarioFlowCard: View {
                 .help("Jump to Line \(scenario.lineNumber)")
 
                 if file?.isExecutableTestFile == true {
+                    Button {
+                        appState.debug(mode: .runScenario(relativePath: file?.relativePath, scenarioTitle: scenario.cleanTitle))
+                    } label: {
+                        Image(systemName: "ladybug")
+                            .font(.system(size: 10))
+                            .foregroundStyle(CeptraTheme.accentWarm)
+                            .frame(width: 24, height: 24)
+                            .background(
+                                CeptraTheme.accentWarm.opacity(isDebugHovered ? 0.28 : 0.14),
+                                in: Circle()
+                            )
+                            .overlay(
+                                Circle().strokeBorder(CeptraTheme.accentWarm.opacity(isDebugHovered ? 0.55 : 0.22), lineWidth: 0.75)
+                            )
+                    }
+                    .buttonStyle(CeptraTactilePressStyle())
+                    .disabled(appState.isRunning)
+                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isDebugHovered)
+                    .onHover { hovering in
+                        isDebugHovered = hovering
+                    }
+                    .help("Debug Scenario")
+
                     Button {
                         appState.run(mode: .runScenario(relativePath: file?.relativePath, scenarioTitle: scenario.cleanTitle))
                     } label: {

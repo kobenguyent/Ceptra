@@ -20,6 +20,11 @@ struct CodeEditorView: NSViewRepresentable {
     var foldActionTrigger: Int = 0
     var foldAction: EditorFoldAction? = nil
     var onNavigate: (NavigationTarget, Int) -> Void
+    var breakpointsByLine: [Int: DebugBreakpoint] = [:]
+    var pausedLine: Int? = nil
+    var onToggleBreakpoint: ((Int) -> Void)? = nil
+    var onEditBreakpoint: ((DebugBreakpoint) -> Void)? = nil
+    var onRemoveBreakpoint: ((UUID) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -37,8 +42,17 @@ struct CodeEditorView: NSViewRepresentable {
         context.coordinator.currentDocumentID = documentID
         context.coordinator.lastGoToDefTrigger = goToDefinitionTrigger
         context.coordinator.lastFoldActionTrigger = foldActionTrigger
+        context.coordinator.lastPausedLine = pausedLine
         context.coordinator.wireCallbacks(for: container)
         context.coordinator.observe(container: container)
+        container.setDebugState(
+            documentFilePath: documentID,
+            breakpointsByLine: breakpointsByLine,
+            pausedLine: pausedLine
+        )
+        if let pausedLine {
+            container.scrollToLine(pausedLine)
+        }
         return container
     }
 
@@ -144,6 +158,18 @@ struct CodeEditorView: NSViewRepresentable {
                 container.performFoldAction(action)
             }
         }
+
+        container.setDebugState(
+            documentFilePath: documentID,
+            breakpointsByLine: breakpointsByLine,
+            pausedLine: pausedLine
+        )
+        if coord.lastPausedLine != pausedLine || (documentChanged && pausedLine != nil) {
+            coord.lastPausedLine = pausedLine
+            if let targetPausedLine = pausedLine {
+                container.scrollToLine(targetPausedLine)
+            }
+        }
     }
 
     struct TabViewState {
@@ -160,6 +186,7 @@ struct CodeEditorView: NSViewRepresentable {
         var isProgrammaticUpdate = false
         var lastGoToDefTrigger: Int = 0
         var lastFoldActionTrigger: Int = 0
+        var lastPausedLine: Int? = nil
         let completionController = CompletionPopupController()
         private var observers: [NSObjectProtocol] = []
 
@@ -240,6 +267,18 @@ struct CodeEditorView: NSViewRepresentable {
 
             container.gutterView.onSelectLine = { [weak container] lineNumber in
                 container?.selectEntireLine(lineNumber)
+            }
+
+            container.gutterView.onToggleBreakpoint = { [weak self] lineNumber in
+                self?.parent.onToggleBreakpoint?(lineNumber)
+            }
+
+            container.gutterView.onEditBreakpoint = { [weak self] breakpoint in
+                self?.parent.onEditBreakpoint?(breakpoint)
+            }
+
+            container.gutterView.onRemoveBreakpoint = { [weak self] id in
+                self?.parent.onRemoveBreakpoint?(id)
             }
         }
 
@@ -532,7 +571,7 @@ final class CeptraEditorContainerView: NSView {
     let textView: CeptraCodeTextView
     let gutterView: LineNumberGutterView
     let lineLayoutDelegate = CeptraCenteredLineLayoutDelegate()
-    private var gutterWidthConstraint: NSLayoutConstraint?
+    private var gutterWidth: CGFloat = 78
 
     private(set) var lineIndex = LineIndexTable(text: "")
     private(set) var foldableRegions: [FoldableRegion] = []
@@ -565,6 +604,7 @@ final class CeptraEditorContainerView: NSView {
         super.init(frame: .zero)
 
         appearance = NSAppearance(named: .darkAqua)
+        clipsToBounds = true
         wantsLayer = true
         layer?.backgroundColor = NSColor(red: 0.075, green: 0.082, blue: 0.102, alpha: 1.0).cgColor
 
@@ -586,26 +626,8 @@ final class CeptraEditorContainerView: NSView {
         textView.restyleAllText()
         textView.setSelectedRange(NSRange(location: 0, length: 0))
 
-        gutterView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-
         addSubview(gutterView)
         addSubview(scrollView)
-
-        let widthConstraint = gutterView.widthAnchor.constraint(equalToConstant: 64)
-        gutterWidthConstraint = widthConstraint
-
-        NSLayoutConstraint.activate([
-            gutterView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            gutterView.topAnchor.constraint(equalTo: topAnchor),
-            gutterView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            widthConstraint,
-
-            scrollView.leadingAnchor.constraint(equalTo: gutterView.trailingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
 
         refreshFolds(restoringCollapsedStartLines: [])
         relayoutDocument()
@@ -619,6 +641,17 @@ final class CeptraEditorContainerView: NSView {
 
     override func layout() {
         super.layout()
+        let b = bounds
+        let gw = min(gutterWidth, max(0, b.width))
+        let targetGutterFrame = NSRect(x: 0, y: 0, width: gw, height: b.height)
+        if gutterView.frame != targetGutterFrame {
+            gutterView.frame = targetGutterFrame
+        }
+        let targetScrollFrame = NSRect(x: gw, y: 0, width: max(0, b.width - gw), height: b.height)
+        if scrollView.frame != targetScrollFrame {
+            scrollView.frame = targetScrollFrame
+        }
+
         let clipSize = scrollView.contentView.bounds.size
         guard clipSize.width > 0 && clipSize.height > 0 else { return }
 
@@ -847,11 +880,47 @@ final class CeptraEditorContainerView: NSView {
         gutterView.needsDisplay = true
     }
 
+    func setDebugState(
+        documentFilePath: String,
+        breakpointsByLine: [Int: DebugBreakpoint],
+        pausedLine: Int?
+    ) {
+        var gutterChanged = false
+        var textChanged = false
+
+        if gutterView.documentFilePath != documentFilePath {
+            gutterView.documentFilePath = documentFilePath
+        }
+        if gutterView.breakpointsByLine != breakpointsByLine {
+            gutterView.breakpointsByLine = breakpointsByLine
+            gutterChanged = true
+        }
+        if gutterView.pausedLine != pausedLine {
+            gutterView.pausedLine = pausedLine
+            gutterChanged = true
+        }
+        if textView.pausedLine != pausedLine {
+            textView.pausedLine = pausedLine
+            textChanged = true
+        }
+
+        if gutterChanged {
+            gutterView.needsDisplay = true
+        }
+        if textChanged {
+            textView.needsDisplay = true
+        }
+    }
+
     func updateGutter() {
         let lineCount = max(1, lineIndex.lineCount)
         let digits = max(3, String(lineCount).count)
-        // Baseline-matched monospaced line numbers + right padding + dedicated 18pt fold chevron column
-        gutterWidthConstraint?.constant = CGFloat(digits * 9 + 38)
+        // 14pt breakpoint margin + baseline-matched monospaced line numbers + right padding + dedicated 18pt fold chevron column
+        let newWidth = CGFloat(digits * 9 + 38 + 14)
+        if abs(gutterWidth - newWidth) > 0.5 {
+            gutterWidth = newWidth
+            needsLayout = true
+        }
         gutterView.needsDisplay = true
     }
 
@@ -888,12 +957,18 @@ final class LineNumberGutterView: NSView {
     weak var textView: NSTextView?
     weak var scrollView: NSScrollView?
 
+    var documentFilePath: String = ""
     var lineIndex = LineIndexTable(text: "")
     var regionsByStartLine: [Int: FoldableRegion] = [:]
     var collapsedStartLines: Set<Int> = []
+    var breakpointsByLine: [Int: DebugBreakpoint] = [:]
+    var pausedLine: Int? = nil
 
     var onToggleFold: ((Int) -> Void)?
     var onSelectLine: ((Int) -> Void)?
+    var onToggleBreakpoint: ((Int) -> Void)?
+    var onEditBreakpoint: ((DebugBreakpoint) -> Void)?
+    var onRemoveBreakpoint: ((UUID) -> Void)?
 
     private struct FoldHitItem {
         let region: FoldableRegion
@@ -911,7 +986,9 @@ final class LineNumberGutterView: NSView {
     private var visibleLineItems: [LineHitItem] = []
     private var isMouseInside = false
     private var hoveredFoldLine: Int? = nil
+    private var hoveredBreakpointLine: Int? = nil
 
+    private let breakpointMarginWidth: CGFloat = 14
     private let foldColumnWidth: CGFloat = 18
 
     init(textView: NSTextView, scrollView: NSScrollView) {
@@ -957,6 +1034,7 @@ final class LineNumberGutterView: NSView {
         super.mouseExited(with: event)
         isMouseInside = false
         hoveredFoldLine = nil
+        hoveredBreakpointLine = nil
         toolTip = nil
         NSCursor.arrow.set()
         needsDisplay = true
@@ -971,32 +1049,242 @@ final class LineNumberGutterView: NSView {
         }
 
         if let lineHit = visibleLineItems.first(where: { $0.rowRect.contains(pt) }) {
-            onSelectLine?(lineHit.lineNumber)
+            if let onToggleBreakpoint {
+                onToggleBreakpoint(lineHit.lineNumber)
+            } else {
+                onSelectLine?(lineHit.lineNumber)
+            }
             return
         }
 
         super.mouseDown(with: event)
     }
 
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let pt = convert(event.locationInWindow, from: nil)
+        guard let lineHit = visibleLineItems.first(where: { $0.rowRect.contains(pt) }) else {
+            return nil
+        }
+        let line = lineHit.lineNumber
+        let menu = NSMenu(title: "Breakpoints")
+
+        if let existing = breakpointsByLine[line] {
+            let editCond = NSMenuItem(title: "Edit Condition…", action: #selector(handleEditCondition(_:)), keyEquivalent: "")
+            editCond.target = self
+            editCond.representedObject = line
+            menu.addItem(editCond)
+
+            let editLog = NSMenuItem(title: "Edit Logpoint…", action: #selector(handleEditLogpoint(_:)), keyEquivalent: "")
+            editLog.target = self
+            editLog.representedObject = line
+            menu.addItem(editLog)
+
+            menu.addItem(.separator())
+
+            let toggleTitle = existing.isEnabled ? "Disable Breakpoint" : "Enable Breakpoint"
+            let toggleItem = NSMenuItem(title: toggleTitle, action: #selector(handleToggleEnabled(_:)), keyEquivalent: "")
+            toggleItem.target = self
+            toggleItem.representedObject = line
+            menu.addItem(toggleItem)
+
+            let removeItem = NSMenuItem(title: "Remove Breakpoint", action: #selector(handleRemoveBreakpoint(_:)), keyEquivalent: "")
+            removeItem.target = self
+            removeItem.representedObject = line
+            menu.addItem(removeItem)
+        } else {
+            let addItem = NSMenuItem(title: "Add Breakpoint", action: #selector(handleAddBreakpoint(_:)), keyEquivalent: "")
+            addItem.target = self
+            addItem.representedObject = line
+            menu.addItem(addItem)
+
+            let addCond = NSMenuItem(title: "Add Conditional Breakpoint…", action: #selector(handleAddConditionalBreakpoint(_:)), keyEquivalent: "")
+            addCond.target = self
+            addCond.representedObject = line
+            menu.addItem(addCond)
+
+            let addLog = NSMenuItem(title: "Add Logpoint…", action: #selector(handleAddLogpoint(_:)), keyEquivalent: "")
+            addLog.target = self
+            addLog.representedObject = line
+            menu.addItem(addLog)
+        }
+
+        return menu
+    }
+
+    @objc private func handleAddBreakpoint(_ sender: NSMenuItem) {
+        guard let line = sender.representedObject as? Int else { return }
+        onToggleBreakpoint?(line)
+    }
+
+    @objc private func handleAddConditionalBreakpoint(_ sender: NSMenuItem) {
+        guard let line = sender.representedObject as? Int else { return }
+        guard let input = presentInputAlert(
+            title: "Add Conditional Breakpoint",
+            message: "Break on line \(line) only when this JavaScript expression evaluates to true:",
+            placeholder: "e.g. user.role === 'admin'",
+            initialValue: "",
+            confirmTitle: "Add"
+        ) else { return }
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let bp = DebugBreakpoint(
+            filePath: documentFilePath,
+            line: line,
+            isEnabled: true,
+            condition: trimmed,
+            logMessage: nil
+        )
+        onEditBreakpoint?(bp)
+    }
+
+    @objc private func handleAddLogpoint(_ sender: NSMenuItem) {
+        guard let line = sender.representedObject as? Int else { return }
+        guard let input = presentInputAlert(
+            title: "Add Logpoint",
+            message: "Log message on line \(line) without pausing (wrap expressions in {braces}):",
+            placeholder: "e.g. User logged in: {user.email}",
+            initialValue: "",
+            confirmTitle: "Add"
+        ) else { return }
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let bp = DebugBreakpoint(
+            filePath: documentFilePath,
+            line: line,
+            isEnabled: true,
+            condition: nil,
+            logMessage: trimmed
+        )
+        onEditBreakpoint?(bp)
+    }
+
+    @objc private func handleEditCondition(_ sender: NSMenuItem) {
+        guard let line = sender.representedObject as? Int,
+              let existing = breakpointsByLine[line] else { return }
+        guard let input = presentInputAlert(
+            title: "Edit Breakpoint Condition",
+            message: "Break on line \(line) when this expression is truthy (leave empty for unconditional):",
+            placeholder: "e.g. count > 3",
+            initialValue: existing.condition ?? "",
+            confirmTitle: "Save"
+        ) else { return }
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let updated = DebugBreakpoint(
+            id: existing.id,
+            filePath: existing.filePath,
+            line: existing.line,
+            isEnabled: existing.isEnabled,
+            condition: trimmed.isEmpty ? nil : trimmed,
+            logMessage: trimmed.isEmpty ? existing.logMessage : nil
+        )
+        onEditBreakpoint?(updated)
+    }
+
+    @objc private func handleEditLogpoint(_ sender: NSMenuItem) {
+        guard let line = sender.representedObject as? Int,
+              let existing = breakpointsByLine[line] else { return }
+        guard let input = presentInputAlert(
+            title: "Edit Logpoint Message",
+            message: "Log message on line \(line) without pausing (leave empty to convert to regular breakpoint):",
+            placeholder: "e.g. Value = {x}",
+            initialValue: existing.logMessage ?? "",
+            confirmTitle: "Save"
+        ) else { return }
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let updated = DebugBreakpoint(
+            id: existing.id,
+            filePath: existing.filePath,
+            line: existing.line,
+            isEnabled: existing.isEnabled,
+            condition: trimmed.isEmpty ? existing.condition : nil,
+            logMessage: trimmed.isEmpty ? nil : trimmed
+        )
+        onEditBreakpoint?(updated)
+    }
+
+    @objc private func handleToggleEnabled(_ sender: NSMenuItem) {
+        guard let line = sender.representedObject as? Int,
+              var existing = breakpointsByLine[line] else { return }
+        existing.isEnabled.toggle()
+        onEditBreakpoint?(existing)
+    }
+
+    @objc private func handleRemoveBreakpoint(_ sender: NSMenuItem) {
+        guard let line = sender.representedObject as? Int,
+              let existing = breakpointsByLine[line] else { return }
+        onRemoveBreakpoint?(existing.id)
+    }
+
+    private func presentInputAlert(
+        title: String,
+        message: String,
+        placeholder: String,
+        initialValue: String,
+        confirmTitle: String = "Save"
+    ) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: confirmTitle)
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = placeholder
+        field.stringValue = initialValue
+        field.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return nil }
+        return field.stringValue
+    }
+
     private func updateHover(atWindowPoint windowPoint: NSPoint) {
         let pt = convert(windowPoint, from: nil)
         if let hit = visibleFoldItems.first(where: { $0.chevronRect.contains(pt) }) {
-            if hoveredFoldLine != hit.region.startLine {
-                hoveredFoldLine = hit.region.startLine
+            let changed = hoveredFoldLine != hit.region.startLine || hoveredBreakpointLine != nil
+            hoveredFoldLine = hit.region.startLine
+            hoveredBreakpointLine = nil
+            if changed {
                 needsDisplay = true
             }
             let verb = hit.isCollapsed ? "Expand" : "Collapse"
             let count = hit.region.hiddenLineCount
             toolTip = "\(verb) lines \(hit.region.startLine)–\(hit.region.endLine) (\(count) \(count == 1 ? "line" : "lines"))"
             NSCursor.pointingHand.set()
-        } else {
-            if hoveredFoldLine != nil {
-                hoveredFoldLine = nil
+        } else if pt.x <= breakpointMarginWidth + 2,
+                  let lineHit = visibleLineItems.first(where: { $0.rowRect.contains(pt) }) {
+            let changed = hoveredBreakpointLine != lineHit.lineNumber || hoveredFoldLine != nil
+            hoveredFoldLine = nil
+            hoveredBreakpointLine = lineHit.lineNumber
+            if changed {
                 needsDisplay = true
             }
+            if let bp = breakpointsByLine[lineHit.lineNumber] {
+                if !bp.isEnabled {
+                    toolTip = "Disabled breakpoint (line \(bp.line))"
+                } else if let log = bp.logMessage {
+                    toolTip = "Logpoint: \(log)"
+                } else if let cond = bp.condition {
+                    toolTip = "Conditional breakpoint: \(cond)"
+                } else {
+                    toolTip = "Breakpoint (line \(bp.line))"
+                }
+            } else {
+                toolTip = "Click to add breakpoint on line \(lineHit.lineNumber)"
+            }
+            NSCursor.pointingHand.set()
+        } else {
+            let changed = hoveredFoldLine != nil || hoveredBreakpointLine != nil
+            hoveredFoldLine = nil
+            hoveredBreakpointLine = nil
             toolTip = nil
             NSCursor.arrow.set()
-            needsDisplay = true
+            if changed {
+                needsDisplay = true
+            }
         }
     }
 
@@ -1043,6 +1331,10 @@ final class LineNumberGutterView: NSView {
             .font: activeFont,
             .foregroundColor: NSColor(red: 0.88, green: 0.93, blue: 1.0, alpha: 1.0)
         ]
+        let pausedAttrs: [NSAttributedString.Key: Any] = [
+            .font: activeFont,
+            .foregroundColor: NSColor(red: 1.0, green: 0.88, blue: 0.56, alpha: 1.0)
+        ]
 
         let numberRightEdge = bounds.width - foldColumnWidth - 3
 
@@ -1051,19 +1343,44 @@ final class LineNumberGutterView: NSView {
             visibleLineItems.append(LineHitItem(lineNumber: lineNumber, rowRect: rowRect))
 
             let isActive = lineNumber == activeLineNumber
-            if isActive {
+            let isPaused = lineNumber == pausedLine
+
+            if isPaused {
+                NSColor(red: 0.96, green: 0.62, blue: 0.04, alpha: 0.20).setFill()
+                rowRect.fill()
+                NSColor(red: 0.96, green: 0.62, blue: 0.04, alpha: 0.35).setFill()
+                NSRect(x: rowRect.minX, y: rowRect.minY, width: rowRect.width, height: 1).fill()
+                NSRect(x: rowRect.minX, y: rowRect.maxY - 1, width: rowRect.width, height: 1).fill()
+            } else if isActive {
                 NSColor(red: 0.30, green: 0.44, blue: 0.78, alpha: 0.13).setFill()
                 rowRect.fill()
             }
 
-            let attrs = isActive ? activeAttrs : normalAttrs
-            let baselineOffset = isActive ? activeBaselineOffset : normalBaselineOffset
+            let marginRect = NSRect(
+                x: 0,
+                y: rectInGutter.minY,
+                width: breakpointMarginWidth,
+                height: rectInGutter.height
+            )
+            let breakpoint = breakpointsByLine[lineNumber]
+            if let breakpoint {
+                drawBreakpoint(breakpoint, in: marginRect)
+            } else if hoveredBreakpointLine == lineNumber && !isPaused {
+                drawBreakpointHoverPreview(in: marginRect)
+            }
+
+            if isPaused {
+                drawPausedIndicator(in: marginRect, overlappingBreakpoint: breakpoint != nil)
+            }
+
+            let attrs = isPaused ? pausedAttrs : (isActive ? activeAttrs : normalAttrs)
+            let baselineOffset = (isPaused || isActive) ? activeBaselineOffset : normalBaselineOffset
             let drawY = rectInGutter.minY + lineMetrics.baseline - baselineOffset
 
             let label = "\(lineNumber)" as NSString
             let textSize = label.size(withAttributes: attrs)
             let drawPoint = NSPoint(
-                x: max(4, numberRightEdge - textSize.width),
+                x: max(breakpointMarginWidth + 2, numberRightEdge - textSize.width),
                 y: drawY
             )
             label.draw(at: drawPoint, withAttributes: attrs)
@@ -1088,7 +1405,7 @@ final class LineNumberGutterView: NSView {
                     in: chevronRect,
                     collapsed: isCollapsed,
                     highlighted: isHovered || isCollapsed,
-                    subtle: !isMouseInside && !isCollapsed && !isActive
+                    subtle: !isMouseInside && !isCollapsed && !isActive && !isPaused
                 )
             }
         }
@@ -1182,6 +1499,98 @@ final class LineNumberGutterView: NSView {
         strokeColor.setStroke()
         path.stroke()
     }
+
+    private func drawBreakpointHoverPreview(in marginRect: NSRect) {
+        let cx = marginRect.midX + 1.5
+        let cy = marginRect.midY
+        let r: CGFloat = 4.25
+        let circle = NSBezierPath(ovalIn: NSRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
+        NSColor(red: 0.94, green: 0.27, blue: 0.27, alpha: 0.35).setFill()
+        circle.fill()
+    }
+
+    private func drawBreakpoint(_ bp: DebugBreakpoint, in marginRect: NSRect) {
+        let cx = marginRect.midX + 1.5
+        let cy = marginRect.midY
+        let r: CGFloat = 4.5
+
+        if !bp.isEnabled {
+            let ringRect = NSRect(x: cx - r + 0.75, y: cy - r + 0.75, width: (r - 0.75) * 2, height: (r - 0.75) * 2)
+            let ring = NSBezierPath(ovalIn: ringRect)
+            ring.lineWidth = 1.5
+            NSColor(red: 0.94, green: 0.27, blue: 0.27, alpha: 0.72).setStroke()
+            ring.stroke()
+            return
+        }
+
+        if bp.isLogpoint {
+            let diamond = NSBezierPath()
+            diamond.move(to: NSPoint(x: cx, y: cy - r))
+            diamond.line(to: NSPoint(x: cx + r, y: cy))
+            diamond.line(to: NSPoint(x: cx, y: cy + r))
+            diamond.line(to: NSPoint(x: cx - r, y: cy))
+            diamond.close()
+            NSColor(red: 0.65, green: 0.42, blue: 0.98, alpha: 1.0).setFill()
+            diamond.fill()
+            diamond.lineWidth = 0.75
+            NSColor(red: 0.85, green: 0.73, blue: 1.0, alpha: 0.60).setStroke()
+            diamond.stroke()
+            return
+        }
+
+        if bp.isConditional {
+            let circleRect = NSRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)
+            let circle = NSBezierPath(ovalIn: circleRect)
+            NSColor(red: 0.96, green: 0.58, blue: 0.12, alpha: 1.0).setFill()
+            circle.fill()
+            circle.lineWidth = 0.75
+            NSColor(red: 1.0, green: 0.85, blue: 0.55, alpha: 0.65).setStroke()
+            circle.stroke()
+
+            let qMark = "?" as NSString
+            let qAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 7.5, weight: .bold),
+                .foregroundColor: NSColor(red: 0.08, green: 0.09, blue: 0.12, alpha: 0.95)
+            ]
+            let qSize = qMark.size(withAttributes: qAttrs)
+            qMark.draw(
+                at: NSPoint(x: cx - qSize.width * 0.5, y: cy - qSize.height * 0.5 - 0.25),
+                withAttributes: qAttrs
+            )
+            return
+        }
+
+        let circleRect = NSRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)
+        let circle = NSBezierPath(ovalIn: circleRect)
+        NSColor(red: 0.94, green: 0.27, blue: 0.27, alpha: 1.0).setFill()
+        circle.fill()
+        circle.lineWidth = 0.75
+        NSColor(red: 1.0, green: 0.72, blue: 0.72, alpha: 0.48).setStroke()
+        circle.stroke()
+    }
+
+    private func drawPausedIndicator(in marginRect: NSRect, overlappingBreakpoint: Bool) {
+        let cx = marginRect.midX + 1.5
+        let cy = marginRect.midY
+
+        let arrow = NSBezierPath()
+        arrow.move(to: NSPoint(x: cx - 3.5, y: cy - 3.8))
+        arrow.line(to: NSPoint(x: cx + 1.0, y: cy - 3.8))
+        arrow.line(to: NSPoint(x: cx + 4.5, y: cy))
+        arrow.line(to: NSPoint(x: cx + 1.0, y: cy + 3.8))
+        arrow.line(to: NSPoint(x: cx - 3.5, y: cy + 3.8))
+        arrow.line(to: NSPoint(x: cx - 1.5, y: cy))
+        arrow.close()
+
+        NSColor(red: 0.961, green: 0.620, blue: 0.043, alpha: 1.0).setFill() // #F59E0B
+        arrow.fill()
+
+        if overlappingBreakpoint {
+            arrow.lineWidth = 0.9
+            NSColor(red: 0.088, green: 0.096, blue: 0.120, alpha: 0.92).setStroke()
+            arrow.stroke()
+        }
+    }
 }
 
 // MARK: - Code TextView (Syntax Highlighting + Fold Badges + IntelliSense Keys + ⌘-Click Import Navigation)
@@ -1195,6 +1604,7 @@ final class CeptraCodeTextView: NSTextView {
     var lineIndex = LineIndexTable(text: "")
     var collapsedRegions: [FoldableRegion] = []
     var hiddenRanges: [NSRange] = []
+    var pausedLine: Int? = nil
 
     var onInterceptKeyDown: ((NSEvent) -> Bool)?
     var onManualComplete: (() -> Void)?
@@ -1258,30 +1668,74 @@ final class CeptraCodeTextView: NSTextView {
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
 
-        // Subtle highlight band behind the active caret line
         guard let layoutManager else { return }
+
+        // Subtle highlight band behind the active caret line
         let sel = selectedRange()
-        guard sel.length == 0 else { return }
-        let lineRect: NSRect
-        if layoutManager.numberOfGlyphs == 0 {
-            lineRect = NSRect(x: 0, y: 0, width: bounds.width, height: max(16, font?.boundingRectForFont.height ?? 17))
-        } else if sel.location >= (string as NSString).length, layoutManager.extraLineFragmentRect.height > 0 {
-            lineRect = layoutManager.extraLineFragmentRect
-        } else {
-            let safeChar = min(sel.location, max(0, (string as NSString).length - 1))
-            let glyphIdx = layoutManager.glyphIndexForCharacter(at: safeChar)
-            guard glyphIdx < layoutManager.numberOfGlyphs else { return }
-            lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+        if sel.length == 0 {
+            let lineRect: NSRect?
+            if layoutManager.numberOfGlyphs == 0 {
+                lineRect = NSRect(x: 0, y: 0, width: bounds.width, height: max(16, font?.boundingRectForFont.height ?? 17))
+            } else if sel.location >= (string as NSString).length, layoutManager.extraLineFragmentRect.height > 0 {
+                lineRect = layoutManager.extraLineFragmentRect
+            } else {
+                let safeChar = min(sel.location, max(0, (string as NSString).length - 1))
+                let glyphIdx = layoutManager.glyphIndexForCharacter(at: safeChar)
+                lineRect = glyphIdx < layoutManager.numberOfGlyphs
+                    ? layoutManager.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+                    : nil
+            }
+            if let lineRect {
+                let highlightBand = NSRect(
+                    x: rect.minX,
+                    y: lineRect.origin.y + textContainerOrigin.y,
+                    width: rect.width,
+                    height: lineRect.height
+                )
+                if highlightBand.intersects(rect) {
+                    NSColor(red: 0.30, green: 0.44, blue: 0.78, alpha: 0.08).setFill()
+                    highlightBand.fill()
+                }
+            }
         }
-        let highlightBand = NSRect(
-            x: rect.minX,
-            y: lineRect.origin.y + textContainerOrigin.y,
-            width: rect.width,
-            height: lineRect.height
-        )
-        if highlightBand.intersects(rect) {
-            NSColor(red: 0.30, green: 0.44, blue: 0.78, alpha: 0.08).setFill()
-            highlightBand.fill()
+
+        // Full-width warm-amber highlight band behind the paused debug execution line
+        if let pausedLine, pausedLine >= 1 {
+            let nsLen = (string as NSString).length
+            let lineRange = lineIndex.fullLineRange(forOneBasedLine: pausedLine)
+            let pausedLineRect: NSRect?
+            if layoutManager.numberOfGlyphs == 0 {
+                pausedLineRect = pausedLine == 1
+                    ? NSRect(x: 0, y: 0, width: bounds.width, height: max(16, font?.boundingRectForFont.height ?? 17))
+                    : nil
+            } else if lineRange.location >= nsLen, layoutManager.extraLineFragmentRect.height > 0 {
+                pausedLineRect = layoutManager.extraLineFragmentRect
+            } else if nsLen > 0 {
+                let safeChar = min(lineRange.location, nsLen - 1)
+                let glyphIdx = layoutManager.glyphIndexForCharacter(at: safeChar)
+                pausedLineRect = glyphIdx < layoutManager.numberOfGlyphs
+                    ? layoutManager.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+                    : nil
+            } else {
+                pausedLineRect = nil
+            }
+
+            if let pausedLineRect {
+                let band = NSRect(
+                    x: rect.minX,
+                    y: pausedLineRect.origin.y + textContainerOrigin.y,
+                    width: rect.width,
+                    height: pausedLineRect.height
+                )
+                if band.intersects(rect) {
+                    NSColor(red: 0.96, green: 0.62, blue: 0.04, alpha: 0.16).setFill()
+                    band.fill()
+
+                    NSColor(red: 0.96, green: 0.62, blue: 0.04, alpha: 0.35).setFill()
+                    NSRect(x: band.minX, y: band.minY, width: band.width, height: 1).fill()
+                    NSRect(x: band.minX, y: band.maxY - 1, width: band.width, height: 1).fill()
+                }
+            }
         }
     }
 

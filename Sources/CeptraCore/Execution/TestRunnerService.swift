@@ -35,6 +35,9 @@ private final class StreamCollector: @unchecked Sendable {
                 collectedLines.append(LiveOutputParser.stripANSI(line))
                 emitted.append(contentsOf: parser.feed(line: line, isStderr: isStderr))
             }
+            if isStderr && remainder.localizedCaseInsensitiveContains("Waiting for the debugger to disconnect") {
+                emitted.append(.inspectorWaitingToDisconnect)
+            }
             return emitted
         }
     }
@@ -74,6 +77,7 @@ private final class StreamCollector: @unchecked Sendable {
 public final class TestRunnerService: @unchecked Sendable {
     private let lock = NSLock()
     private var activeProcess: Process?
+    private var activeStdinPipe: Pipe?
     private var cancelled = false
 
     public init() {}
@@ -84,11 +88,26 @@ public final class TestRunnerService: @unchecked Sendable {
         }
     }
 
-    public func cancel() {
-        let proc: Process? = lock.withLock {
-            cancelled = true
-            return activeProcess
+    @discardableResult
+    public func sendStdin(_ text: String) -> Bool {
+        let pipe: Pipe? = lock.withLock { activeStdinPipe }
+        guard let pipe, let data = text.data(using: .utf8) else { return false }
+        do {
+            try pipe.fileHandleForWriting.write(contentsOf: data)
+            return true
+        } catch {
+            return false
         }
+    }
+
+    public func cancel() {
+        let (proc, stdinPipe): (Process?, Pipe?) = lock.withLock {
+            cancelled = true
+            let p = activeStdinPipe
+            activeStdinPipe = nil
+            return (activeProcess, p)
+        }
+        try? stdinPipe?.fileHandleForWriting.close()
 
         guard let proc, proc.isRunning else { return }
         let pid = proc.processIdentifier
@@ -102,9 +121,10 @@ public final class TestRunnerService: @unchecked Sendable {
         }
     }
 
-    private func setActiveProcess(_ process: Process?) {
+    private func setActiveProcess(_ process: Process?, stdinPipe: Pipe? = nil) {
         lock.withLock {
             activeProcess = process
+            activeStdinPipe = stdinPipe
             if process != nil {
                 cancelled = false
             }
@@ -112,15 +132,20 @@ public final class TestRunnerService: @unchecked Sendable {
     }
 
     private func clearActiveProcessAndReadCancelled() -> Bool {
-        lock.withLock {
-            let wasCancelled = cancelled
+        let (wasCancelled, stdinPipe): (Bool, Pipe?) = lock.withLock {
+            let c = cancelled
             activeProcess = nil
-            return wasCancelled
+            let p = activeStdinPipe
+            activeStdinPipe = nil
+            return (c, p)
         }
+        try? stdinPipe?.fileHandleForWriting.close()
+        return wasCancelled
     }
 
     public func execute(
         command: BuiltCommand,
+        attachStdin: Bool = false,
         onEvent: @escaping @Sendable (LiveOutputEvent) -> Void
     ) async throws -> RunExecutionResult {
         let startedAt = Date()
@@ -132,10 +157,14 @@ public final class TestRunnerService: @unchecked Sendable {
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+        let stdinPipe: Pipe? = attachStdin ? Pipe() : nil
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        if let stdinPipe {
+            process.standardInput = stdinPipe
+        }
 
-        setActiveProcess(process)
+        setActiveProcess(process, stdinPipe: stdinPipe)
 
         let collector = StreamCollector()
 

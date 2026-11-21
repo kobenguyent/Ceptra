@@ -28,7 +28,8 @@ public enum CommandBuilder {
         options: RunOptions,
         workspaceRoot: URL,
         configFilePath: String? = nil,
-        toolchain: ResolvedToolchain
+        toolchain: ResolvedToolchain,
+        debugOptions: DebugLaunchOptions? = nil
     ) -> BuiltCommand {
         var args: [String] = toolchain.prefixArguments
 
@@ -171,6 +172,20 @@ public enum CommandBuilder {
                 existing: env["NODE_OPTIONS"],
                 preloadFileURL: preloadURL
             )
+        }
+
+        if let debugOptions, debugOptions.enabled, mode.supportsInteractiveDebugging {
+            if !args.contains("--no-timeouts") {
+                args.append("--no-timeouts")
+            }
+            let existingNodeOpts = (env["NODE_OPTIONS"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let inspectFlag = "--inspect-brk=127.0.0.1:0"
+            if !existingNodeOpts.contains("--inspect") {
+                env["NODE_OPTIONS"] = existingNodeOpts.isEmpty ? inspectFlag : "\(existingNodeOpts) \(inspectFlag)"
+            }
+            if debugOptions.headedBrowser && env["HEADLESS"] == nil {
+                env["HEADLESS"] = "false"
+            }
         }
 
         let displayParts = [URL(fileURLWithPath: toolchain.codeceptExecutable).lastPathComponent] + args.map { displayQuote($0) }

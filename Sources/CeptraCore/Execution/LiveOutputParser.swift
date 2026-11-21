@@ -7,10 +7,14 @@ public enum LiveOutputEvent: Equatable, Sendable {
     case scenarioFinished(ExecutedScenarioRecord)
     case summary(passed: Int, failed: Int, skipped: Int, durationLabel: String)
     case logLine(text: String, isError: Bool)
+    case inspectorListening(URL)
+    case inspectorWaitingToDisconnect
+    case interactiveShellState(active: Bool)
 }
 
 public final class LiveOutputParser {
     private static let ansiRegex = try! NSRegularExpression(pattern: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]")
+    private static let inspectorURLRegex = try! NSRegularExpression(pattern: #"Debugger listening on (ws://(?:127\.0\.0\.1|localhost):\d+/[^\s]+)"#)
     private static let workerPrefixRegex = try! NSRegularExpression(pattern: #"^\[(?:Worker\s+\d+|[^\]]+:\w+)\]\s*"#)
     private static let suiteHeaderRegex = try! NSRegularExpression(pattern: #"^(.+?)\s+--(?:\s+(.*))?$"#)
     private static let passedCompactRegex = try! NSRegularExpression(pattern: #"^\s*[✔✓]\s+(?:(.+?)\s+›\s+)?(.+?)\s+in\s+(\d+)ms\s*$"#)
@@ -46,6 +50,30 @@ public final class LiveOutputParser {
         var events: [LiveOutputEvent] = [.logLine(text: stripped, isError: isStderr)]
 
         guard !trimmed.isEmpty else { return events }
+
+        // 0. Node.js V8 Inspector listening URL (strictly loopback 127.0.0.1 / localhost)
+        if let inspectMatch = match(Self.inspectorURLRegex, in: stripped),
+           let rawURL = capture(inspectMatch, at: 1, in: stripped),
+           let parsedURL = URL(string: rawURL),
+           CDPInspectorClient.validateLoopbackInspectorURL(parsedURL) {
+            events.append(.inspectorListening(parsedURL))
+            return events
+        }
+
+        if stripped.localizedCaseInsensitiveContains("Waiting for the debugger to disconnect") {
+            events.append(.inspectorWaitingToDisconnect)
+            return events
+        }
+
+        // 0b. CodeceptJS interactive pause() shell lifecycle
+        if trimmed.localizedCaseInsensitiveContains("Interactive shell started") {
+            events.append(.interactiveShellState(active: true))
+            return events
+        }
+        if trimmed.localizedCaseInsensitiveContains("Exiting interactive shell") {
+            events.append(.interactiveShellState(active: false))
+            return events
+        }
 
         if trimmed == "-- FAILURES:" {
             inFailuresSection = true

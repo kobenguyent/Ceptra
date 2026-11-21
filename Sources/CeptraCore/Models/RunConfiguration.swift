@@ -55,6 +55,15 @@ public enum CodeceptRunMode: Equatable, Hashable, Sendable {
             return "List I.* Actions"
         }
     }
+
+    public var supportsInteractiveDebugging: Bool {
+        switch self {
+        case .runAll, .runFile, .runScenario, .runTag, .runLastFailed:
+            return true
+        case .runWorkers, .runMultiple, .dryRun, .checkEnvironment, .generateDefinitions, .listActions:
+            return false
+        }
+    }
 }
 
 public enum WorkerStrategy: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
@@ -91,6 +100,7 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
     public var multipleSelectedSuites: [String]
     public var multipleRunAll: Bool
     public var esmCjsCompat: Bool
+    public var debugLaunchOptions: DebugLaunchOptions
 
     public init(
         showSteps: Bool = true,
@@ -111,7 +121,8 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         workerSelectedRuns: [String] = [],
         multipleSelectedSuites: [String] = [],
         multipleRunAll: Bool = true,
-        esmCjsCompat: Bool = true
+        esmCjsCompat: Bool = true,
+        debugLaunchOptions: DebugLaunchOptions = DebugLaunchOptions()
     ) {
         self.showSteps = showSteps
         self.debug = debug
@@ -132,6 +143,7 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         self.multipleSelectedSuites = multipleSelectedSuites
         self.multipleRunAll = multipleRunAll
         self.esmCjsCompat = esmCjsCompat
+        self.debugLaunchOptions = debugLaunchOptions
     }
 
     public init(from decoder: Decoder) throws {
@@ -155,6 +167,7 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         self.multipleSelectedSuites = try c.decodeIfPresent([String].self, forKey: .multipleSelectedSuites) ?? []
         self.multipleRunAll = try c.decodeIfPresent(Bool.self, forKey: .multipleRunAll) ?? true
         self.esmCjsCompat = try c.decodeIfPresent(Bool.self, forKey: .esmCjsCompat) ?? true
+        self.debugLaunchOptions = try c.decodeIfPresent(DebugLaunchOptions.self, forKey: .debugLaunchOptions) ?? DebugLaunchOptions()
     }
 
     public static let availableQuickPlugins: [String] = [

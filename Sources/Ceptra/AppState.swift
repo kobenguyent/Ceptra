@@ -120,6 +120,19 @@ final class AppState: ObservableObject {
     @Published var liveScenarioDurations: [String: Int] = [:]
     @Published var activeRunningScenarioKey: String? = nil
 
+    // Interactive Debug Mode State
+    @Published var debugPhase: DebugSessionPhase = .idle
+    @Published var isDebugInspectorVisible: Bool = false
+    @Published var breakpoints: [DebugBreakpoint] = []
+    @Published var debugCallFrames: [DebugCallFrame] = []
+    @Published var selectedCallFrameID: String? = nil
+    @Published var debugScopeVariables: [String: [DebugVariable]] = [:]
+    @Published var debugWatchItems: [DebugWatchItem] = []
+    @Published var debugConsoleEntries: [DebugConsoleEntry] = []
+    @Published var debugJustMyCode: Bool = true
+    @Published var isInteractivePauseShellActive: Bool = false
+    @Published var lastDebugMode: CodeceptRunMode? = nil
+
     // Reports & Artifacts
     @Published var runHistory: [TestRunReport] = []
     @Published var selectedReportID: UUID? = nil
@@ -143,8 +156,12 @@ final class AppState: ObservableObject {
     // Services
     private let settingsStore = AppSettingsStore()
     private let historyStore = RunHistoryStore()
-    private let runnerService = TestRunnerService()
+    let runnerService = TestRunnerService()
     private let updateService = UpdateService()
+    let breakpointStore = BreakpointStore()
+    var cdpClient: CDPInspectorClient? = nil
+    var cdpEventTask: Task<Void, Never>? = nil
+    var hasHandledInitialBreakOnStart: Bool = false
 
     init() {
         let loadedSettings = settingsStore.load()
@@ -277,6 +294,7 @@ final class AppState: ObservableObject {
 
         runHistory = historyStore.loadHistory(forProjectPath: scanned.rootURL.path)
         selectedReportID = runHistory.first?.id
+        loadDebugStateForWorkspace(rootPath: scanned.rootURL.path)
         refreshArtifacts()
 
         // Auto-open first test file or config file for immediate productivity
@@ -438,6 +456,14 @@ final class AppState: ObservableObject {
               let idx = openTabs.firstIndex(where: { $0.filePath == activeTabPath }) else { return }
         let next = (idx + offset + openTabs.count) % openTabs.count
         switchTab(to: openTabs[next].filePath)
+    }
+
+    @discardableResult
+    func moveTab(filePath: String, toIndex: Int) -> Bool {
+        guard let fromIndex = openTabs.firstIndex(where: { $0.filePath == filePath }) else {
+            return false
+        }
+        return TabReorderEngine.move(&openTabs, fromIndex: fromIndex, toIndex: toIndex)
     }
 
     func closeTab(filePath: String) {
@@ -651,13 +677,19 @@ final class AppState: ObservableObject {
 
     // MARK: - Execution Engine
 
-    func run(mode: CodeceptRunMode) {
+    func run(mode: CodeceptRunMode, debugLaunch: DebugLaunchOptions? = nil) {
         guard let workspace, let toolchain = resolvedToolchain else {
             showBanner("Open a CodeceptJS workspace first.", isError: true)
             return
         }
         guard !isRunning else {
             showBanner("A CodeceptJS run is already in progress.", isError: true)
+            return
+        }
+
+        let isDebugSession = (debugLaunch?.enabled == true) && mode.supportsInteractiveDebugging
+        if debugLaunch?.enabled == true && !mode.supportsInteractiveDebugging {
+            showBanner("Step-through debugging is supported for single-process runs (Run File / Scenario / All), not parallel workers.", isError: true)
             return
         }
 
@@ -668,12 +700,23 @@ final class AppState: ObservableObject {
             options: runOptions,
             workspaceRoot: workspace.rootURL,
             configFilePath: workspace.config.configFilePath,
-            toolchain: toolchain
+            toolchain: toolchain,
+            debugOptions: isDebugSession ? debugLaunch : nil
         )
 
         isRunning = true
         isConsoleVisible = true
-        activeRunLabel = mode.displayLabel
+        isInteractivePauseShellActive = false
+        if isDebugSession {
+            lastDebugMode = mode
+            debugPhase = .launching
+            isDebugInspectorVisible = true
+            debugCallFrames = []
+            selectedCallFrameID = nil
+            debugScopeVariables = [:]
+            hasHandledInitialBreakOnStart = false
+        }
+        activeRunLabel = isDebugSession ? "Debug: \(mode.displayLabel)" : mode.displayLabel
         lastCommandLine = command.displayCommand
         consoleLogs = [
             ConsoleLogEntry(
@@ -701,7 +744,7 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let result = try await self.runnerService.execute(command: command) { [weak self] event in
+                let result = try await self.runnerService.execute(command: command, attachStdin: true) { [weak self] event in
                     Task { @MainActor [weak self] in
                         self?.handleLiveEvent(event)
                     }
@@ -759,6 +802,7 @@ final class AppState: ObservableObject {
 
                 self.isRunning = false
                 self.activeRunningScenarioKey = nil
+                self.cleanupDebugSession()
                 self.refreshArtifacts()
 
                 if case .generateDefinitions = mode {
@@ -775,6 +819,7 @@ final class AppState: ObservableObject {
             } catch {
                 self.isRunning = false
                 self.activeRunningScenarioKey = nil
+                self.cleanupDebugSession()
                 self.consoleLogs.append(ConsoleLogEntry(
                     timestamp: Date(),
                     text: "Execution error: \(error.localizedDescription)",
@@ -889,6 +934,10 @@ final class AppState: ObservableObject {
     }
 
     func stopActiveRun() {
+        if debugPhase.isActive {
+            debugPhase = .stopping
+        }
+        cleanupDebugSession()
         runnerService.cancel()
     }
 
@@ -951,7 +1000,27 @@ final class AppState: ObservableObject {
             }
 
         case .summary:
-            break
+            isInteractivePauseShellActive = false
+
+        case .inspectorListening(let url):
+            if debugPhase == .launching {
+                attachInspector(to: url)
+            }
+
+        case .inspectorWaitingToDisconnect:
+            cleanupDebugSession()
+
+        case .interactiveShellState(let active):
+            isInteractivePauseShellActive = active
+            if active {
+                isConsoleVisible = true
+                if debugPhase == .running || debugPhase == .launching {
+                    debugPhase = .interactiveShell
+                }
+                focusCommandInputTrigger += 1
+            } else if debugPhase == .interactiveShell {
+                debugPhase = .running
+            }
         }
     }
 

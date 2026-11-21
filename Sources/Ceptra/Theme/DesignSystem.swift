@@ -209,13 +209,182 @@ enum CeptraAppIconRenderer {
 // MARK: - Apple Liquid Glass Motion & Surface Primitives
 
 enum CeptraMotion {
-    static let micro: Animation = .spring(response: 0.20, dampingFraction: 0.86)
-    static let snappy: Animation = .spring(response: 0.28, dampingFraction: 0.84)
-    static let smooth: Animation = .spring(response: 0.36, dampingFraction: 0.86)
-    static let gentle: Animation = .spring(response: 0.44, dampingFraction: 0.88)
+    static let micro: Animation = .smooth(duration: 0.16, extraBounce: 0.0)
+    static let snappy: Animation = .snappy(duration: 0.24, extraBounce: 0.0)
+    static let panel: Animation = .smooth(duration: 0.30, extraBounce: 0.0)
+    static let smooth: Animation = .smooth(duration: 0.34, extraBounce: 0.0)
+    static let gentle: Animation = .smooth(duration: 0.42, extraBounce: 0.0)
 
     static func resolve(_ animation: Animation, reduceMotion: Bool) -> Animation? {
         reduceMotion ? .easeOut(duration: 0.14) : animation
+    }
+}
+
+/// Pure-SwiftUI resize divider handle for custom animated split panes.
+/// Uses a dedicated 5pt sibling seam (zero overlap with adjacent `NSView` gutters and zero
+/// `NSViewRepresentable` layer-compositing conflicts with `.ultraThinMaterial`), native macOS 15+
+/// `.pointerStyle` directional resize cursors (with macOS 14 `NSCursor` fallback), a subtle
+/// hover/drag accent hairline + centered pill grip, and double-click to reset to default size.
+struct CeptraSplitResizeHandle: View {
+    enum Axis {
+        case horizontal // Vertical divider line, drags left/right
+        case vertical   // Horizontal divider line, drags up/down
+    }
+
+    enum CursorDirection: Equatable {
+        case both
+        case onlyLeadingOrUp
+        case onlyTrailingOrDown
+    }
+
+    let axis: Axis
+    var cursorDirection: CursorDirection = .both
+    let onDragStart: () -> Void
+    let onDragChanged: (CGFloat) -> Void
+    let onDragEnd: () -> Void
+    var onDoubleClick: (() -> Void)? = nil
+
+    @State private var isHovering = false
+    @State private var isDragging = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isActive: Bool { isHovering || isDragging }
+
+    var body: some View {
+        ZStack {
+            Color.clear
+
+            // Crisp 1pt resting seam -> glowing 2pt accent hairline on hover/drag
+            Rectangle()
+                .fill(
+                    isDragging
+                        ? CeptraTheme.accent.opacity(0.90)
+                        : (isHovering ? CeptraTheme.accent.opacity(0.60) : CeptraTheme.border)
+                )
+                .frame(
+                    width: axis == .horizontal ? (isActive ? 2 : 1) : nil,
+                    height: axis == .vertical ? (isActive ? 2 : 1) : nil
+                )
+                .frame(
+                    maxWidth: axis == .vertical ? .infinity : nil,
+                    maxHeight: axis == .horizontal ? .infinity : nil
+                )
+
+            // Minimalist centered glass grip pill on hover/drag
+            Capsule()
+                .fill(
+                    isDragging
+                        ? CeptraTheme.accent
+                        : CeptraTheme.textPrimary.opacity(0.75)
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(Color.white.opacity(isDragging ? 0.45 : 0.25), lineWidth: 0.5)
+                )
+                .shadow(
+                    color: CeptraTheme.accent.opacity(isDragging ? 0.55 : 0.28),
+                    radius: isDragging ? 5 : 2.5
+                )
+                .frame(
+                    width: axis == .horizontal ? 3 : 26,
+                    height: axis == .horizontal ? 24 : 3
+                )
+                .scaleEffect(isActive ? 1.0 : 0.72)
+                .opacity(isActive ? 1.0 : 0.0)
+        }
+        .frame(
+            width: axis == .horizontal ? 5 : nil,
+            height: axis == .vertical ? 5 : nil
+        )
+        .frame(
+            maxWidth: axis == .vertical ? .infinity : nil,
+            maxHeight: axis == .horizontal ? .infinity : nil
+        )
+        .contentShape(Rectangle())
+        .modifier(CeptraResizePointerModifier(axis: axis, direction: cursorDirection, isActive: isActive))
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovering)
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isDragging)
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .onTapGesture(count: 2) {
+            onDoubleClick?()
+        }
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    if !isDragging {
+                        isDragging = true
+                        onDragStart()
+                    }
+                    let delta = axis == .horizontal ? value.translation.width : value.translation.height
+                    onDragChanged(delta)
+                }
+                .onEnded { _ in
+                    isDragging = false
+                    onDragEnd()
+                }
+        )
+    }
+}
+
+private struct CeptraResizePointerModifier: ViewModifier {
+    let axis: CeptraSplitResizeHandle.Axis
+    let direction: CeptraSplitResizeHandle.CursorDirection
+    let isActive: Bool
+
+    @State private var isLegacyCursorPushed = false
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.pointerStyle(nativePointerStyle)
+        } else {
+            content
+                .onChange(of: isActive) { _, active in
+                    syncLegacyCursor(active: active)
+                }
+                .onDisappear {
+                    syncLegacyCursor(active: false)
+                }
+        }
+    }
+
+    @available(macOS 15.0, *)
+    private var nativePointerStyle: PointerStyle {
+        switch (axis, direction) {
+        case (.horizontal, .both):
+            return .columnResize(directions: .all)
+        case (.horizontal, .onlyLeadingOrUp):
+            return .columnResize(directions: .leading)
+        case (.horizontal, .onlyTrailingOrDown):
+            return .columnResize(directions: .trailing)
+        case (.vertical, .both):
+            return .rowResize(directions: .all)
+        case (.vertical, .onlyLeadingOrUp):
+            return .rowResize(directions: .up)
+        case (.vertical, .onlyTrailingOrDown):
+            return .rowResize(directions: .down)
+        }
+    }
+
+    private func syncLegacyCursor(active: Bool) {
+        if active && !isLegacyCursorPushed {
+            let cursor: NSCursor = {
+                switch (axis, direction) {
+                case (.horizontal, .both): return .resizeLeftRight
+                case (.horizontal, .onlyLeadingOrUp): return .resizeLeft
+                case (.horizontal, .onlyTrailingOrDown): return .resizeRight
+                case (.vertical, .both): return .resizeUpDown
+                case (.vertical, .onlyLeadingOrUp): return .resizeUp
+                case (.vertical, .onlyTrailingOrDown): return .resizeDown
+                }
+            }()
+            cursor.push()
+            isLegacyCursorPushed = true
+        } else if !active && isLegacyCursorPushed {
+            NSCursor.pop()
+            isLegacyCursorPushed = false
+        }
     }
 }
 
@@ -633,6 +802,8 @@ struct CeptraWindowTitlebarDragArea: NSViewRepresentable {
 
         override var mouseDownCanMoveWindow: Bool { true }
 
+        override var isOpaque: Bool { false }
+
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
             true
         }
@@ -707,6 +878,8 @@ struct CeptraGlassSegmentedControl<Option: Identifiable & Hashable>: View {
                         }
                         Text(label(option))
                             .font(.system(size: fontSize, weight: isSelected ? .semibold : .medium))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                         if let count = badgeCount?(option) {
                             Text("\(count)")
                                 .font(.system(size: max(9.5, fontSize - 1.5), weight: .semibold, design: .monospaced))
@@ -752,6 +925,7 @@ struct CeptraGlassSegmentedControl<Option: Identifiable & Hashable>: View {
         }
         .padding(3)
         .ceptraGlassSurface(cornerRadius: 9, tint: CeptraTheme.panelBG, tintOpacity: 0.55)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
