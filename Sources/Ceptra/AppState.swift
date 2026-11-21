@@ -583,14 +583,20 @@ final class AppState: ObservableObject {
         }
         openFileByURL(target.fileURL, jumpToLine: target.lineNumber)
         let symBadge = target.isSymlink ? " (via symlink)" : ""
-        let lineSuffix = target.lineNumber.map { ":\($0)" } ?? ""
-        showBanner("Opened \(target.displayLabel)\(lineSuffix)\(symBadge)")
+        let formattedLabel: String
+        if let line = target.lineNumber, !target.displayLabel.hasSuffix(":\(line)") {
+            formattedLabel = "\(target.displayLabel):\(line)"
+        } else {
+            formattedLabel = target.displayLabel
+        }
+        let prefix = target.kind == .usage ? "Jumped to usage in" : "Opened"
+        showBanner("\(prefix) \(formattedLabel)\(symBadge)")
     }
 
     func navigateBack() {
         guard let entry = navigationBackStack.popLast() else { return }
         if let currentPath = activeTabPath {
-            navigationForwardStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: 1))
+            navigationForwardStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: max(1, cursorLine)))
         }
         openFileByURL(URL(fileURLWithPath: entry.filePath), jumpToLine: entry.lineNumber)
     }
@@ -598,7 +604,7 @@ final class AppState: ObservableObject {
     func navigateForward() {
         guard let entry = navigationForwardStack.popLast() else { return }
         if let currentPath = activeTabPath {
-            navigationBackStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: 1))
+            navigationBackStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: max(1, cursorLine)))
         }
         openFileByURL(URL(fileURLWithPath: entry.filePath), jumpToLine: entry.lineNumber)
     }

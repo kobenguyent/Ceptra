@@ -97,6 +97,7 @@ struct CodeEditorView: NSViewRepresentable {
 
             // 2. Dismiss transient popups & hover highlights immediately
             coord.completionController.dismiss()
+            coord.navigationPopupController.dismiss()
             textView.clearHoverLink()
 
             // 3. Swap document content cleanly with full fold, layout & undo reset
@@ -203,6 +204,7 @@ struct CodeEditorView: NSViewRepresentable {
         var lastFoldActionTrigger: Int = 0
         var lastPausedLine: Int? = nil
         let completionController = CompletionPopupController()
+        let navigationPopupController = NavigationTargetsPopupController()
         private var observers: [NSObjectProtocol] = []
 
         init(_ parent: CodeEditorView) {
@@ -211,6 +213,7 @@ struct CodeEditorView: NSViewRepresentable {
 
         deinit {
             completionController.dismiss()
+            navigationPopupController.dismiss()
             for observer in observers {
                 NotificationCenter.default.removeObserver(observer)
             }
@@ -223,12 +226,35 @@ struct CodeEditorView: NSViewRepresentable {
                 self?.acceptCompletion(item: item, replacementRange: range)
             }
 
+            navigationPopupController.onSelect = { [weak self] target, fromLine in
+                self?.parent.onNavigate(target, fromLine)
+            }
+
             tv.onManualComplete = { [weak self] in
                 self?.refreshCompletions(forceShow: true)
             }
 
             tv.onInterceptKeyDown = { [weak self] event in
-                guard let self, self.completionController.isVisible else { return false }
+                guard let self else { return false }
+                if self.navigationPopupController.isVisible {
+                    switch event.keyCode {
+                    case 125: // Down Arrow
+                        self.navigationPopupController.moveSelection(delta: 1)
+                        return true
+                    case 126: // Up Arrow
+                        self.navigationPopupController.moveSelection(delta: -1)
+                        return true
+                    case 36, 76: // Return, Enter
+                        return self.navigationPopupController.acceptCurrentSelection()
+                    case 53: // Escape
+                        self.navigationPopupController.dismiss()
+                        return true
+                    default:
+                        self.navigationPopupController.dismiss()
+                        return false
+                    }
+                }
+                guard self.completionController.isVisible else { return false }
                 switch event.keyCode {
                 case 125: // Down Arrow
                     self.completionController.moveSelection(delta: 1)
@@ -253,15 +279,26 @@ struct CodeEditorView: NSViewRepresentable {
                     in: tv.string,
                     sourceFileURL: URL(fileURLWithPath: self.currentDocumentID),
                     workspaceRoot: workspace.rootURL,
-                    config: workspace.config
+                    config: workspace.config,
+                    workspaceFiles: workspace.files
                 )
             }
 
             tv.onNavigateSpan = { [weak self] span in
                 guard let self else { return }
                 self.completionController.dismiss()
+                self.navigationPopupController.dismiss()
                 let currentLine = tv.currentLineNumber()
-                self.parent.onNavigate(span.target, currentLine)
+                if span.hasMultipleTargets {
+                    self.navigationPopupController.present(
+                        span: span,
+                        fromLine: currentLine,
+                        in: tv,
+                        isDarkMode: self.container?.isDarkMode ?? true
+                    )
+                } else {
+                    self.parent.onNavigate(span.target, currentLine)
+                }
             }
 
             tv.onGoToDefinitionKey = { [weak self] in
@@ -309,7 +346,9 @@ struct CodeEditorView: NSViewRepresentable {
                 queue: .main
             ) { [weak self] _ in
                 self?.container?.gutterView.needsDisplay = true
+                self?.container?.textView.clearHoverLink()
                 self?.completionController.dismiss()
+                self?.navigationPopupController.dismiss()
             }
             let frameObserver = NotificationCenter.default.addObserver(
                 forName: NSView.frameDidChangeNotification,
@@ -324,6 +363,7 @@ struct CodeEditorView: NSViewRepresentable {
                 queue: .main
             ) { [weak self] _ in
                 self?.completionController.dismiss()
+                self?.navigationPopupController.dismiss()
             }
             observers.append(contentsOf: [boundsObserver, frameObserver, resignObserver])
         }
@@ -383,10 +423,22 @@ struct CodeEditorView: NSViewRepresentable {
                 in: tv.string,
                 sourceFileURL: URL(fileURLWithPath: currentDocumentID),
                 workspaceRoot: workspace.rootURL,
-                config: workspace.config
+                config: workspace.config,
+                workspaceFiles: workspace.files
             ) {
                 completionController.dismiss()
-                parent.onNavigate(span.target, tv.currentLineNumber())
+                navigationPopupController.dismiss()
+                let currentLine = tv.currentLineNumber()
+                if span.hasMultipleTargets {
+                    navigationPopupController.present(
+                        span: span,
+                        fromLine: currentLine,
+                        in: tv,
+                        isDarkMode: container?.isDarkMode ?? true
+                    )
+                } else {
+                    parent.onNavigate(span.target, currentLine)
+                }
             }
         }
 
@@ -596,7 +648,7 @@ final class CeptraEditorContainerView: NSView {
     let textView: CeptraCodeTextView
     let gutterView: LineNumberGutterView
     let lineLayoutDelegate = CeptraCenteredLineLayoutDelegate()
-    private var gutterWidth: CGFloat = 78
+    private var gutterWidth: CGFloat = 62
 
     private(set) var lineIndex = LineIndexTable(text: "")
     private(set) var foldableRegions: [FoldableRegion] = []
@@ -969,9 +1021,12 @@ final class CeptraEditorContainerView: NSView {
 
     func updateGutter() {
         let lineCount = max(1, lineIndex.lineCount)
-        let digits = max(3, String(lineCount).count)
-        // 14pt breakpoint margin + baseline-matched monospaced line numbers + right padding + dedicated 18pt fold chevron column
-        let newWidth = CGFloat(digits * 9 + 38 + 14)
+        let digits = max(2, String(lineCount).count)
+        let activeFont = NSFont.monospacedSystemFont(ofSize: textView.editorFontSize, weight: .semibold)
+        let digitWidth = ceil(("0" as NSString).size(withAttributes: [.font: activeFont]).width)
+        let numberColumnWidth = CGFloat(digits) * digitWidth
+        // Compact layout: 22pt action/breakpoint column + 4pt gap + exact digit width + 3pt gap + 16pt fold column + 1pt hairline
+        let newWidth = LineNumberGutterView.breakpointMarginWidth + 4 + numberColumnWidth + 3 + LineNumberGutterView.foldColumnWidth + 1
         if abs(gutterWidth - newWidth) > 0.5 {
             gutterWidth = newWidth
             needsLayout = true
@@ -1031,7 +1086,9 @@ final class LineNumberGutterView: NSView {
     private struct ScenarioRunHitItem {
         let lineNumber: Int
         let title: String
+        let status: ExecutionStatus
         let buttonRect: NSRect
+        let hitRect: NSRect
     }
 
     private struct FoldHitItem {
@@ -1053,9 +1110,13 @@ final class LineNumberGutterView: NSView {
     private var hoveredFoldLine: Int? = nil
     private var hoveredBreakpointLine: Int? = nil
     private var hoveredScenarioLine: Int? = nil
+    private var pressedScenarioLine: Int? = nil
 
-    private let breakpointMarginWidth: CGFloat = 14
-    private let foldColumnWidth: CGFloat = 18
+    static let breakpointMarginWidth: CGFloat = 22
+    static let foldColumnWidth: CGFloat = 16
+    private let actionCenterX: CGFloat = 13.0
+    private var breakpointMarginWidth: CGFloat { Self.breakpointMarginWidth }
+    private var foldColumnWidth: CGFloat { Self.foldColumnWidth }
 
     init(textView: NSTextView, scrollView: NSScrollView) {
         self.textView = textView
@@ -1102,6 +1163,7 @@ final class LineNumberGutterView: NSView {
         hoveredFoldLine = nil
         hoveredBreakpointLine = nil
         hoveredScenarioLine = nil
+        pressedScenarioLine = nil
         toolTip = nil
         NSCursor.arrow.set()
         needsDisplay = true
@@ -1110,8 +1172,10 @@ final class LineNumberGutterView: NSView {
     override func mouseDown(with event: NSEvent) {
         let pt = convert(event.locationInWindow, from: nil)
 
-        if let scHit = visibleScenarioItems.first(where: { $0.buttonRect.contains(pt) }) {
-            onRunScenario?(scHit.title)
+        if let scHit = visibleScenarioItems.first(where: { $0.hitRect.contains(pt) }) {
+            pressedScenarioLine = scHit.lineNumber
+            hoveredScenarioLine = scHit.lineNumber
+            needsDisplay = true
             return
         }
 
@@ -1130,6 +1194,37 @@ final class LineNumberGutterView: NSView {
         }
 
         super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let pressedLine = pressedScenarioLine else {
+            super.mouseDragged(with: event)
+            return
+        }
+        let pt = convert(event.locationInWindow, from: nil)
+        let inside = visibleScenarioItems.first(where: { $0.lineNumber == pressedLine })?.hitRect.contains(pt) ?? false
+        let nextHover = inside ? pressedLine : nil
+        if hoveredScenarioLine != nextHover {
+            hoveredScenarioLine = nextHover
+            needsDisplay = true
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let pressedLine = pressedScenarioLine else {
+            super.mouseUp(with: event)
+            return
+        }
+        let pt = convert(event.locationInWindow, from: nil)
+        pressedScenarioLine = nil
+        if let scHit = visibleScenarioItems.first(where: { $0.lineNumber == pressedLine && $0.hitRect.contains(pt) }) {
+            needsDisplay = true
+            onRunScenario?(scHit.title)
+        } else {
+            hoveredScenarioLine = nil
+            needsDisplay = true
+        }
+        updateHover(atWindowPoint: event.locationInWindow)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -1315,13 +1410,22 @@ final class LineNumberGutterView: NSView {
 
     private func updateHover(atWindowPoint windowPoint: NSPoint) {
         let pt = convert(windowPoint, from: nil)
-        if let scHit = visibleScenarioItems.first(where: { $0.buttonRect.contains(pt) }) {
+        if let scHit = visibleScenarioItems.first(where: { $0.hitRect.contains(pt) }) {
             let changed = hoveredScenarioLine != scHit.lineNumber || hoveredFoldLine != nil || hoveredBreakpointLine != nil
             hoveredScenarioLine = scHit.lineNumber
             hoveredFoldLine = nil
             hoveredBreakpointLine = nil
             if changed { needsDisplay = true }
-            toolTip = "Run scenario \"\(scHit.title)\""
+            switch scHit.status {
+            case .failed:
+                toolTip = "Re-run failed scenario \"\(scHit.title)\""
+            case .passed:
+                toolTip = "Re-run scenario \"\(scHit.title)\""
+            case .running:
+                toolTip = "Running scenario \"\(scHit.title)\"…"
+            default:
+                toolTip = "Run scenario \"\(scHit.title)\""
+            }
             NSCursor.pointingHand.set()
             return
         }
@@ -1339,8 +1443,9 @@ final class LineNumberGutterView: NSView {
             NSCursor.pointingHand.set()
         } else if pt.x <= breakpointMarginWidth + 2,
                   let lineHit = visibleLineItems.first(where: { $0.rowRect.contains(pt) }) {
-            let changed = hoveredBreakpointLine != lineHit.lineNumber || hoveredFoldLine != nil
+            let changed = hoveredBreakpointLine != lineHit.lineNumber || hoveredFoldLine != nil || hoveredScenarioLine != nil
             hoveredFoldLine = nil
+            hoveredScenarioLine = nil
             hoveredBreakpointLine = lineHit.lineNumber
             if changed {
                 needsDisplay = true
@@ -1360,9 +1465,10 @@ final class LineNumberGutterView: NSView {
             }
             NSCursor.pointingHand.set()
         } else {
-            let changed = hoveredFoldLine != nil || hoveredBreakpointLine != nil
+            let changed = hoveredFoldLine != nil || hoveredBreakpointLine != nil || hoveredScenarioLine != nil
             hoveredFoldLine = nil
             hoveredBreakpointLine = nil
+            hoveredScenarioLine = nil
             toolTip = nil
             NSCursor.arrow.set()
             if changed {
@@ -1462,31 +1568,27 @@ final class LineNumberGutterView: NSView {
             if let breakpoint {
                 drawBreakpoint(breakpoint, in: marginRect)
             } else if let scenarioInfo = scenariosByLine[lineNumber], !isPaused {
-                let btnSize: CGFloat = 14
+                let btnSize: CGFloat = 16
                 let btnRect = NSRect(
-                    x: marginRect.midX - btnSize * 0.5 + 1,
-                    y: marginRect.midY - btnSize * 0.5,
+                    x: round(actionCenterX - btnSize * 0.5),
+                    y: round(marginRect.midY - btnSize * 0.5),
                     width: btnSize,
                     height: btnSize
                 )
-                visibleScenarioItems.append(ScenarioRunHitItem(lineNumber: lineNumber, title: scenarioInfo.title, buttonRect: btnRect))
-                let isFailed = scenarioInfo.status == .failed
-                let isHov = hoveredScenarioLine == lineNumber
-                let baseTint = isFailed
-                    ? NSColor(srgbRed: 0.949, green: 0.400, blue: 0.439, alpha: 1.0)
-                    : NSColor(srgbRed: 0.188, green: 0.816, blue: 0.541, alpha: 1.0)
-                baseTint.withAlphaComponent(isHov ? 0.30 : 0.16).setFill()
-                NSBezierPath(ovalIn: btnRect).fill()
-
-                let tri = NSBezierPath()
-                let cx = btnRect.midX + 0.6
-                let cy = btnRect.midY
-                tri.move(to: NSPoint(x: cx - 2.3, y: cy - 3.0))
-                tri.line(to: NSPoint(x: cx + 3.0, y: cy))
-                tri.line(to: NSPoint(x: cx - 2.3, y: cy + 3.0))
-                tri.close()
-                baseTint.setFill()
-                tri.fill()
+                let hitRect = btnRect.insetBy(dx: -2, dy: -2)
+                visibleScenarioItems.append(ScenarioRunHitItem(
+                    lineNumber: lineNumber,
+                    title: scenarioInfo.title,
+                    status: scenarioInfo.status,
+                    buttonRect: btnRect,
+                    hitRect: hitRect
+                ))
+                drawScenarioRunButton(
+                    in: btnRect,
+                    status: scenarioInfo.status,
+                    isHovered: hoveredScenarioLine == lineNumber,
+                    isPressed: pressedScenarioLine == lineNumber && hoveredScenarioLine == lineNumber
+                )
             } else if hoveredBreakpointLine == lineNumber && !isPaused {
                 drawBreakpointHoverPreview(in: marginRect)
             }
@@ -1587,7 +1689,7 @@ final class LineNumberGutterView: NSView {
             NSBezierPath(roundedRect: pill, xRadius: 3, yRadius: 3).fill()
         } else if highlighted {
             let pill = NSRect(x: cx - 6, y: cy - 6, width: 12, height: 12)
-            NSColor.white.withAlphaComponent(0.08).setFill()
+            (isDarkMode ? NSColor.white.withAlphaComponent(0.08) : NSColor.black.withAlphaComponent(0.06)).setFill()
             NSBezierPath(roundedRect: pill, xRadius: 3, yRadius: 3).fill()
         }
 
@@ -1622,8 +1724,146 @@ final class LineNumberGutterView: NSView {
         path.stroke()
     }
 
+    private func drawScenarioRunButton(
+        in rect: NSRect,
+        status: ExecutionStatus,
+        isHovered: Bool,
+        isPressed: Bool
+    ) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+
+        let accent: NSColor
+        switch status {
+        case .failed:
+            accent = isDarkMode
+                ? NSColor(srgbRed: 0.949, green: 0.400, blue: 0.439, alpha: 1.0)
+                : NSColor(srgbRed: 0.863, green: 0.149, blue: 0.149, alpha: 1.0)
+        case .running:
+            accent = isDarkMode
+                ? NSColor(srgbRed: 0.369, green: 0.557, blue: 1.0, alpha: 1.0)
+                : NSColor(srgbRed: 0.145, green: 0.388, blue: 0.922, alpha: 1.0)
+        case .passed, .idle, .skipped, .cancelled:
+            accent = isDarkMode
+                ? NSColor(srgbRed: 0.188, green: 0.816, blue: 0.541, alpha: 1.0)
+                : NSColor(srgbRed: 0.020, green: 0.588, blue: 0.412, alpha: 1.0)
+        }
+
+        let drawRect = isPressed ? rect.insetBy(dx: 0.6, dy: 0.6) : rect
+        let cornerRadius: CGFloat = isPressed ? 4.4 : 4.8
+        let containerPath = CGPath(
+            roundedRect: drawRect,
+            cornerWidth: cornerRadius,
+            cornerHeight: cornerRadius,
+            transform: nil
+        )
+
+        ctx.saveGState()
+
+        if isHovered || isPressed {
+            // Elevated tactile solid accent squircle matching the titlebar ▶ Run pill
+            if !isPressed {
+                ctx.setShadow(
+                    offset: CGSize(width: 0, height: -1),
+                    blur: 4.5,
+                    color: accent.withAlphaComponent(isDarkMode ? 0.38 : 0.28).cgColor
+                )
+            }
+            let fillColor = isPressed
+                ? (accent.blended(withFraction: 0.16, of: .black) ?? accent)
+                : accent
+            ctx.addPath(containerPath)
+            ctx.setFillColor(fillColor.cgColor)
+            ctx.fillPath()
+
+            // Crisp top-specular inner edge
+            ctx.setShadow(offset: .zero, blur: 0, color: nil)
+            let insetBorder = drawRect.insetBy(dx: 0.4, dy: 0.4)
+            let borderPath = CGPath(
+                roundedRect: insetBorder,
+                cornerWidth: max(1, cornerRadius - 0.4),
+                cornerHeight: max(1, cornerRadius - 0.4),
+                transform: nil
+            )
+            ctx.addPath(borderPath)
+            ctx.setStrokeColor(NSColor.white.withAlphaComponent(isPressed ? 0.14 : 0.26).cgColor)
+            ctx.setLineWidth(0.75)
+            ctx.strokePath()
+        } else {
+            // Calm, jewel-like matte translucent squircle with whisper-thin hairline rim
+            let bgAlpha: CGFloat
+            let rimAlpha: CGFloat
+            switch status {
+            case .failed:
+                bgAlpha = isDarkMode ? 0.14 : 0.10
+                rimAlpha = isDarkMode ? 0.38 : 0.34
+            case .passed:
+                bgAlpha = isDarkMode ? 0.14 : 0.10
+                rimAlpha = isDarkMode ? 0.36 : 0.32
+            case .running:
+                bgAlpha = isDarkMode ? 0.18 : 0.12
+                rimAlpha = isDarkMode ? 0.46 : 0.38
+            case .idle, .skipped, .cancelled:
+                bgAlpha = isDarkMode ? 0.085 : 0.07
+                rimAlpha = isDarkMode ? 0.24 : 0.24
+            }
+
+            ctx.addPath(containerPath)
+            ctx.setFillColor(accent.withAlphaComponent(bgAlpha).cgColor)
+            ctx.fillPath()
+
+            let insetBorder = drawRect.insetBy(dx: 0.375, dy: 0.375)
+            let borderPath = CGPath(
+                roundedRect: insetBorder,
+                cornerWidth: max(1, cornerRadius - 0.375),
+                cornerHeight: max(1, cornerRadius - 0.375),
+                transform: nil
+            )
+            ctx.addPath(borderPath)
+            ctx.setStrokeColor(accent.withAlphaComponent(rimAlpha).cgColor)
+            ctx.setLineWidth(0.75)
+            ctx.strokePath()
+        }
+
+        // Optically centered, soft-cornered play glyph (matching Apple SF Symbol play.fill geometry)
+        let cx = drawRect.midX + 0.55
+        let cy = drawRect.midY
+        let scale: CGFloat = isPressed ? 0.94 : 1.0
+        let leftX = cx - 2.65 * scale
+        let rightX = cx + 3.15 * scale
+        let halfH = 3.25 * scale
+        let tipRadius: CGFloat = 0.85 * scale
+
+        let pTop = CGPoint(x: leftX, y: cy - halfH)
+        let pRight = CGPoint(x: rightX, y: cy)
+        let pBottom = CGPoint(x: leftX, y: cy + halfH)
+
+        let playPath = CGMutablePath()
+        playPath.move(to: CGPoint(x: leftX, y: cy))
+        playPath.addArc(tangent1End: pTop, tangent2End: pRight, radius: tipRadius)
+        playPath.addArc(tangent1End: pRight, tangent2End: pBottom, radius: tipRadius)
+        playPath.addArc(tangent1End: pBottom, tangent2End: pTop, radius: tipRadius)
+        playPath.closeSubpath()
+
+        let glyphColor: NSColor
+        if isHovered || isPressed {
+            if status == .failed || status == .running {
+                glyphColor = .white
+            } else {
+                glyphColor = NSColor(srgbRed: 0.02, green: 0.12, blue: 0.07, alpha: 1.0)
+            }
+        } else {
+            glyphColor = accent.withAlphaComponent(isDarkMode ? 0.95 : 0.92)
+        }
+
+        ctx.addPath(playPath)
+        ctx.setFillColor(glyphColor.cgColor)
+        ctx.fillPath()
+
+        ctx.restoreGState()
+    }
+
     private func drawBreakpointHoverPreview(in marginRect: NSRect) {
-        let cx = marginRect.midX + 1.5
+        let cx = actionCenterX
         let cy = marginRect.midY
         let r: CGFloat = 4.25
         let circle = NSBezierPath(ovalIn: NSRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
@@ -1632,7 +1872,7 @@ final class LineNumberGutterView: NSView {
     }
 
     private func drawBreakpoint(_ bp: DebugBreakpoint, in marginRect: NSRect) {
-        let cx = marginRect.midX + 1.5
+        let cx = actionCenterX
         let cy = marginRect.midY
         let r: CGFloat = 4.5
 
@@ -1692,7 +1932,7 @@ final class LineNumberGutterView: NSView {
     }
 
     private func drawPausedIndicator(in marginRect: NSRect, overlappingBreakpoint: Bool) {
-        let cx = marginRect.midX + 1.5
+        let cx = actionCenterX
         let cy = marginRect.midY
 
         let arrow = NSBezierPath()
@@ -1740,6 +1980,50 @@ final class CeptraCodeTextView: NSTextView {
     private var lastMouseWindowPoint: NSPoint?
     private var renderedFoldBadges: [(startLine: Int, rect: NSRect)] = []
     private var isHoveringFoldBadge = false
+    private var flagsMonitor: Any?
+    private let hoverLinkPreview = HoverLinkPreviewController()
+
+    deinit {
+        if let flagsMonitor {
+            NSEvent.removeMonitor(flagsMonitor)
+        }
+        hoverLinkPreview.dismiss()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let flagsMonitor {
+            NSEvent.removeMonitor(flagsMonitor)
+            self.flagsMonitor = nil
+        }
+        guard window != nil else {
+            clearHoverLink()
+            return
+        }
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.handleGlobalModifierFlagsChanged(event.modifierFlags)
+            return event
+        }
+    }
+
+    private func handleGlobalModifierFlagsChanged(_ flags: NSEvent.ModifierFlags) {
+        guard let window, window.isKeyWindow else {
+            if hoveredSpan != nil { clearHoverLink() }
+            return
+        }
+        if isNavigationModifierPressed(flags) {
+            let mouseInWindow = window.mouseLocationOutsideOfEventStream
+            let localPt = convert(mouseInWindow, from: nil)
+            if visibleRect.contains(localPt) {
+                lastMouseWindowPoint = mouseInWindow
+                updateHoverLink(atWindowPoint: mouseInWindow, modifierPressed: true)
+            } else if hoveredSpan != nil {
+                clearHoverLink()
+            }
+        } else if hoveredSpan != nil {
+            clearHoverLink()
+        }
+    }
 
     func configureDefaults() {
         isEditable = true
@@ -1873,7 +2157,54 @@ final class CeptraCodeTextView: NSTextView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        drawHoveredLinkDecoration(in: dirtyRect)
         drawCollapsedFoldBadges(in: dirtyRect)
+    }
+
+    private func hoveredLinkColor() -> NSColor {
+        isDarkMode
+            ? NSColor(srgbRed: 0.220, green: 0.741, blue: 0.973, alpha: 1.0) // #38BDF8 sky-cyan link
+            : NSColor(srgbRed: 0.114, green: 0.306, blue: 0.847, alpha: 1.0) // #1D4ED8 royal link blue
+    }
+
+    private func drawHoveredLinkDecoration(in dirtyRect: NSRect) {
+        guard let span = hoveredSpan,
+              let layoutManager,
+              let textContainer else { return }
+        let fullLen = (string as NSString).length
+        guard span.range.location <= fullLen, NSMaxRange(span.range) <= fullLen else { return }
+
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: span.range, actualCharacterRange: nil)
+        guard glyphRange.length > 0 else { return }
+
+        var tokenRect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        tokenRect.origin.x += textContainerOrigin.x
+        tokenRect.origin.y += textContainerOrigin.y
+        guard tokenRect.width > 0, tokenRect.intersects(dirtyRect.insetBy(dx: -4, dy: -4)) else { return }
+
+        let linkColor = hoveredLinkColor()
+
+        // 1. Subtle soft hover pill behind the link text
+        let pillRect = NSRect(
+            x: tokenRect.minX - 2,
+            y: tokenRect.minY + 1,
+            width: tokenRect.width + 4,
+            height: max(4, tokenRect.height - 2)
+        )
+        linkColor.withAlphaComponent(isDarkMode ? 0.13 : 0.10).setFill()
+        NSBezierPath(roundedRect: pillRect, xRadius: 3.5, yRadius: 3.5).fill()
+
+        // 2. Crisp solid text-link underline right beneath the text baseline
+        let metrics = CeptraCenteredLineLayoutDelegate.metrics(fontSize: editorFontSize, in: layoutManager)
+        let underlineY = min(tokenRect.maxY - 1.5, round(tokenRect.minY + metrics.baseline + 2.5))
+        let underlineRect = NSRect(
+            x: tokenRect.minX,
+            y: underlineY,
+            width: tokenRect.width,
+            height: 1.25
+        )
+        linkColor.setFill()
+        underlineRect.fill()
     }
 
     private func drawCollapsedFoldBadges(in dirtyRect: NSRect) {
@@ -1940,13 +2271,13 @@ final class CeptraCodeTextView: NSTextView {
             onManualComplete?()
             return
         }
-        // F12 -> Go to Definition / Follow Import
-        if event.keyCode == 111 {
+        // F12 or Ctrl+B -> Go to Declaration / Usages (PyCharm-style)
+        let mods = event.modifierFlags.intersection([.command, .option, .shift, .control])
+        if event.keyCode == 111 || (mods == [.control] && event.keyCode == 11) {
             onGoToDefinitionKey?()
             return
         }
         // ⌘⌥[ / ⌘⌥] -> Collapse / Expand block at caret; ⌘⌥⇧[ / ⌘⌥⇧] -> Collapse / Expand all
-        let mods = event.modifierFlags.intersection([.command, .option, .shift, .control])
         if mods == [.command, .option] && event.keyCode == 33 { // [
             onFoldShortcut?(.collapseAtCaret)
             return
@@ -1973,13 +2304,30 @@ final class CeptraCodeTextView: NSTextView {
         onManualComplete?()
     }
 
+    private func isNavigationModifierPressed(_ flags: NSEvent.ModifierFlags) -> Bool {
+        let clean = flags.intersection([.command, .control, .option])
+        return clean == [.command] || clean == [.control]
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        if hoveredSpan != nil || isHoveringFoldBadge {
+            NSCursor.pointingHand.set()
+            return
+        }
+        super.cursorUpdate(with: event)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        lastMouseWindowPoint = event.locationInWindow
+        if isNavigationModifierPressed(event.modifierFlags) {
+            updateHoverLink(atWindowPoint: event.locationInWindow, modifierPressed: true)
+        }
+    }
+
     override func flagsChanged(with event: NSEvent) {
         super.flagsChanged(with: event)
-        if event.modifierFlags.contains(.command), let pt = lastMouseWindowPoint {
-            updateHoverLink(atWindowPoint: pt, commandPressed: true)
-        } else {
-            clearHoverLink()
-        }
+        handleGlobalModifierFlagsChanged(event.modifierFlags)
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -1998,9 +2346,8 @@ final class CeptraCodeTextView: NSTextView {
             toolTip = nil
             NSCursor.iBeam.set()
         }
-        let cmdDown = event.modifierFlags.contains(.command)
-        if cmdDown {
-            updateHoverLink(atWindowPoint: event.locationInWindow, commandPressed: true)
+        if isNavigationModifierPressed(event.modifierFlags) {
+            updateHoverLink(atWindowPoint: event.locationInWindow, modifierPressed: true)
         } else if hoveredSpan != nil {
             clearHoverLink()
         }
@@ -2013,13 +2360,25 @@ final class CeptraCodeTextView: NSTextView {
         clearHoverLink()
     }
 
+    override func menu(for event: NSEvent) -> NSMenu? {
+        // Intercept Ctrl+Click on navigable symbols so it jumps like PyCharm instead of opening context menu
+        if event.type == .leftMouseDown && isNavigationModifierPressed(event.modifierFlags) {
+            if let span = resolveSpan(atWindowPoint: event.locationInWindow) {
+                clearHoverLink()
+                onNavigateSpan?(span)
+                return nil
+            }
+        }
+        return super.menu(for: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
         let localPoint = convert(event.locationInWindow, from: nil)
         if let badge = renderedFoldBadges.first(where: { $0.rect.contains(localPoint) }) {
             onExpandFoldedLine?(badge.startLine)
             return
         }
-        if event.modifierFlags.contains(.command) {
+        if isNavigationModifierPressed(event.modifierFlags) {
             if let span = resolveSpan(atWindowPoint: event.locationInWindow) {
                 clearHoverLink()
                 onNavigateSpan?(span)
@@ -2031,34 +2390,74 @@ final class CeptraCodeTextView: NSTextView {
 
     private func resolveSpan(atWindowPoint windowPoint: NSPoint) -> NavigableSpan? {
         let localPoint = convert(windowPoint, from: nil)
-        guard let layoutManager, let textContainer else { return nil }
+        guard let layoutManager, let textContainer, layoutManager.numberOfGlyphs > 0 else { return nil }
         let containerPoint = NSPoint(
             x: localPoint.x - textContainerOrigin.x,
             y: localPoint.y - textContainerOrigin.y
         )
+        guard containerPoint.x >= 0, containerPoint.y >= 0 else { return nil }
         var fraction: CGFloat = 0
         let glyphIdx = layoutManager.glyphIndex(for: containerPoint, in: textContainer, fractionOfDistanceThroughGlyph: &fraction)
+        guard glyphIdx < layoutManager.numberOfGlyphs else { return nil }
+        let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+        guard containerPoint.x <= usedRect.maxX + 4,
+              containerPoint.y >= usedRect.minY - 2,
+              containerPoint.y <= usedRect.maxY + 2 else {
+            return nil
+        }
         let charIdx = layoutManager.characterIndexForGlyph(at: glyphIdx)
         guard charIdx < (string as NSString).length else { return nil }
         return onResolveHoverLink?(charIdx)
     }
 
-    private func updateHoverLink(atWindowPoint windowPoint: NSPoint, commandPressed: Bool) {
-        guard commandPressed, let span = resolveSpan(atWindowPoint: windowPoint) else {
+    private func updateHoverLink(atWindowPoint windowPoint: NSPoint, modifierPressed: Bool) {
+        guard modifierPressed, let span = resolveSpan(atWindowPoint: windowPoint) else {
             clearHoverLink()
             return
         }
-        if hoveredSpan == span { return }
+        if hoveredSpan == span {
+            NSCursor.pointingHand.set()
+            return
+        }
         clearHoverLink()
         hoveredSpan = span
         applyHoverHighlight(for: span)
+
         let symNote = span.target.isSymlink ? " (symlink)" : ""
-        let lineNote = span.target.lineNumber.map { ":\($0)" } ?? ""
-        toolTip = "⌘ Click to open \(span.target.displayLabel)\(lineNote)\(symNote)"
+        let formattedLabel: String
+        if let line = span.target.lineNumber, !span.target.displayLabel.hasSuffix(":\(line)") {
+            formattedLabel = "\(span.target.displayLabel):\(line)"
+        } else {
+            formattedLabel = span.target.displayLabel
+        }
+        let previewNote = span.target.previewText.map { "  ·  \($0)" } ?? ""
+
+        let summaryText: String
+        if span.kind == .usage {
+            if span.targets.count > 1 {
+                summaryText = "\(span.targets.count) usages of \(span.specifier)"
+            } else {
+                summaryText = "Usage → \(formattedLabel)\(previewNote)"
+            }
+        } else if span.hasMultipleTargets {
+            summaryText = "\(span.targets.count) declarations of \(span.specifier)"
+        } else {
+            summaryText = "\(formattedLabel)\(symNote)\(previewNote)"
+        }
+
+        toolTip = "Click to jump → \(summaryText)"
+        hoverLinkPreview.present(
+            summary: summaryText,
+            isUsage: span.kind == .usage,
+            forRange: span.range,
+            in: self,
+            isDarkMode: isDarkMode
+        )
         NSCursor.pointingHand.set()
     }
 
     func clearHoverLink() {
+        let hadHover = hoveredSpan != nil
         if let prev = hoveredSpan, let layoutManager {
             let fullLen = (string as NSString).length
             if prev.range.location <= fullLen && NSMaxRange(prev.range) <= fullLen {
@@ -2069,19 +2468,22 @@ final class CeptraCodeTextView: NSTextView {
         }
         hoveredSpan = nil
         toolTip = nil
-        NSCursor.iBeam.set()
+        hoverLinkPreview.dismiss()
+        if hadHover {
+            needsDisplay = true
+            NSCursor.iBeam.set()
+        }
     }
 
     private func applyHoverHighlight(for span: NavigableSpan) {
         guard let layoutManager else { return }
         let fullLen = (string as NSString).length
         guard span.range.location <= fullLen, NSMaxRange(span.range) <= fullLen else { return }
-        let linkCyan = NSColor(red: 0.36, green: 0.86, blue: 0.98, alpha: 1.0)
+        let linkColor = hoveredLinkColor()
         layoutManager.addTemporaryAttributes([
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-            .underlineColor: linkCyan,
-            .foregroundColor: linkCyan
+            .foregroundColor: linkColor
         ], forCharacterRange: span.range)
+        needsDisplay = true
     }
 
     override func insertTab(_ sender: Any?) {
@@ -2436,5 +2838,357 @@ final class CompletionPopupController: NSObject, NSTableViewDataSource, NSTableV
         case .path: return NSColor(red: 0.98, green: 0.76, blue: 0.42, alpha: 1.0)
         case .symbol: return NSColor(red: 0.72, green: 0.78, blue: 0.88, alpha: 1.0)
         }
+    }
+}
+
+// MARK: - PyCharm-Style Floating Declarations & Usages Disambiguation Panel
+
+final class NavigationTargetsPopupController: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    private var panel: NSPanel?
+    private var effectView: NSVisualEffectView?
+    private let headerLabel = NSTextField(labelWithString: "")
+    private let tableView = NSTableView()
+    private let scrollView = NSScrollView()
+    private var currentTargets: [NavigationTarget] = []
+    private var originLine: Int = 1
+    private var isDarkMode: Bool = true
+    var onSelect: ((NavigationTarget, Int) -> Void)?
+
+    var isVisible: Bool {
+        panel?.isVisible == true && !currentTargets.isEmpty
+    }
+
+    override init() {
+        super.init()
+        setupPanel()
+    }
+
+    private func setupPanel() {
+        let p = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 220),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: true
+        )
+        p.isFloatingPanel = true
+        p.level = .popUpMenu
+        p.backgroundColor = .clear
+        p.isOpaque = false
+        p.hasShadow = true
+        p.hidesOnDeactivate = true
+
+        let container = NSVisualEffectView(frame: p.contentRect(forFrameRect: p.frame))
+        container.material = .popover
+        container.blendingMode = .behindWindow
+        container.state = .active
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 10
+        container.layer?.borderWidth = 1
+        container.layer?.masksToBounds = true
+        self.effectView = container
+
+        headerLabel.font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
+        headerLabel.lineBreakMode = .byTruncatingTail
+        headerLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("navTarget"))
+        col.width = 448
+        tableView.addTableColumn(col)
+        tableView.headerView = nil
+        tableView.backgroundColor = .clear
+        tableView.rowHeight = 28
+        tableView.intercellSpacing = NSSize(width: 0, height: 1)
+        tableView.selectionHighlightStyle = .regular
+        tableView.focusRingType = .none
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.target = self
+        tableView.action = #selector(handleRowClick)
+
+        scrollView.documentView = tableView
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(headerLabel)
+        container.addSubview(scrollView)
+        NSLayoutConstraint.activate([
+            headerLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            headerLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            headerLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: 7),
+            headerLabel.heightAnchor.constraint(equalToConstant: 16),
+
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
+            scrollView.topAnchor.constraint(equalTo: headerLabel.bottomAnchor, constant: 4),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4)
+        ])
+
+        p.contentView = container
+        self.panel = p
+    }
+
+    func present(span: NavigableSpan, fromLine: Int, in textView: NSTextView, isDarkMode: Bool) {
+        guard let panel, let hostWindow = textView.window, !span.targets.isEmpty else { return }
+        self.currentTargets = span.targets
+        self.originLine = fromLine
+        self.isDarkMode = isDarkMode
+
+        let appearance = NSAppearance(named: isDarkMode ? .darkAqua : .aqua)
+        panel.appearance = appearance
+        effectView?.appearance = appearance
+        effectView?.layer?.borderColor = (isDarkMode
+            ? NSColor.white.withAlphaComponent(0.16)
+            : NSColor.black.withAlphaComponent(0.12)).cgColor
+        headerLabel.textColor = isDarkMode
+            ? NSColor(srgbRed: 0.62, green: 0.68, blue: 0.78, alpha: 1.0)
+            : NSColor(srgbRed: 0.36, green: 0.42, blue: 0.52, alpha: 1.0)
+
+        let titlePrefix = span.kind == .usage ? "Usages of" : "Declarations of"
+        headerLabel.stringValue = "\(titlePrefix) \"\(span.specifier)\" (\(span.targets.count))  ·  ↵ Open · Esc Close"
+
+        tableView.reloadData()
+        tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        tableView.scrollRowToVisible(0)
+
+        let visibleRows = min(span.targets.count, 8)
+        let popupHeight = CGFloat(visibleRows) * 29.0 + 34.0
+        let popupWidth: CGFloat = 460
+
+        let anchorRange = NSRange(location: span.range.location, length: 0)
+        let screenRect = textView.firstRect(forCharacterRange: anchorRange, actualRange: nil)
+        var originX = screenRect.minX
+        var originY = screenRect.minY - popupHeight - 4
+
+        if let screenFrame = hostWindow.screen?.visibleFrame {
+            if originX + popupWidth > screenFrame.maxX {
+                originX = max(screenFrame.minX + 8, screenFrame.maxX - popupWidth - 8)
+            }
+            if originY < screenFrame.minY {
+                originY = screenRect.maxY + 4
+            }
+        }
+
+        panel.setFrame(NSRect(x: originX, y: originY, width: popupWidth, height: popupHeight), display: true)
+        if panel.parent !== hostWindow {
+            hostWindow.addChildWindow(panel, ordered: .above)
+        }
+        panel.alphaValue = 1
+        panel.orderFront(nil)
+    }
+
+    func dismiss() {
+        currentTargets = []
+        guard let panel else { return }
+        if let parent = panel.parent {
+            parent.removeChildWindow(panel)
+        }
+        panel.orderOut(nil)
+    }
+
+    func moveSelection(delta: Int) {
+        let count = currentTargets.count
+        guard count > 0 else { return }
+        let current = tableView.selectedRow
+        let next = current < 0 ? 0 : (current + delta + count) % count
+        tableView.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
+        tableView.scrollRowToVisible(next)
+    }
+
+    @discardableResult
+    func acceptCurrentSelection() -> Bool {
+        guard !currentTargets.isEmpty else { return false }
+        let row = max(0, min(tableView.selectedRow, currentTargets.count - 1))
+        let chosen = currentTargets[row]
+        let line = originLine
+        dismiss()
+        onSelect?(chosen, line)
+        return true
+    }
+
+    @objc private func handleRowClick() {
+        let row = tableView.clickedRow
+        guard row >= 0, row < currentTargets.count else { return }
+        let chosen = currentTargets[row]
+        let line = originLine
+        dismiss()
+        onSelect?(chosen, line)
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        currentTargets.count
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < currentTargets.count else { return nil }
+        let target = currentTargets[row]
+
+        let cell = NSView(frame: NSRect(x: 0, y: 0, width: 448, height: 28))
+
+        let badgeText = target.kind == .usage ? "U" : "D"
+        let badgeTint = target.kind == .usage
+            ? NSColor(srgbRed: 0.369, green: 0.557, blue: 1.0, alpha: 1.0)
+            : NSColor(srgbRed: 0.188, green: 0.816, blue: 0.541, alpha: 1.0)
+
+        let badge = NSTextField(labelWithString: badgeText)
+        badge.font = NSFont.monospacedSystemFont(ofSize: 9.5, weight: .bold)
+        badge.alignment = .center
+        badge.textColor = badgeTint
+        badge.wantsLayer = true
+        badge.layer?.backgroundColor = badgeTint.withAlphaComponent(0.16).cgColor
+        badge.layer?.cornerRadius = 4
+        badge.translatesAutoresizingMaskIntoConstraints = false
+
+        let locationLabel = NSTextField(labelWithString: target.displayLabel)
+        locationLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
+        locationLabel.textColor = isDarkMode
+            ? NSColor(srgbRed: 0.92, green: 0.95, blue: 1.0, alpha: 1.0)
+            : NSColor(srgbRed: 0.10, green: 0.13, blue: 0.18, alpha: 1.0)
+        locationLabel.lineBreakMode = .byTruncatingMiddle
+        locationLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        locationLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let previewLabel = NSTextField(labelWithString: target.previewText ?? "")
+        previewLabel.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        previewLabel.textColor = isDarkMode
+            ? NSColor(srgbRed: 0.56, green: 0.62, blue: 0.72, alpha: 1.0)
+            : NSColor(srgbRed: 0.42, green: 0.47, blue: 0.56, alpha: 1.0)
+        previewLabel.lineBreakMode = .byTruncatingTail
+        previewLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        previewLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        cell.addSubview(badge)
+        cell.addSubview(locationLabel)
+        cell.addSubview(previewLabel)
+
+        NSLayoutConstraint.activate([
+            badge.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+            badge.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            badge.widthAnchor.constraint(equalToConstant: 18),
+            badge.heightAnchor.constraint(equalToConstant: 18),
+
+            locationLabel.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 8),
+            locationLabel.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+
+            previewLabel.leadingAnchor.constraint(equalTo: locationLabel.trailingAnchor, constant: 10),
+            previewLabel.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+            previewLabel.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+        ])
+
+        return cell
+    }
+}
+
+// MARK: - Instant Non-Intrusive PyCharm Link Destination Preview Pill
+
+final class HoverLinkPreviewController {
+    private var panel: NSPanel?
+    private var effectView: NSVisualEffectView?
+    private let dotView = NSView()
+    private let textLabel = NSTextField(labelWithString: "")
+
+    init() {
+        setupPanel()
+    }
+
+    private func setupPanel() {
+        let p = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 24),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: true
+        )
+        p.isFloatingPanel = true
+        p.level = .popUpMenu
+        p.backgroundColor = .clear
+        p.isOpaque = false
+        p.hasShadow = true
+        p.ignoresMouseEvents = true
+        p.hidesOnDeactivate = true
+
+        let container = NSVisualEffectView(frame: p.contentRect(forFrameRect: p.frame))
+        container.material = .popover
+        container.blendingMode = .behindWindow
+        container.state = .active
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 6
+        container.layer?.borderWidth = 1
+        container.layer?.masksToBounds = true
+        self.effectView = container
+
+        dotView.wantsLayer = true
+        dotView.layer?.cornerRadius = 3
+        dotView.translatesAutoresizingMaskIntoConstraints = false
+
+        textLabel.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .medium)
+        textLabel.lineBreakMode = .byTruncatingTail
+        textLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(dotView)
+        container.addSubview(textLabel)
+        NSLayoutConstraint.activate([
+            dotView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            dotView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            dotView.widthAnchor.constraint(equalToConstant: 6),
+            dotView.heightAnchor.constraint(equalToConstant: 6),
+
+            textLabel.leadingAnchor.constraint(equalTo: dotView.trailingAnchor, constant: 6),
+            textLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -9),
+            textLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+        ])
+
+        p.contentView = container
+        self.panel = p
+    }
+
+    func present(summary: String, isUsage: Bool, forRange range: NSRange, in textView: NSTextView, isDarkMode: Bool) {
+        guard let panel, let hostWindow = textView.window else { return }
+
+        let appearance = NSAppearance(named: isDarkMode ? .darkAqua : .aqua)
+        panel.appearance = appearance
+        effectView?.appearance = appearance
+        effectView?.layer?.borderColor = (isDarkMode
+            ? NSColor.white.withAlphaComponent(0.14)
+            : NSColor.black.withAlphaComponent(0.12)).cgColor
+        textLabel.textColor = isDarkMode
+            ? NSColor(srgbRed: 0.90, green: 0.94, blue: 1.0, alpha: 1.0)
+            : NSColor(srgbRed: 0.10, green: 0.13, blue: 0.18, alpha: 1.0)
+        dotView.layer?.backgroundColor = (isUsage
+            ? NSColor(srgbRed: 0.369, green: 0.557, blue: 1.0, alpha: 1.0)
+            : NSColor(srgbRed: 0.220, green: 0.741, blue: 0.973, alpha: 1.0)).cgColor
+        textLabel.stringValue = summary
+
+        let measured = (summary as NSString).size(withAttributes: [.font: textLabel.font!]).width
+        let pillWidth = min(520, max(120, ceil(measured) + 32))
+        let pillHeight: CGFloat = 24
+
+        let screenRect = textView.firstRect(forCharacterRange: range, actualRange: nil)
+        var originX = screenRect.minX
+        var originY = screenRect.maxY + 5
+
+        if let screenFrame = hostWindow.screen?.visibleFrame {
+            if originX + pillWidth > screenFrame.maxX {
+                originX = max(screenFrame.minX + 8, screenFrame.maxX - pillWidth - 8)
+            }
+            if originY + pillHeight > screenFrame.maxY {
+                originY = screenRect.minY - pillHeight - 5
+            }
+        }
+
+        panel.setFrame(NSRect(x: originX, y: originY, width: pillWidth, height: pillHeight), display: true)
+        if panel.parent !== hostWindow {
+            hostWindow.addChildWindow(panel, ordered: .above)
+        }
+        panel.orderFront(nil)
+    }
+
+    func dismiss() {
+        guard let panel else { return }
+        if let parent = panel.parent {
+            parent.removeChildWindow(panel)
+        }
+        panel.orderOut(nil)
     }
 }

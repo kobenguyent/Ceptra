@@ -310,10 +310,10 @@ struct CeptraApp: App {
 
                 Divider()
 
-                Button("Go to Import / Definition") {
+                Button("Go to Declaration or Usages") {
                     appState.goToDefinitionTrigger += 1
                 }
-                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                .keyboardShortcut("b", modifiers: .control)
                 .disabled(appState.activeTab == nil)
 
                 Button("Navigate Back") {
