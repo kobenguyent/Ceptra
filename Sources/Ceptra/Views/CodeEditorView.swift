@@ -30,8 +30,11 @@ struct CodeEditorView: NSViewRepresentable {
     var onRemoveBreakpoint: ((UUID) -> Void)? = nil
     var onRunScenario: ((String) -> Void)? = nil
     var onCursorChanged: ((Int, Int) -> Void)? = nil
+    var onSelectionChanged: ((NSRange) -> Void)? = nil
     var onZoomDelta: ((CGFloat) -> Void)? = nil
     var onResetZoom: (() -> Void)? = nil
+    var onQuickCopyCodeSnapshot: (() -> Void)? = nil
+    var onOpenCodeSnapshotStudio: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -328,6 +331,24 @@ struct CodeEditorView: NSViewRepresentable {
                 self?.parent.onResetZoom?()
             }
 
+            tv.onQuickCopyCodeSnapshot = { [weak self] in
+                guard let self, let tv = self.container?.textView else { return }
+                let sel = tv.selectedRange()
+                let pos = tv.currentLineAndColumn()
+                self.parent.onCursorChanged?(pos.line, pos.column)
+                self.parent.onSelectionChanged?(sel)
+                self.parent.onQuickCopyCodeSnapshot?()
+            }
+
+            tv.onOpenCodeSnapshotStudio = { [weak self] in
+                guard let self, let tv = self.container?.textView else { return }
+                let sel = tv.selectedRange()
+                let pos = tv.currentLineAndColumn()
+                self.parent.onCursorChanged?(pos.line, pos.column)
+                self.parent.onSelectionChanged?(sel)
+                self.parent.onOpenCodeSnapshotStudio?()
+            }
+
             container.gutterView.onToggleFold = { [weak container] startLine in
                 container?.toggleFold(atStartLine: startLine)
             }
@@ -418,10 +439,16 @@ struct CodeEditorView: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             container?.gutterView.needsDisplay = true
             container?.textView.needsDisplay = true
-            if let tv = container?.textView, let onCursorChanged = parent.onCursorChanged {
+            if let tv = container?.textView {
                 let pos = tv.currentLineAndColumn()
-                DispatchQueue.main.async {
-                    onCursorChanged(pos.line, pos.column)
+                let sel = tv.selectedRange()
+                let onCursorChanged = parent.onCursorChanged
+                let onSelectionChanged = parent.onSelectionChanged
+                if onCursorChanged != nil || onSelectionChanged != nil {
+                    DispatchQueue.main.async {
+                        onCursorChanged?(pos.line, pos.column)
+                        onSelectionChanged?(sel)
+                    }
                 }
             }
             if !isProgrammaticUpdate && completionController.isVisible {
@@ -2024,6 +2051,8 @@ final class CeptraCodeTextView: NSTextView {
     var onExpandFoldedLine: ((Int) -> Void)?
     var onZoomDelta: ((CGFloat) -> Void)?
     var onResetZoom: (() -> Void)?
+    var onQuickCopyCodeSnapshot: (() -> Void)?
+    var onOpenCodeSnapshotStudio: (() -> Void)?
 
     private var hoveredSpan: NavigableSpan?
     private var lastMouseWindowPoint: NSPoint?
@@ -2477,7 +2506,45 @@ final class CeptraCodeTextView: NSTextView {
                 return nil
             }
         }
-        return super.menu(for: event)
+        let contextMenu = super.menu(for: event) ?? NSMenu(title: "Editor")
+        if onQuickCopyCodeSnapshot != nil || onOpenCodeSnapshotStudio != nil {
+            let targetNoun = selectedRange().length > 0 ? "Selection" : "Code Block"
+            var insertIdx = 0
+            if onQuickCopyCodeSnapshot != nil {
+                let quickItem = NSMenuItem(
+                    title: "Quick Copy Screenshot of \(targetNoun)",
+                    action: #selector(handleQuickCopyCodeSnapshot(_:)),
+                    keyEquivalent: ""
+                )
+                quickItem.target = self
+                quickItem.image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: nil)
+                contextMenu.insertItem(quickItem, at: insertIdx)
+                insertIdx += 1
+            }
+            if onOpenCodeSnapshotStudio != nil {
+                let studioItem = NSMenuItem(
+                    title: "Screenshot \(targetNoun) Studio…",
+                    action: #selector(handleOpenCodeSnapshotStudio(_:)),
+                    keyEquivalent: ""
+                )
+                studioItem.target = self
+                studioItem.image = NSImage(systemSymbolName: "sparkles.rectangle.stack", accessibilityDescription: nil)
+                contextMenu.insertItem(studioItem, at: insertIdx)
+                insertIdx += 1
+            }
+            if insertIdx > 0 {
+                contextMenu.insertItem(.separator(), at: insertIdx)
+            }
+        }
+        return contextMenu
+    }
+
+    @objc private func handleQuickCopyCodeSnapshot(_ sender: Any?) {
+        onQuickCopyCodeSnapshot?()
+    }
+
+    @objc private func handleOpenCodeSnapshotStudio(_ sender: Any?) {
+        onOpenCodeSnapshotStudio?()
     }
 
     override func mouseDown(with event: NSEvent) {

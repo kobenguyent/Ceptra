@@ -180,6 +180,28 @@ struct CommandPaletteView: View {
                 action: { appState.runActiveFile() }
             ))
         }
+        if appState.activeTab != nil {
+            list.append(contentsOf: [
+                PaletteItem(
+                    id: "act-code-snapshot-studio",
+                    title: "Screenshot Code Block…",
+                    subtitle: "Open Code Screenshot Studio for current selection or enclosing block",
+                    icon: "sparkles.rectangle.stack",
+                    iconColor: CeptraTheme.violet,
+                    badge: "⌘⌥P",
+                    action: { appState.openCodeSnapshotStudio() }
+                ),
+                PaletteItem(
+                    id: "act-code-snapshot-quick",
+                    title: "Quick Copy Code Screenshot",
+                    subtitle: "Copy Retina PNG of current selection or enclosing block to clipboard",
+                    icon: "camera.viewfinder",
+                    iconColor: CeptraTheme.cyan,
+                    badge: "⌘⌥⇧P",
+                    action: { appState.quickCopyCodeSnapshot() }
+                )
+            ])
+        }
         list.append(contentsOf: [
             PaletteItem(
                 id: "act-run-all",

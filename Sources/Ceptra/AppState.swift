@@ -99,6 +99,7 @@ final class AppState: ObservableObject {
     @Published var isStatusBarVisible: Bool = true
     @Published var cursorLine: Int = 1
     @Published var cursorColumn: Int = 1
+    @Published var editorSelectedRange: NSRange = NSRange(location: 0, length: 0)
 
     // Editor Tabs, IntelliSense & Import Navigation History
     @Published var openTabs: [OpenDocumentTab] = []
@@ -161,6 +162,8 @@ final class AppState: ObservableObject {
     @Published var showingToolsPopover: Bool = false
     @Published var showingCommandPalette: Bool = false
     @Published var showingReportsSheet: Bool = false
+    @Published var showingCodeSnapshotSheet: Bool = false
+    @Published var codeSnapshotDraft: CodeSnapshotDraft? = nil
     @Published var bannerMessage: String? = nil
     @Published var bannerIsError: Bool = false
     @Published var zoomHUDText: String? = nil
@@ -583,6 +586,9 @@ final class AppState: ObservableObject {
             return
         }
         if let existing = openTabs.first(where: { $0.filePath == file.path }) {
+            if activeTabPath != existing.filePath {
+                editorSelectedRange = NSRange(location: 0, length: 0)
+            }
             activeTabPath = existing.filePath
             syncAutoConfig(forFilePath: existing.filePath)
             if let jumpToLine {
@@ -605,6 +611,7 @@ final class AppState: ObservableObject {
             savedContent: content
         )
         openTabs.append(tab)
+        editorSelectedRange = NSRange(location: 0, length: 0)
         activeTabPath = tab.filePath
         syncAutoConfig(forFilePath: tab.filePath)
         if file.isExecutableTestFile {
@@ -621,6 +628,7 @@ final class AppState: ObservableObject {
     func switchTab(to filePath: String) {
         guard openTabs.contains(where: { $0.filePath == filePath }) else { return }
         if activeTabPath != filePath {
+            editorSelectedRange = NSRange(location: 0, length: 0)
             activeTabPath = filePath
         }
         syncAutoConfig(forFilePath: filePath)
@@ -769,6 +777,90 @@ final class AppState: ObservableObject {
         guard activeTab != nil else { return }
         pendingEditorFoldAction = action
         editorFoldActionTrigger += 1
+    }
+
+    // MARK: - Beautiful Code Block Screenshots
+
+    private func makeCodeSnapshotDraft(preferredScope: CodeSnapshotScope? = nil) -> CodeSnapshotDraft? {
+        guard let tab = activeTab else { return nil }
+        let nsLen = (tab.content as NSString).length
+        let clampedLoc = max(0, min(editorSelectedRange.location, nsLen))
+        let clampedLen = max(0, min(editorSelectedRange.length, nsLen - clampedLoc))
+        let safeRange = NSRange(location: clampedLoc, length: clampedLen)
+        let scope: CodeSnapshotScope
+        if let preferredScope {
+            scope = (preferredScope == .selection && safeRange.length == 0) ? .currentBlock : preferredScope
+        } else {
+            scope = safeRange.length > 0 ? .selection : .currentBlock
+        }
+        return CodeSnapshotDraft(
+            fullText: tab.content,
+            language: tab.language,
+            fileName: tab.name,
+            relativePath: tab.relativePath,
+            selectedRange: safeRange,
+            caretLine: max(1, cursorLine),
+            initialScope: scope
+        )
+    }
+
+    func openCodeSnapshotStudio(preferredScope: CodeSnapshotScope? = nil) {
+        guard let draft = makeCodeSnapshotDraft(preferredScope: preferredScope) else {
+            showBanner("Open a file in the editor first to capture a code screenshot.", isError: true)
+            return
+        }
+        codeSnapshotDraft = draft
+        showingCodeSnapshotSheet = true
+    }
+
+    func quickCopyCodeSnapshot(preferredScope: CodeSnapshotScope? = nil) {
+        guard let draft = makeCodeSnapshotDraft(preferredScope: preferredScope) else {
+            showBanner("Open a file in the editor first to capture a code screenshot.", isError: true)
+            return
+        }
+        let style = settings.codeSnapshotStyle
+        let extraction = CodeSnapshotEngine.extract(
+            from: draft.fullText,
+            language: draft.language,
+            selectedRange: draft.selectedRange,
+            caretLine: draft.caretLine,
+            preferredScope: draft.initialScope,
+            autoDedent: style.autoDedent
+        )
+        guard let rendered = CodeSnapshotRenderer.render(
+            extraction: extraction,
+            language: draft.language,
+            title: draft.fileName,
+            style: style
+        ) else {
+            showBanner("Could not render code screenshot.", isError: true)
+            return
+        }
+        if CodeSnapshotRenderer.copyToPasteboard(rendered) {
+            let lineLabel = extraction.startLineNumber == extraction.endLineNumber
+                ? "L\(extraction.startLineNumber)"
+                : "L\(extraction.startLineNumber)–L\(extraction.endLineNumber)"
+            showBanner("Copied screenshot of \(draft.fileName) (\(lineLabel) · \(rendered.scale)× PNG) — press ⌘V to paste")
+        } else {
+            showBanner("Failed to copy screenshot to clipboard.", isError: true)
+        }
+    }
+
+    func saveCodeSnapshotPNG(_ rendered: RenderedCodeSnapshot, suggestedFileName: String) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = suggestedFileName
+        panel.canCreateDirectories = true
+        panel.title = "Save Code Screenshot"
+        panel.prompt = "Save PNG"
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try rendered.pngData.write(to: url, options: .atomic)
+                showBanner("Saved code screenshot to \(url.lastPathComponent)")
+            } catch {
+                showBanner("Failed to save screenshot: \(error.localizedDescription)", isError: true)
+            }
+        }
     }
 
     func saveAllDirtyFiles() {

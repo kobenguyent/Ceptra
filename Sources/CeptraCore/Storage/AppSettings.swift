@@ -98,6 +98,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var defaultRunOptions: RunOptions
     public var appearance: WorkspaceAppearance
     public var modulePreferences: WorkspaceModulePreferences
+    public var codeSnapshotStyle: CodeSnapshotStyle
 
     public init(
         recentProjectPaths: [String] = [],
@@ -114,7 +115,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         customTerminalAppPath: String = "",
         defaultRunOptions: RunOptions = RunOptions(),
         appearance: WorkspaceAppearance = .dark,
-        modulePreferences: WorkspaceModulePreferences = WorkspaceModulePreferences()
+        modulePreferences: WorkspaceModulePreferences = WorkspaceModulePreferences(),
+        codeSnapshotStyle: CodeSnapshotStyle = CodeSnapshotStyle()
     ) {
         self.recentProjectPaths = recentProjectPaths
         self.workspaceConfigPaths = workspaceConfigPaths
@@ -131,6 +133,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.defaultRunOptions = defaultRunOptions
         self.appearance = appearance
         self.modulePreferences = modulePreferences
+        self.codeSnapshotStyle = codeSnapshotStyle
     }
 
     public init(from decoder: Decoder) throws {
@@ -150,6 +153,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.defaultRunOptions = try c.decodeIfPresent(RunOptions.self, forKey: .defaultRunOptions) ?? RunOptions()
         self.appearance = try c.decodeIfPresent(WorkspaceAppearance.self, forKey: .appearance) ?? .dark
         self.modulePreferences = try c.decodeIfPresent(WorkspaceModulePreferences.self, forKey: .modulePreferences) ?? WorkspaceModulePreferences()
+        self.codeSnapshotStyle = try c.decodeIfPresent(CodeSnapshotStyle.self, forKey: .codeSnapshotStyle) ?? CodeSnapshotStyle()
     }
 
     public mutating func recordRecentProject(_ path: String) {

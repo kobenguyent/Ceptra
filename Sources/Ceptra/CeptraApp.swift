@@ -357,6 +357,20 @@ struct CeptraApp: App {
 
                 Divider()
 
+                Button("Screenshot Code Block…") {
+                    appState.openCodeSnapshotStudio()
+                }
+                .keyboardShortcut("p", modifiers: [.command, .option])
+                .disabled(appState.activeTab == nil)
+
+                Button("Quick Copy Code Screenshot") {
+                    appState.quickCopyCodeSnapshot()
+                }
+                .keyboardShortcut("p", modifiers: [.command, .option, .shift])
+                .disabled(appState.activeTab == nil)
+
+                Divider()
+
                 Button("Zoom In") {
                     appState.zoomIn()
                 }

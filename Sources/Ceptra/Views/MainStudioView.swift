@@ -72,6 +72,10 @@ struct MainStudioView: View {
             CommandPaletteView()
                 .environmentObject(appState)
         }
+        .sheet(isPresented: $appState.showingCodeSnapshotSheet) {
+            CodeSnapshotSheetView()
+                .environmentObject(appState)
+        }
         .sheet(isPresented: $appState.showingReportsSheet) {
             VStack(spacing: 0) {
                 HStack {
@@ -364,11 +368,22 @@ struct MainStudioView: View {
                     appState.cursorColumn = col
                 }
             },
+            onSelectionChanged: { range in
+                if appState.editorSelectedRange != range {
+                    appState.editorSelectedRange = range
+                }
+            },
             onZoomDelta: { delta in
                 appState.applyZoomDelta(Double(delta))
             },
             onResetZoom: {
                 appState.resetZoom()
+            },
+            onQuickCopyCodeSnapshot: {
+                appState.quickCopyCodeSnapshot()
+            },
+            onOpenCodeSnapshotStudio: {
+                appState.openCodeSnapshotStudio()
             }
         )
     }
@@ -914,6 +929,15 @@ private struct ToolsControlPopover: View {
                         appState.showingRunOptionsPopover = true
                     }
                     if appState.activeTab != nil {
+                        quickActionRow("Screenshot Code Block…", icon: "camera.viewfinder", shortcut: "⌘⌥P") {
+                            appState.showingToolsPopover = false
+                            appState.openCodeSnapshotStudio()
+                        }
+                        quickActionRow("Quick Copy Code Screenshot", icon: "sparkles.rectangle.stack", shortcut: "⌘⌥⇧P") {
+                            appState.showingToolsPopover = false
+                            appState.quickCopyCodeSnapshot()
+                        }
+
                         HStack(spacing: 6) {
                             Button {
                                 appState.triggerEditorFold(.collapseAll)
@@ -1506,8 +1530,24 @@ private struct EditorTabBar: View {
                         .foregroundStyle(CeptraTheme.textMuted)
                         .lineLimit(1)
                         .truncationMode(.head)
+
+                    Button {
+                        if NSEvent.modifierFlags.contains(.option) {
+                            appState.quickCopyCodeSnapshot()
+                        } else {
+                            appState.openCodeSnapshotStudio()
+                        }
+                    } label: {
+                        Image(systemName: "camera.viewfinder")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(CeptraTheme.textSecondary)
+                            .frame(width: 22, height: 22)
+                            .background(CeptraTheme.hoverBG.opacity(0.75), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Screenshot Code Block (⌘⌥P · ⌥-Click or ⌘⌥⇧P for instant Quick Copy)")
                 }
-                .padding(.trailing, 12)
+                .padding(.trailing, 10)
             }
         }
         .frame(height: 36)
