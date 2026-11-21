@@ -732,15 +732,10 @@ public enum TimeTravelHTMLReportBuilder {
         }
       }
 
-      // Safely parse captured untrusted HTML using Sanitizer API (`Document.parseHTML`) when available,
-      // falling back to an inert DOMParser document (never inserted into the live host DOM).
+      // Safely parse captured HTML into an inert offscreen document via DOMParser for attribute-complete
+      // DOM tree inspection (never inserted into host DOM). Sandboxed preview strips unsafe scripts/handlers.
       function parseCapturedHTML(rawHTML) {
         if (!rawHTML) return null;
-        try {
-          if (typeof Document.parseHTML === 'function') {
-            return Document.parseHTML(rawHTML);
-          }
-        } catch {}
         try {
           return new DOMParser().parseFromString(rawHTML, 'text/html');
         } catch {
