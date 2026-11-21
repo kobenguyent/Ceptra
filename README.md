@@ -1,88 +1,202 @@
-# Ceptra
+<p align="center">
+  <img src="docs/images/ceptra-icon.png" width="112" height="112" alt="Ceptra App Icon" />
+</p>
 
-**Ceptra** is a minimalist, native macOS IDE crafted specifically for **CodeceptJS 4.x** (`SwiftUI` + `AppKit`, zero Electron overhead, zero external Swift dependencies).
+<h1 align="center">Ceptra</h1>
 
-## Key Capabilities
+<p align="center">
+  <strong>The native macOS IDE crafted exclusively for CodeceptJS 4.x.</strong><br/>
+  Built in pure SwiftUI &amp; AppKit — zero Electron overhead, zero third-party Swift dependencies.
+</p>
 
-- **CodeceptJS 4.x Workspace Explorer**: Automatically detects standard (`codecept.conf.{ts,js,cjs,mjs}`, `codecept.config.*`, `codecept.json`) AND custom-named or nested configs (via filename, `package.json` `-c/--config` scripts, or manual selection anywhere on disk), `package.json`, Helpers (`Playwright`, `Puppeteer`, `WebDriver`, `CDPBrowser`, `REST`, `GraphQL`, `Appium`, custom helpers), `include` Page/Step objects, Plugins (`screenshot`, `screencast`, `aiTrace`, `junitReporter`, `heal`, `retryFailedStep`), JS/TS suites, and Gherkin `.feature` files.
-- **Visual Scenario & Step Pipeline**: Interactive side-by-side **Split** or **Visual** mode rendering `Feature`, lifecycle hooks (`BeforeSuite`, `Before`, `After`, `AfterSuite`, `Background`), `Scenario` / `xScenario` / `Data(...).Scenario`, `@tags`, and color-coded `I.*` step flows. Clicking any node jumps straight to that line in the code editor.
-- **Native macOS Code Editor**: Explicit TextKit 1 `NSTextView` with per-tab scroll/cursor/fold/undo isolation, accurate line numbers with active-line highlighting and click-to-select, **non-destructive code folding (collapse/expand)** via gutter chevrons, clickable inline `⋯ N lines` badges, toolbar controls, and keyboard shortcuts (`⌘⌥[` / `⌘⌥]` / `⌘⌥⇧[` / `⌘⌥⇧]`) for JS/TS/JSON/Gherkin/YAML/Markdown/XML, CodeceptJS 4.x syntax highlighting, floating **IntelliSense autocomplete** (`Ctrl+Space` or automatic on `.` / `@` / `/` for `I.*` actions, `steps.d.ts`, `include` PageObjects, custom helpers, `@tags`, and import paths), **symlink-aware `⌘+Click` / `F12` import & symbol navigation** (with Back/Forward history `⌃-` / `⌃⇧-`), Find & Replace (`⌘F`), snippet insertion, and template scaffolding (`⌘N`).
-- **Focused Test Execution**: Run all tests (`⌘R`), current file (`⌘⇧R`), single scenario, `@tag`, `--last-failed`, `dry-run`, **`run-workers`** (`⌘⇧W`, configurable worker count, `--by pool|test|suite`, `--serial`, `--last-failed`, `[selectedRuns...]`), **`run-multiple`** (`⌘⇧M`, `--all` or individual `suite` / `suite:browser` targets parsed from `multiple` config), `check`, `def`, and `list` with live streaming console logs and real-time scenario status updates.
-- **Reports & Artifacts Dashboard**: Persists per-project run history with pass-rate trend bars, parses CodeceptJS 4.x `junitReporter` XML (including nested `<system-out>` steps, tags, and failure stack traces), previews `output/` artifacts (Screenshots, `aiTrace` markdown traces, Screencasts/Subtitles, HTML reports), and exports reports to Markdown or standalone HTML.
-- **GitHub Releases Auto-Updater**: Checks GitHub Releases (`kobenguyent/Ceptra` by default, configurable in Settings), downloads the macOS `.zip`/`.dmg` artifact with live progress, cryptographically verifies `SHA256SUMS.txt` via `CryptoKit`, then closes the running app and atomically replaces & relaunches `Ceptra.app` via a detached helper with rollback protection.
+<p align="center">
+  <a href="https://github.com/kobenguyent/Ceptra/releases/latest">
+    <img src="https://img.shields.io/github/v/release/kobenguyent/Ceptra?style=flat-square&color=3b82f6&label=release" alt="Latest Release" />
+  </a>
+  <img src="https://img.shields.io/badge/macOS-14.0%2B-111827?style=flat-square&logo=apple&logoColor=white" alt="macOS 14+" />
+  <img src="https://img.shields.io/badge/CodeceptJS-4.x-f59e0b?style=flat-square" alt="CodeceptJS 4.x" />
+  <img src="https://img.shields.io/badge/Swift-5.9%2B%20Native-f97316?style=flat-square&logo=swift&logoColor=white" alt="Pure Swift" />
+  <img src="https://img.shields.io/badge/Runtime-Node.js%20%7C%20Bun-10b981?style=flat-square" alt="Node.js & Bun" />
+  <a href="LICENSE">
+    <img src="https://img.shields.io/github/license/kobenguyent/Ceptra?style=flat-square&color=6366f1" alt="License" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="#why-ceptra">Why Ceptra</a> &nbsp;·&nbsp;
+  <a href="#feature-highlights">Features</a> &nbsp;·&nbsp;
+  <a href="#quick-start">Quick Start</a> &nbsp;·&nbsp;
+  <a href="#documentation">Docs &amp; Guides</a> &nbsp;·&nbsp;
+  <a href="docs/SHORTCUTS.md">Shortcuts</a>
+</p>
+
+<p align="center">
+  <img src="docs/images/studio-dark-hero.png" alt="Ceptra Obsidian Dark 3-Pane Studio running a CodeceptJS 4.x monorepo" width="100%" />
+</p>
 
 ---
 
-## Install on Your MacBook Pro (No Apple Developer Account Needed)
+## Why Ceptra?
 
-You do **not** need a paid Apple Developer Program account to build, install, and test Ceptra locally on macOS 14+:
+Running CodeceptJS 4.x across modern TypeScript, ESM, Playwright, and REST/GraphQL suites usually means juggling a heavy editor, terminal tabs, ad-hoc logs, and brittle config flags. **Ceptra** brings everything into one fast, native macOS workspace:
+
+| Challenge | How Ceptra Solves It |
+| --- | --- |
+| **Slow, memory-hungry editors** | Pure native **SwiftUI + AppKit** (`TextKit 1`) — instant startup, crisp typography, smooth pinch &amp; scroll zoom, zero Electron bloat. |
+| **Blind test failures** | **Zero-config Web &amp; API Time-Travel Replay** — automatic step screenshots, DOM snapshots, HTTP/fetch capture, JSON tree &amp; timing waterfall, exported as a single offline HTML file. |
+| **Painful debugging** | **Built-in CDP Step-Through Debugger** (`⌘⇧B`) with gutter breakpoints, conditional breakpoints, logpoints, locals, watch expressions, and interactive `pause()` shell. |
+| **Monorepo config mistakes** | **Automatic per-file `-c` config resolution** — detects every `codecept.conf.*` across `tests/web` and `tests/api`, picks the owning config automatically, and switches between **Node.js &amp; Bun** or **Built-in &amp; System Console** in one click. |
+| **Sharing test snippets** | **Quick Beautiful Code Screenshots** (`⌘⌥P` / `⌘⌥⇧P`) — 1-step 2×/3× Retina PNG snapshots of any selection or enclosing `Scenario()` block with gradients, themes, and macOS chrome. |
+
+---
+
+## Feature Highlights
+
+### 1. Zero-Config Web &amp; API Time-Travel Replay
+Run any Web or API test and scrub backward and forward through every step — directly in the embedded **Replay Inspector** (`⌘⌥T`) or in a **100% self-contained offline HTML report** ready for CI artifacts, Jira tickets, or Slack.
+
+- **API Replay**: Automatically captures `REST`, `GraphQL`, `node:http`/`https`, `fetch`, `axios`, and `flex-rest` traffic (including `BeforeSuite` setup and `br`/`gzip` decompression) with secret header redaction, collapsible **JSON Tree** with click-to-copy JSONPath, **DNS/TCP/TLS/TTFB/Download timing waterfall**, assertion cards, structural JSON diff, one-click **Copy as `cURL` / `fetch()` / CodeceptJS**, and inline **Live Replay**.
+- **Web Replay**: Captures **Before &amp; After screenshots** with curtain diff &amp; target selector reticles, **DOM snapshots**, correlated browser network requests, and console/page errors.
+
+<p align="center">
+  <img src="docs/images/feature-api-replay.png" alt="Ceptra Interactive API Replay HTML Report with JSON Tree, Timing Waterfall and Copy cURL" width="100%" />
+</p>
+
+<p align="center">
+  <img src="docs/images/feature-web-replay.png" alt="Ceptra Interactive Web Replay HTML Report with Before/After Screenshots, Target Reticle and DOM Inspector" width="100%" />
+</p>
+
+---
+
+### 2. Interactive Step-Through CDP Debugger (`⌘⇧B`)
+Debug CodeceptJS tests line-by-line right in the editor with full Chrome DevTools Protocol integration and source-mapped TypeScript support:
+
+- Toggle breakpoints in the gutter or right-click to add **Conditional Breakpoints** and non-pausing **Logpoints**.
+- Step with the floating **Debug Control Bar** — Continue (`⌃⌘Y`), Pause, Step Over (`⌘⇧'`), Step Into (`⌘⇧I`), Step Out (`⌘⇧O`).
+- Inspect **Call Stack** (with *Just My Code* filtering), **Scopes &amp; Variables**, persistent **Watch Expressions**, live **Debug Eval**, and CodeceptJS's interactive `pause()` shell.
+
+<p align="center">
+  <img src="docs/images/studio-debugger.png" alt="Ceptra Interactive CDP Debugger paused on a breakpoint with Call Stack and Local Variables" width="100%" />
+</p>
+
+---
+
+### 3. Quick Beautiful Code Block Screenshots (`⌘⌥P` / `⌘⌥⇧P`)
+Turn any selected lines — or the enclosing `Scenario()`, `Feature`, function, or Gherkin block at your caret — into a publication-ready **2× / 3× Retina PNG** without leaving your IDE:
+
+- **1-Step Quick Copy (`⌘⌥⇧P`)** or right-click → **Quick Copy Screenshot** puts the PNG straight onto your macOS clipboard (`⌘V` into Slack, GitHub, Notion, Keynote, or X).
+- **Code Screenshot Studio (`⌘⌥P`)** includes **8 curated backdrops** (Candy, Midnight, Breeze, Sunset, Emerald, Amber, Graphite, and **Transparent**), **5 syntax themes** (Obsidian, Dracula, Catppuccin, Tokyo Night, Paper Light), auto-dedent with real line numbers, macOS window chrome, drag-and-drop export, and Save PNG (`⌘S`).
+
+<p align="center">
+  <img src="docs/images/feature-code-snapshot-studio.png" alt="Ceptra Code Screenshot Studio with live preview, gradient swatches, and syntax themes" width="100%" />
+</p>
+
+<p align="center">
+  <img src="docs/images/feature-code-snapshot-sample.png" alt="2x Retina PNG code block screenshot rendered directly by Ceptra" width="84%" />
+</p>
+
+---
+
+### 4. Adaptive Light &amp; Dark Themes · Multi-Config Monorepo Intelligence
+Designed for both dark-room sessions (**Obsidian Dark**) and bright daytime screens (**Paper Light** or **Match macOS**):
+
+- **Multi-Config Monorepo Support**: Automatically discovers every `codecept.conf.*` across nested packages (`tests/web/`, `tests/api/`, `configs/`), resolves the owning `-c` config per file on Run/Debug/Dry-Run, and auto-syncs the status bar helper (`Playwright` ↔ `REST`) and IntelliSense as you switch tabs.
+- **Node.js &amp; Bun Runtime Switcher**: Toggle between Node.js (with zero-config ESM/CJS &amp; TypeScript worker compatibility) and Bun in one click.
+- **Built-in Console or macOS System Console**: Stream tests inside Ceptra's drawer or launch natively in **Terminal.app**, **iTerm**, **Ghostty**, **Warp**, **Kitty**, **WezTerm**, or **Alacritty** (`⌘⇧T`).
+
+<p align="center">
+  <img src="docs/images/studio-light.png" alt="Ceptra Paper Light theme with auto-detected REST API config and embedded API Replay" width="100%" />
+</p>
+
+---
+
+### 5. Built for CodeceptJS 4.x Speed &amp; Craft
+- **Gutter Scenario Play Buttons**: Click any `Scenario()` in the gutter to run it immediately and see live pass/fail badges &amp; durations.
+- **PyCharm-Style Symbol Navigation**: `⌘+Click` / `⌃+Click` / `F12` jumps across imports, `require()`, TypeScript path aliases, barrel re-exports, `include` Page Objects, custom `I.*` steps, Gherkin step definitions, and usages — with Back/Forward history (`⌃-` / `⌃⇧-`).
+- **Smart IntelliSense &amp; Code Folding**: Auto-complete on `.`, `@`, `/` or `Ctrl+Space` for `I.*` actions, `steps.d.ts`, Page Objects, and `@tags`; non-destructive folding (`⌘⌥[` / `⌘⌥]`) for JS/TS/JSON/Gherkin/YAML/Markdown/XML.
+- **Parallel Execution**: First-class **`run-workers`** (`⌘⇧W` — `--by pool|test|suite`, `--serial`, `--last-failed`) and **`run-multiple`** (`⌘⇧M` — parsed `suite:browser` targets).
+- **Embedded `@codeceptjs/ui` Live (`⌘⌥U`)**: Launch and inspect CodeceptUI safely on loopback (`127.0.0.1`) right inside the studio.
+- **Command Palette (`⌘K` / `⌘P`) &amp; Smooth Zoom**: Fuzzy-jump to any file, scenario, or action; pinch or `⌘+`/`⌘−`/`⌘0` to zoom smoothly with scroll anchoring.
+
+---
+
+## Quick Start
+
+### Option 1: Download Prebuilt App (Fastest)
+1. Download the latest `Ceptra-*-macOS-*.dmg` from [**GitHub Releases**](https://github.com/kobenguyent/Ceptra/releases/latest).
+2. Drag **Ceptra.app** into `/Applications`.
+3. Because Ceptra is ad-hoc signed (zero paid Apple Developer account), if macOS Gatekeeper warns on first launch, run once in Terminal:
+   ```bash
+   xattr -cr /Applications/Ceptra.app
+   ```
+4. Launch **Ceptra**, press `⌘O`, and open any CodeceptJS 4.x project (or scaffold a starter workspace from the Welcome screen).
+
+### Option 2: Build &amp; Install from Source (No Apple Developer Account Needed)
 
 ```bash
+git clone https://github.com/kobenguyent/Ceptra.git
+cd Ceptra
 ./scripts/install-local.sh
 ```
 
-What `install-local.sh` does automatically:
-1. Compiles an optimized native release binary via Swift Package Manager (`swift build -c release`).
-2. Generates a multi-resolution `Ceptra.icns` app icon and assembles `Ceptra.app` with `Info.plist`.
-3. Applies an **ad-hoc code signature** (`codesign --force --deep --sign -`) required for Apple Silicon execution.
-4. Strips macOS quarantine attributes (`xattr -cr`) so Gatekeeper does not block local testing.
-5. Installs to `/Applications/Ceptra.app` and launches Ceptra.
+`install-local.sh` compiles an optimized native Swift release binary, generates `Ceptra.icns`, assembles and ad-hoc signs `Ceptra.app`, clears quarantine attributes, installs to `/Applications/Ceptra.app`, and launches Ceptra.
 
-To install into your user directory without `sudo`:
-
-```bash
-./scripts/install-local.sh --install-dir "$HOME/Applications"
-```
-
-To build distribution artifacts (`.dmg`, `.zip`, `SHA256SUMS.txt`) locally:
-
-```bash
-./scripts/package-app.sh --version 1.0.0 --arch native
-# or universal (arm64 + x86_64):
-./scripts/package-app.sh --version 1.0.0 --arch universal
-```
+- Install into your home directory without `sudo`:
+  ```bash
+  ./scripts/install-local.sh --install-dir "$HOME/Applications"
+  ```
+- Build distributable `.dmg`, `.zip`, and `SHA256SUMS.txt` locally:
+  ```bash
+  ./scripts/package-app.sh --version 1.9.0 --arch native
+  # or universal (arm64 + x86_64):
+  ./scripts/package-app.sh --version 1.9.0 --arch universal
+  ```
 
 ---
 
-## GitHub Actions Automatic Releases & Auto-Update
+## Documentation
 
-- **CI (`.github/workflows/ci.yml`)**: Runs `swift test --parallel`, release build, native `.app`/`.dmg`/`.zip` packaging, and `SHA256SUMS.txt` verification on `macos-15`.
-- **Automatic Release (`.github/workflows/release.yml`)**:
-  - **Automatic on push/merge to `main`**: Automatically calculates the next Semantic Version via `scripts/next-version.sh` (`v1.0.0` initially, then `major` for `BREAKING CHANGE`/`!:`/`[major]`, `minor` for `feat:`/`Add`/`Support`/`Redesign`/`[minor]`, `patch` otherwise; add `[skip release]` to skip), runs `swift test --parallel`, builds universal (`arm64` + `x86_64`) `.dmg`, `.zip`, and `SHA256SUMS.txt`, creates & pushes the annotated tag, and publishes a GitHub Release with changelog.
-  - **Manual tag or workflow dispatch**: Still supports pushing `v*.*.*` tags or running **Actions → Release → Run workflow** with explicit bump (`auto`/`patch`/`minor`/`major`) or custom tag override.
-  - **In-app Auto-Update**: Every published GitHub Release is automatically picked up by **Ceptra → Check for Updates…**, which verifies `SHA256SUMS.txt`, quits Ceptra cleanly, replaces `Ceptra.app`, clears quarantine, and relaunches the new version.
+| Guide | What's Inside |
+| --- | --- |
+| [**Features Guide**](docs/FEATURES.md) | Deep dive into Time-Travel Web &amp; API Replay, CDP Debugger, Code Block Screenshots, `@codeceptjs/ui` Live, and Editor Intelligence. |
+| [**Monorepos, Runtimes &amp; Console**](docs/MONOREPO-AND-RUNTIMES.md) | Multi-config monorepo auto-resolution (`tests/web` + `tests/api`), Node.js vs Bun setup, TypeScript `tsx/esm`, System Console, and `run-workers`. |
+| [**Keyboard Shortcuts**](docs/SHORTCUTS.md) | Complete categorized reference of every Ceptra shortcut. |
 
 ---
 
-## Keyboard Shortcuts
+## Essential Shortcuts
 
 | Shortcut | Action |
 | --- | --- |
-| `⌘O` | Open CodeceptJS workspace |
-| `⌘N` | New file (blank/custom or CodeceptJS template) at any folder level |
-| `⌘⇧N` | New folder (including nested paths) at any folder level |
-| `⌘S` | Save current file |
-| `⌘R` | Run all tests |
-| `⌘⇧R` | Run current file |
-| `⌘⇧W` | Run parallel workers (`codeceptjs run-workers`) |
-| `⌘⇧M` | Run multiple suites (`codeceptjs run-multiple --all`) |
-| `⌘⇧D` | Dry run (validate & discover) |
-| `⌘⇧C` | Select custom CodeceptJS config file (`-c`) |
-| `⌘.` | Stop active run |
-| `⌘B` | Toggle sidebar |
-| `⌘J` | Toggle execution console |
-| `⌘⇧K` | Focus console command prompt (`npm update`, scripts, shell) |
-| `⌘F` | Find & Replace in editor |
-| `⌘⌥[` / `⌘⌥]` | Collapse / Expand code block at caret |
-| `⌘⌥⇧[` / `⌘⌥⇧]` | Collapse All / Expand All code blocks |
-| `Ctrl+Space` | Trigger IntelliSense auto-complete |
-| `⌘+Click` / `F12` | Jump to import target / symbol / custom `I.*` step definition |
-| `⌃-` / `⌃⇧-` | Navigate Back / Forward across jumped files |
-| `⌘W` / `⌘⇧[` / `⌘⇧]` | Close / Previous / Next editor tab |
-| `⌘,` | Open Settings |
+| `⌘K` / `⌘P` | Command Palette / Quick Open file or scenario |
+| `⌘R` / `⌘⇧R` | Run all tests / Run current test file |
+| `⌘⇧B` | Debug current test file (CDP breakpoints &amp; stepping) |
+| `⌘⇧W` / `⌘⇧M` | Run parallel workers (`run-workers`) / Run multiple suites (`run-multiple`) |
+| `⌘⌥P` / `⌘⌥⇧P` | Open Code Screenshot Studio / 1-Step Quick Copy Retina PNG |
+| `⌘⌥T` / `⌘⌥U` / `⌘⌥O` | Toggle Replay Inspector / CodeceptUI Live / Flow Outline |
+| `⌘+Click` / `F12` | Go to declaration, import target, `I.*` step, or usages |
+| `⌘B` / `⌘J` / `⌘⌥B` | Toggle Explorer / Terminal Drawer / Right Inspector |
+
+See all shortcuts in [**docs/SHORTCUTS.md**](docs/SHORTCUTS.md).
+
+---
 
 ## Requirements
 
-- macOS 14.0 (Sonoma) or later
-- Swift 5.9+ (Command Line Tools or Xcode) for building from source
-- Node.js + CodeceptJS 4.x installed in your test project (or globally)
+- **macOS 14.0 (Sonoma)** or later (Apple Silicon &amp; Intel)
+- **Node.js** (or **Bun**) + **CodeceptJS 4.x** in your test workspace (or installed globally)
+- **Swift 5.9+** (Xcode or Command Line Tools) only if building from source
+
+---
+
+## Automatic Releases &amp; In-App Auto-Updater
+
+- **CI (`.github/workflows/ci.yml`)**: Runs `swift test --parallel`, release builds, `.app`/`.dmg`/`.zip` packaging, and `SHA256SUMS.txt` verification on `macos-15`.
+- **Automatic Release (`.github/workflows/release.yml`)**: Computes SemVer bumps via `scripts/next-version.sh`, builds universal (`arm64` + `x86_64`) archives, signs checksums, tags, and publishes GitHub Releases automatically on push to `main` (add `[skip release]` to skip).
+- **In-App Updater**: **Ceptra → Check for Updates…** downloads the latest GitHub Release, verifies `SHA256SUMS.txt` via `CryptoKit`, and atomically updates &amp; relaunches `Ceptra.app` with rollback protection.
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE).
