@@ -552,6 +552,87 @@ private struct TopStudioBar: View {
                 .fixedSize()
                 .help(ws.config.configFilePath ?? "Choose a custom CodeceptJS config file (-c)")
                 .accessibilityLabel("Active Config File Switcher")
+
+                // Runtime (Node vs Bun) & Console Target (Built-in vs System Console) Switcher
+                let toolchain = appState.resolvedToolchain
+                let runtime = appState.settings.jsRuntime
+                let runtimeAvailable = toolchain?.isActiveRuntimeAvailable ?? true
+                let runtimeAccent = runtime == .bun ? CeptraTheme.accentWarm : CeptraTheme.success
+                CeptraGlassDropdown(minWidth: 270, maxWidth: 350) { isOpen in
+                    CeptraMenuPillLabel(
+                        title: appState.isSystemConsoleMode ? "\(runtime.shortName) · Sys" : runtime.shortName,
+                        titleFont: .system(size: 11, weight: .medium, design: .monospaced),
+                        titleColor: runtimeAvailable ? CeptraTheme.textPrimary : CeptraTheme.warning,
+                        accentBorder: appState.isSystemConsoleMode ? CeptraTheme.cyan : (runtime == .bun ? CeptraTheme.accentWarm : nil),
+                        tint: appState.isSystemConsoleMode ? CeptraTheme.cyan : runtimeAccent,
+                        tintOpacity: 0.12,
+                        horizontalPadding: 8,
+                        verticalPadding: 5,
+                        cornerRadius: 8,
+                        isOpen: isOpen
+                    ) {
+                        Circle()
+                            .fill(runtimeAvailable ? runtimeAccent : CeptraTheme.warning)
+                            .frame(width: 6.5, height: 6.5)
+                    }
+                } content: {
+                    CeptraDropdownSectionHeader(title: "JavaScript Runtime")
+                    CeptraDropdownItem(
+                        title: "Node.js",
+                        subtitle: toolchain?.nodePath ?? "Not found in PATH",
+                        systemImage: "hexagon.fill",
+                        iconColor: toolchain?.nodePath != nil ? CeptraTheme.success : CeptraTheme.warning,
+                        isSelected: runtime == .node,
+                        isMonospaced: false
+                    ) {
+                        appState.setJSRuntime(.node)
+                    }
+                    CeptraDropdownItem(
+                        title: "Bun",
+                        subtitle: toolchain?.bunPath ?? "Not found — install bun or set path in Settings",
+                        systemImage: "bolt.fill",
+                        iconColor: toolchain?.bunPath != nil ? CeptraTheme.accentWarm : CeptraTheme.warning,
+                        isSelected: runtime == .bun,
+                        isMonospaced: false
+                    ) {
+                        appState.setJSRuntime(.bun)
+                    }
+
+                    CeptraDropdownDivider()
+                    CeptraDropdownSectionHeader(title: "Console Target")
+                    CeptraDropdownItem(
+                        title: "Built-in Console",
+                        subtitle: "Live steps, scenario badges & Time-Travel reports",
+                        systemImage: "rectangle.bottomthird.inset.filled",
+                        iconColor: CeptraTheme.accent,
+                        isSelected: !appState.isSystemConsoleMode
+                    ) {
+                        appState.setConsoleExecutionMode(.builtIn)
+                    }
+                    CeptraDropdownItem(
+                        title: "System Console (\(appState.activeTerminalDisplayName))",
+                        subtitle: "Native TTY colors, login shell & interactive prompt",
+                        systemImage: "terminal",
+                        iconColor: CeptraTheme.cyan,
+                        isSelected: appState.isSystemConsoleMode
+                    ) {
+                        appState.setConsoleExecutionMode(.systemTerminal)
+                    }
+
+                    CeptraDropdownDivider()
+                    CeptraDropdownItem(
+                        title: "Open Workspace in \(appState.activeTerminalDisplayName)",
+                        subtitle: ws.rootURL.lastPathComponent,
+                        systemImage: "arrow.up.forward.app",
+                        iconColor: CeptraTheme.cyan,
+                        shortcut: "⌘⇧T"
+                    ) {
+                        appState.openWorkspaceInSystemTerminal()
+                    }
+                }
+                .fixedSize()
+                .help("Runtime: \(runtime.displayName) (\(toolchain?.activeRuntimePath ?? "not found")) • Console: \(appState.isSystemConsoleMode ? appState.activeTerminalDisplayName : "Built-in")")
+                .accessibilityLabel("Runtime and Console Switcher")
             }
 
             Spacer()
@@ -1620,6 +1701,49 @@ private struct RunOptionsPopover: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(CeptraTheme.textPrimary)
 
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text("Runtime:")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                        .frame(width: 58, alignment: .leading)
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { appState.settings.jsRuntime },
+                            set: { appState.setJSRuntime($0) }
+                        )
+                    ) {
+                        ForEach(JSRuntimeKind.allCases) { rt in
+                            Text(rt.displayName).tag(rt)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+
+                HStack(spacing: 8) {
+                    Text("Console:")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                        .frame(width: 58, alignment: .leading)
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { appState.settings.consoleExecutionMode },
+                            set: { appState.setConsoleExecutionMode($0) }
+                        )
+                    ) {
+                        Text("Built-in").tag(ConsoleExecutionMode.builtIn)
+                        Text(appState.activeTerminalDisplayName).tag(ConsoleExecutionMode.systemTerminal)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+            }
+
+            Divider().overlay(CeptraTheme.border)
+
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("Show Steps (--steps)", isOn: $appState.runOptions.showSteps)
                 Toggle("Debug Output (--debug)", isOn: $appState.runOptions.debug)
@@ -1628,7 +1752,14 @@ private struct RunOptionsPopover: View {
                 Toggle("Bail on First Failure (--bail)", isOn: $appState.runOptions.bailOnFail)
                 Toggle("Disable Timeouts (--no-timeouts)", isOn: $appState.runOptions.noTimeouts)
                 Toggle("Capture Time-Travel Trace (DOM, Network, Shots)", isOn: $appState.runOptions.timeTravelTrace)
-                Toggle("ESM/CJS Named-Export Compat (uuid, etc.)", isOn: $appState.runOptions.esmCjsCompat)
+                    .disabled(appState.isSystemConsoleMode)
+                Toggle(
+                    appState.settings.jsRuntime == .bun
+                        ? "ESM/CJS Compat (Node.js only — native in Bun)"
+                        : "ESM/CJS Named-Export Compat (uuid, etc.)",
+                    isOn: $appState.runOptions.esmCjsCompat
+                )
+                .disabled(appState.settings.jsRuntime == .bun)
             }
             .toggleStyle(.checkbox)
             .font(.system(size: 12))

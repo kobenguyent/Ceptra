@@ -6,6 +6,10 @@ struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var customConfigDraft: String = ""
 
+    private var detectedTerminals: [DetectedTerminalApp] {
+        appState.detectedTerminalApps
+    }
+
     var body: some View {
         Form {
             Section("Editor") {
@@ -52,16 +56,83 @@ struct SettingsView: View {
                 }
             }
 
-            Section("CodeceptJS Toolchain Overrides") {
+            Section("JavaScript Runtime & CodeceptJS Toolchain") {
+                Picker("JavaScript Runtime", selection: $appState.settings.jsRuntime) {
+                    ForEach(JSRuntimeKind.allCases) { rt in
+                        Text(rt.displayName).tag(rt)
+                    }
+                }
+                .pickerStyle(.segmented)
+
                 TextField("Custom Node Path (optional)", text: $appState.settings.customNodePath)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Custom Bun Path (optional, e.g. ~/.bun/bin/bun)", text: $appState.settings.customBunPath)
                     .textFieldStyle(.roundedBorder)
                 TextField("Custom CodeceptJS Binary or bin/codecept.js (optional)", text: $appState.settings.customCodeceptPath)
                     .textFieldStyle(.roundedBorder)
+
                 if let tc = appState.resolvedToolchain {
-                    Text("Resolved: \(tc.codeceptExecutable) (\(tc.resolutionSource))")
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Node: \(tc.nodePath ?? "Not found")  •  Bun: \(tc.bunPath ?? "Not found")")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(tc.isActiveRuntimeAvailable ? Color.secondary : Color.orange)
+                        Text("Resolved (\(tc.runtime.displayName)): \(tc.codeceptExecutable) (\(tc.resolutionSource))")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+                }
+            }
+
+            Section("Console & System Terminal") {
+                Picker("Run Commands In", selection: $appState.settings.consoleExecutionMode) {
+                    ForEach(ConsoleExecutionMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                HStack(spacing: 8) {
+                    Picker("System Terminal App", selection: $appState.settings.customTerminalAppPath) {
+                        Text("System Default (\(appState.systemDefaultTerminalDisplayName))").tag("")
+                        if !detectedTerminals.isEmpty {
+                            Divider()
+                            ForEach(detectedTerminals) { term in
+                                Text(term.isSystemDefault ? "\(term.name) (System Default)" : term.name)
+                                    .tag(term.path)
+                            }
+                        }
+                        if !appState.settings.customTerminalAppPath.isEmpty,
+                           !detectedTerminals.contains(where: { $0.path == appState.settings.customTerminalAppPath }) {
+                            Divider()
+                            Text(SystemTerminalLauncher.displayName(forAppAt: URL(fileURLWithPath: appState.settings.customTerminalAppPath)))
+                                .tag(appState.settings.customTerminalAppPath)
+                        }
+                    }
+
+                    Button("Choose App…") {
+                        appState.selectCustomTerminalAppPanel()
+                    }
+                }
+
+                HStack {
+                    Text(
+                        appState.isSystemConsoleMode
+                            ? "Test runs, workers, and shell commands launch in \(appState.activeTerminalDisplayName) with full TTY colors and an interactive shell."
+                            : "Test runs stream inside Ceptra's Console Drawer with live steps and Time-Travel reports."
+                    )
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    if appState.workspace != nil {
+                        Button("Open Terminal") {
+                            appState.openWorkspaceInSystemTerminal()
+                        }
+                        .controlSize(.small)
+                    }
                 }
             }
 
@@ -83,7 +154,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 470)
+        .frame(width: 580, height: 600)
         .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: appState.resolvedToolchain?.codeceptExecutable)
         .onAppear {
             customConfigDraft = appState.activeWorkspaceCustomConfigSetting

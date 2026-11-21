@@ -7,8 +7,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var autoCheckForUpdates: Bool
     public var includePrereleaseUpdates: Bool
     public var gitHubRepository: String
+    public var jsRuntime: JSRuntimeKind
     public var customNodePath: String
+    public var customBunPath: String
     public var customCodeceptPath: String
+    public var consoleExecutionMode: ConsoleExecutionMode
+    public var customTerminalAppPath: String
     public var defaultRunOptions: RunOptions
 
     public init(
@@ -18,8 +22,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         autoCheckForUpdates: Bool = true,
         includePrereleaseUpdates: Bool = false,
         gitHubRepository: String = AppMetadata.configuredGitHubRepo,
+        jsRuntime: JSRuntimeKind = .node,
         customNodePath: String = "",
+        customBunPath: String = "",
         customCodeceptPath: String = "",
+        consoleExecutionMode: ConsoleExecutionMode = .builtIn,
+        customTerminalAppPath: String = "",
         defaultRunOptions: RunOptions = RunOptions()
     ) {
         self.recentProjectPaths = recentProjectPaths
@@ -28,8 +36,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.autoCheckForUpdates = autoCheckForUpdates
         self.includePrereleaseUpdates = includePrereleaseUpdates
         self.gitHubRepository = gitHubRepository
+        self.jsRuntime = jsRuntime
         self.customNodePath = customNodePath
+        self.customBunPath = customBunPath
         self.customCodeceptPath = customCodeceptPath
+        self.consoleExecutionMode = consoleExecutionMode
+        self.customTerminalAppPath = customTerminalAppPath
         self.defaultRunOptions = defaultRunOptions
     }
 
@@ -41,8 +53,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.autoCheckForUpdates = try c.decodeIfPresent(Bool.self, forKey: .autoCheckForUpdates) ?? true
         self.includePrereleaseUpdates = try c.decodeIfPresent(Bool.self, forKey: .includePrereleaseUpdates) ?? false
         self.gitHubRepository = try c.decodeIfPresent(String.self, forKey: .gitHubRepository) ?? AppMetadata.configuredGitHubRepo
+        self.jsRuntime = try c.decodeIfPresent(JSRuntimeKind.self, forKey: .jsRuntime) ?? .node
         self.customNodePath = try c.decodeIfPresent(String.self, forKey: .customNodePath) ?? ""
+        self.customBunPath = try c.decodeIfPresent(String.self, forKey: .customBunPath) ?? ""
         self.customCodeceptPath = try c.decodeIfPresent(String.self, forKey: .customCodeceptPath) ?? ""
+        self.consoleExecutionMode = try c.decodeIfPresent(ConsoleExecutionMode.self, forKey: .consoleExecutionMode) ?? .builtIn
+        self.customTerminalAppPath = try c.decodeIfPresent(String.self, forKey: .customTerminalAppPath) ?? ""
         self.defaultRunOptions = try c.decodeIfPresent(RunOptions.self, forKey: .defaultRunOptions) ?? RunOptions()
     }
 

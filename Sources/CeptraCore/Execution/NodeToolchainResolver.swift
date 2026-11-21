@@ -1,20 +1,60 @@
 import Foundation
 
+public enum JSRuntimeKind: String, Codable, CaseIterable, Equatable, Hashable, Identifiable, Sendable {
+    case node
+    case bun
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .node: return "Node.js"
+        case .bun: return "Bun"
+        }
+    }
+
+    public var shortName: String {
+        switch self {
+        case .node: return "Node"
+        case .bun: return "Bun"
+        }
+    }
+
+    public var executableName: String { rawValue }
+}
+
 public struct ResolvedToolchain: Equatable, Sendable {
+    public let runtime: JSRuntimeKind
     public let nodePath: String?
+    public let bunPath: String?
     public let codeceptExecutable: String
     public let prefixArguments: [String]
     public let searchPath: String
     public let resolutionSource: String
 
+    public var activeRuntimePath: String? {
+        switch runtime {
+        case .node: return nodePath
+        case .bun: return bunPath
+        }
+    }
+
+    public var isActiveRuntimeAvailable: Bool {
+        activeRuntimePath != nil
+    }
+
     public init(
+        runtime: JSRuntimeKind = .node,
         nodePath: String?,
+        bunPath: String? = nil,
         codeceptExecutable: String,
         prefixArguments: [String],
         searchPath: String,
         resolutionSource: String
     ) {
+        self.runtime = runtime
         self.nodePath = nodePath
+        self.bunPath = bunPath
         self.codeceptExecutable = codeceptExecutable
         self.prefixArguments = prefixArguments
         self.searchPath = searchPath
@@ -28,10 +68,12 @@ public enum NodeToolchainResolver {
         var candidates: [String] = extraPaths + [
             "/opt/homebrew/bin",
             "/usr/local/bin",
+            "\(home)/.bun/bin",
             "\(home)/.volta/bin",
             "\(home)/.fnm/current/bin",
             "\(home)/.asdf/shims",
-            "\(home)/.bun/bin"
+            "\(home)/.local/share/mise/shims",
+            "\(home)/.mise/shims"
         ]
 
         // Discover latest nvm node bin if present
@@ -66,30 +108,85 @@ public enum NodeToolchainResolver {
 
     public static func resolve(
         workspaceRoot: URL,
+        runtime: JSRuntimeKind = .node,
         customNodePath: String = "",
+        customBunPath: String = "",
         customCodeceptPath: String = ""
     ) -> ResolvedToolchain {
         let fm = FileManager.default
         let trimmedNode = customNodePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBun = customBunPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCodecept = customCodeceptPath.trimmingCharacters(in: .whitespacesAndNewlines)
 
         var extraDirs: [String] = [
             workspaceRoot.appendingPathComponent("node_modules/.bin").path
         ]
-        if !trimmedNode.isEmpty {
-            extraDirs.insert(URL(fileURLWithPath: trimmedNode).deletingLastPathComponent().path, at: 0)
+        let customNodeDir = trimmedNode.isEmpty ? nil : URL(fileURLWithPath: trimmedNode).deletingLastPathComponent().path
+        let customBunDir = trimmedBun.isEmpty ? nil : URL(fileURLWithPath: trimmedBun).deletingLastPathComponent().path
+
+        if runtime == .bun {
+            if let customBunDir { extraDirs.insert(customBunDir, at: 0) }
+            if let customNodeDir { extraDirs.append(customNodeDir) }
+        } else {
+            if let customNodeDir { extraDirs.insert(customNodeDir, at: 0) }
+            if let customBunDir { extraDirs.append(customBunDir) }
         }
 
         let searchPath = buildSearchPath(extraPaths: extraDirs)
         let nodePath: String? = (!trimmedNode.isEmpty && fm.isExecutableFile(atPath: trimmedNode))
             ? trimmedNode
             : findExecutable(named: "node", in: searchPath)
+        let bunPath: String? = (!trimmedBun.isEmpty && fm.isExecutableFile(atPath: trimmedBun))
+            ? trimmedBun
+            : findExecutable(named: "bun", in: searchPath)
+
+        func makeBunInvocation(scriptPath: String, source: String) -> ResolvedToolchain {
+            let target = resolvedEntryScriptPath(scriptPath)
+            if let bunPath {
+                return ResolvedToolchain(
+                    runtime: .bun,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
+                    codeceptExecutable: bunPath,
+                    prefixArguments: [target],
+                    searchPath: searchPath,
+                    resolutionSource: "\(source) via Bun"
+                )
+            }
+            return ResolvedToolchain(
+                runtime: .bun,
+                nodePath: nodePath,
+                bunPath: nil,
+                codeceptExecutable: "/usr/bin/env",
+                prefixArguments: ["bun", target],
+                searchPath: searchPath,
+                resolutionSource: "\(source) via Bun (bun not found in PATH)"
+            )
+        }
 
         // 1. User-specified CodeceptJS path
         if !trimmedCodecept.isEmpty, fm.fileExists(atPath: trimmedCodecept) {
-            if trimmedCodecept.hasSuffix(".js") || trimmedCodecept.hasSuffix(".mjs"), let nodePath {
+            if runtime == .bun {
+                if isJavaScriptEntry(trimmedCodecept) {
+                    return makeBunInvocation(scriptPath: trimmedCodecept, source: "Custom CodeceptJS")
+                }
                 return ResolvedToolchain(
+                    runtime: .bun,
                     nodePath: nodePath,
+                    bunPath: bunPath,
+                    codeceptExecutable: trimmedCodecept,
+                    prefixArguments: [],
+                    searchPath: searchPath,
+                    resolutionSource: "Custom CodeceptJS binary"
+                )
+            }
+
+            if (trimmedCodecept.hasSuffix(".js") || trimmedCodecept.hasSuffix(".mjs") || trimmedCodecept.hasSuffix(".cjs")),
+               let nodePath {
+                return ResolvedToolchain(
+                    runtime: .node,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
                     codeceptExecutable: nodePath,
                     prefixArguments: [trimmedCodecept],
                     searchPath: searchPath,
@@ -97,7 +194,9 @@ public enum NodeToolchainResolver {
                 )
             }
             return ResolvedToolchain(
+                runtime: .node,
                 nodePath: nodePath,
+                bunPath: bunPath,
                 codeceptExecutable: trimmedCodecept,
                 prefixArguments: [],
                 searchPath: searchPath,
@@ -110,12 +209,34 @@ public enum NodeToolchainResolver {
         for level in 0...4 {
             let localBin = searchDir.appendingPathComponent("node_modules/.bin/codeceptjs").path
             if fm.isExecutableFile(atPath: localBin) {
+                let sourceBase = level == 0 ? "Project node_modules" : "Workspace parent node_modules"
+                if runtime == .bun {
+                    return makeBunInvocation(scriptPath: localBin, source: sourceBase)
+                }
+                // If the user explicitly pointed to a non-standard Node binary name (e.g. `node22`),
+                // invoke it directly so `#!/usr/bin/env node` does not bypass their override.
+                if !trimmedNode.isEmpty,
+                   let nodePath,
+                   URL(fileURLWithPath: nodePath).lastPathComponent != "node",
+                   isJavaScriptEntry(localBin) {
+                    return ResolvedToolchain(
+                        runtime: .node,
+                        nodePath: nodePath,
+                        bunPath: bunPath,
+                        codeceptExecutable: nodePath,
+                        prefixArguments: [resolvedEntryScriptPath(localBin)],
+                        searchPath: searchPath,
+                        resolutionSource: sourceBase
+                    )
+                }
                 return ResolvedToolchain(
+                    runtime: .node,
                     nodePath: nodePath,
+                    bunPath: bunPath,
                     codeceptExecutable: localBin,
                     prefixArguments: [],
                     searchPath: searchPath,
-                    resolutionSource: level == 0 ? "Project node_modules" : "Workspace parent node_modules"
+                    resolutionSource: sourceBase
                 )
             }
             let parent = searchDir.deletingLastPathComponent()
@@ -125,20 +246,32 @@ public enum NodeToolchainResolver {
 
         // 3. Direct CodeceptJS repository checkout (./bin/codecept.js)
         let repoBin = workspaceRoot.appendingPathComponent("bin/codecept.js").path
-        if fm.fileExists(atPath: repoBin), let nodePath {
-            return ResolvedToolchain(
-                nodePath: nodePath,
-                codeceptExecutable: nodePath,
-                prefixArguments: [repoBin],
-                searchPath: searchPath,
-                resolutionSource: "Local bin/codecept.js"
-            )
+        if fm.fileExists(atPath: repoBin) {
+            if runtime == .bun {
+                return makeBunInvocation(scriptPath: repoBin, source: "Local bin/codecept.js")
+            }
+            if let nodePath {
+                return ResolvedToolchain(
+                    runtime: .node,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
+                    codeceptExecutable: nodePath,
+                    prefixArguments: [repoBin],
+                    searchPath: searchPath,
+                    resolutionSource: "Local bin/codecept.js"
+                )
+            }
         }
 
         // 4. Global `codeceptjs` binary
         if let globalCodecept = findExecutable(named: "codeceptjs", in: searchPath) {
+            if runtime == .bun && isJavaScriptEntry(globalCodecept) {
+                return makeBunInvocation(scriptPath: globalCodecept, source: "Global PATH")
+            }
             return ResolvedToolchain(
+                runtime: runtime,
                 nodePath: nodePath,
+                bunPath: bunPath,
                 codeceptExecutable: globalCodecept,
                 prefixArguments: [],
                 searchPath: searchPath,
@@ -146,15 +279,64 @@ public enum NodeToolchainResolver {
             )
         }
 
-        // 5. Fallback to npx codeceptjs
+        // 5. Fallback to bun x --bun codeceptjs (Bun) or npx --no-install codeceptjs (Node)
+        if runtime == .bun {
+            if let bunPath {
+                return ResolvedToolchain(
+                    runtime: .bun,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
+                    codeceptExecutable: bunPath,
+                    prefixArguments: ["x", "--bun", "codeceptjs"],
+                    searchPath: searchPath,
+                    resolutionSource: "bunx fallback"
+                )
+            }
+            return ResolvedToolchain(
+                runtime: .bun,
+                nodePath: nodePath,
+                bunPath: nil,
+                codeceptExecutable: "/usr/bin/env",
+                prefixArguments: ["bun", "x", "--bun", "codeceptjs"],
+                searchPath: searchPath,
+                resolutionSource: "bunx fallback (bun not found in PATH)"
+            )
+        }
+
         let npx = findExecutable(named: "npx", in: searchPath) ?? "/usr/bin/env"
         let prefix = npx.hasSuffix("/env") ? ["npx", "--no-install", "codeceptjs"] : ["--no-install", "codeceptjs"]
         return ResolvedToolchain(
+            runtime: .node,
             nodePath: nodePath,
+            bunPath: bunPath,
             codeceptExecutable: npx,
             prefixArguments: prefix,
             searchPath: searchPath,
             resolutionSource: "npx fallback"
         )
+    }
+
+    /// Resolves symlinks (e.g. `node_modules/.bin/codeceptjs` -> `node_modules/codeceptjs/bin/codecept.js`)
+    /// so runtimes like Bun see the underlying `.js` entry script directly.
+    private static func resolvedEntryScriptPath(_ path: String) -> String {
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        return FileManager.default.fileExists(atPath: resolved) ? resolved : path
+    }
+
+    private static func isJavaScriptEntry(_ path: String) -> Bool {
+        let target = resolvedEntryScriptPath(path)
+        let ext = URL(fileURLWithPath: target).pathExtension.lowercased()
+        if ["js", "mjs", "cjs", "ts", "mts", "cts"].contains(ext) {
+            return true
+        }
+        guard let handle = FileHandle(forReadingAtPath: target) else { return false }
+        defer { try? handle.close() }
+        let prefixData = handle.readData(ofLength: 128)
+        guard let head = String(data: prefixData, encoding: .utf8),
+              let firstLine = head.split(separator: "\n", maxSplits: 1).first else {
+            return false
+        }
+        let lower = firstLine.lowercased()
+        return lower.hasPrefix("#!") && (lower.contains("node") || lower.contains("bun"))
     }
 }

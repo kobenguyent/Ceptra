@@ -80,6 +80,45 @@ struct ConsoleDrawerView: View {
 
                 Spacer()
 
+                // Built-in vs System Console Switcher + Quick Launch
+                CeptraGlassSegmentedControl(
+                    options: ConsoleExecutionMode.allCases,
+                    selection: Binding(
+                        get: { appState.settings.consoleExecutionMode },
+                        set: { appState.setConsoleExecutionMode($0) }
+                    ),
+                    label: { $0.shortName },
+                    horizontalPadding: 8,
+                    verticalPadding: 3.5,
+                    fontSize: 10.5
+                )
+                .help(
+                    appState.isSystemConsoleMode
+                        ? "Running commands in system console (\(appState.activeTerminalDisplayName))"
+                        : "Streaming commands inside Ceptra built-in console"
+                )
+
+                if appState.workspace != nil {
+                    Button {
+                        appState.openWorkspaceInSystemTerminal()
+                    } label: {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.system(size: 11))
+                            .foregroundStyle(appState.isSystemConsoleMode ? CeptraTheme.cyan : CeptraTheme.textSecondary)
+                            .frame(width: 24, height: 22)
+                    }
+                    .buttonStyle(
+                        CeptraGlassButtonStyle(
+                            cornerRadius: 6,
+                            tint: appState.isSystemConsoleMode ? CeptraTheme.cyan : CeptraTheme.panelBG,
+                            tintOpacity: appState.isSystemConsoleMode ? 0.14 : 0.45,
+                            accentBorder: appState.isSystemConsoleMode ? CeptraTheme.cyan : nil
+                        )
+                    )
+                    .help("Open Workspace in \(appState.activeTerminalDisplayName) (⌘⇧T)")
+                    .accessibilityLabel("Open Workspace in System Console")
+                }
+
                 // Quick Dependencies & Scripts Menu (npm / pnpm / yarn / bun)
                 if let ws = appState.workspace {
                     let pm = ws.packageManager
@@ -356,12 +395,19 @@ struct ConsoleDrawerView: View {
 
     private var commandInputBar: some View {
         let pm = appState.workspace?.packageManager.rawValue ?? "npm"
+        let sysMode = appState.isSystemConsoleMode
+        let termName = appState.activeTerminalDisplayName
         return HStack(spacing: 8) {
-            Text("$")
+            Text(sysMode ? "↗ $" : "$")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .foregroundStyle(CeptraTheme.accent)
+                .foregroundStyle(sysMode ? CeptraTheme.cyan : CeptraTheme.accent)
 
-            TextField("Run workspace command (e.g. \(pm) update, \(pm) install -D codeceptjs@latest, npx playwright install)…", text: $appState.commandInputText)
+            TextField(
+                sysMode
+                    ? "Run command in \(termName) (e.g. \(pm) update, npx playwright install)…"
+                    : "Run workspace command (e.g. \(pm) update, \(pm) install -D codeceptjs@latest, npx playwright install)…",
+                text: $appState.commandInputText
+            )
                 .textFieldStyle(.plain)
                 .font(.system(size: 11.5, design: .monospaced))
                 .foregroundStyle(CeptraTheme.textPrimary)
@@ -438,16 +484,16 @@ struct ConsoleDrawerView: View {
                     submitCustomCommand()
                 } label: {
                     HStack(spacing: 3) {
-                        Image(systemName: "return")
+                        Image(systemName: sysMode ? "arrow.up.forward.app" : "return")
                             .font(.system(size: 9.5, weight: .semibold))
-                        Text("Run")
+                        Text(sysMode ? termName : "Run")
                             .font(.system(size: 10.5, weight: .semibold))
                     }
                     .foregroundStyle(canRunInput ? .white : CeptraTheme.textMuted)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
                     .background(
-                        canRunInput ? CeptraTheme.accent : CeptraTheme.panelBG.opacity(0.65),
+                        canRunInput ? (sysMode ? CeptraTheme.cyan : CeptraTheme.accent) : CeptraTheme.panelBG.opacity(0.65),
                         in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                     )
                     .overlay(
@@ -460,6 +506,7 @@ struct ConsoleDrawerView: View {
                 }
                 .buttonStyle(CeptraTactilePressStyle())
                 .disabled(!canRunInput)
+                .help(sysMode ? "Launch command in \(termName)" : "Run command in built-in console")
             }
         }
         .padding(.horizontal, 12)
@@ -481,6 +528,7 @@ struct ConsoleDrawerView: View {
     private func lineColor(for entry: ConsoleLogEntry) -> Color {
         if entry.isError { return CeptraTheme.failure }
         let t = entry.text.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("↗ ") { return CeptraTheme.cyan }
         if t.hasPrefix("$ ") { return CeptraTheme.accent }
         if t.hasPrefix("✔") || t.hasPrefix("OK |") { return CeptraTheme.success }
         if t.hasPrefix("✖") || t.hasPrefix("FAIL |") { return CeptraTheme.failure }

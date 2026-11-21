@@ -246,6 +246,47 @@ struct CeptraApp: App {
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(appState.workspace == nil)
 
+                Button("Open Workspace in System Console") {
+                    appState.openWorkspaceInSystemTerminal()
+                }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(appState.workspace == nil)
+
+                Menu("JavaScript Runtime") {
+                    ForEach(JSRuntimeKind.allCases) { rt in
+                        Button {
+                            appState.setJSRuntime(rt)
+                        } label: {
+                            if appState.settings.jsRuntime == rt {
+                                Label(rt.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(rt.displayName)
+                            }
+                        }
+                    }
+                }
+
+                Menu("Console Target") {
+                    Button {
+                        appState.setConsoleExecutionMode(.builtIn)
+                    } label: {
+                        if !appState.isSystemConsoleMode {
+                            Label("Built-in Console", systemImage: "checkmark")
+                        } else {
+                            Text("Built-in Console")
+                        }
+                    }
+                    Button {
+                        appState.setConsoleExecutionMode(.systemTerminal)
+                    } label: {
+                        if appState.isSystemConsoleMode {
+                            Label("System Console (\(appState.activeTerminalDisplayName))", systemImage: "checkmark")
+                        } else {
+                            Text("System Console (\(appState.activeTerminalDisplayName))")
+                        }
+                    }
+                }
+
                 Divider()
 
                 Button("Go to Import / Definition") {

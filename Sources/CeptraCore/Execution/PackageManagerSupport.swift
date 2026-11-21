@@ -101,14 +101,25 @@ public enum PackageManagerSupport {
         packageManager: PackageManagerKind,
         workspaceRoot: URL,
         toolchain: ResolvedToolchain,
-        extraEnv: [String: String] = [:]
+        extraEnv: [String: String] = [:],
+        colorOutput: Bool = false
     ) -> BuiltCommand {
         var env = ProcessInfo.processInfo.environment
+        var envOverrides: [String: String] = [:]
         env["PATH"] = toolchain.searchPath
-        env["FORCE_COLOR"] = "0"
-        env["NO_COLOR"] = "1"
+        if !colorOutput {
+            env["FORCE_COLOR"] = "0"
+            env["NO_COLOR"] = "1"
+        } else {
+            env.removeValue(forKey: "NO_COLOR")
+            if env["FORCE_COLOR"] == "0" {
+                env.removeValue(forKey: "FORCE_COLOR")
+            }
+        }
         for (k, v) in extraEnv where !k.trimmingCharacters(in: .whitespaces).isEmpty {
-            env[k.trimmingCharacters(in: .whitespaces)] = v
+            let trimmedKey = k.trimmingCharacters(in: .whitespaces)
+            env[trimmedKey] = v
+            envOverrides[trimmedKey] = v
         }
 
         if case .customShell(let rawCommand) = action {
@@ -118,6 +129,7 @@ public enum PackageManagerSupport {
                 arguments: ["-c", trimmed],
                 workingDirectory: workspaceRoot,
                 environment: env,
+                environmentOverrides: envOverrides,
                 displayCommand: trimmed
             )
         }
@@ -185,6 +197,7 @@ public enum PackageManagerSupport {
             arguments: finalArgs,
             workingDirectory: workspaceRoot,
             environment: env,
+            environmentOverrides: envOverrides,
             displayCommand: displayParts.joined(separator: " ")
         )
     }

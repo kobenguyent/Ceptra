@@ -55,7 +55,8 @@ struct ParallelRunSheetView: View {
             options: appState.runOptions,
             workspaceRoot: ws.rootURL,
             configFilePath: ws.config.configFilePath,
-            toolchain: tc
+            toolchain: tc,
+            colorOutput: appState.isSystemConsoleMode
         ).displayCommand
     }
 
@@ -97,9 +98,22 @@ struct ParallelRunSheetView: View {
 
             // Live CLI Preview
             VStack(alignment: .leading, spacing: 4) {
-                Text("COMMAND PREVIEW")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundStyle(CeptraTheme.textMuted)
+                HStack(spacing: 6) {
+                    Text("COMMAND PREVIEW")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(CeptraTheme.textMuted)
+                    Spacer()
+                    CeptraBadge(
+                        text: appState.settings.jsRuntime.displayName,
+                        color: appState.settings.jsRuntime == .bun ? CeptraTheme.accentWarm : CeptraTheme.success,
+                        icon: appState.settings.jsRuntime == .bun ? "bolt.fill" : "hexagon.fill"
+                    )
+                    CeptraBadge(
+                        text: appState.isSystemConsoleMode ? appState.activeTerminalDisplayName : "Built-in",
+                        color: appState.isSystemConsoleMode ? CeptraTheme.cyan : CeptraTheme.accent,
+                        icon: appState.isSystemConsoleMode ? "terminal" : "rectangle.bottomthird.inset.filled"
+                    )
+                }
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text("$ \(commandPreview)")
                         .font(.system(size: 11, design: .monospaced))

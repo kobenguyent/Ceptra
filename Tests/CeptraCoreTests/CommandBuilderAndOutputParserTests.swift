@@ -403,4 +403,206 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
         XCTAssertEqual(parser.scenarios[1].steps.last?.status, .failed)
         XCTAssertEqual(parser.scenarios[2].status, .skipped)
     }
+
+    func testNodeVsBunRuntimeResolutionAndCommandBuilding() throws {
+        let fm = FileManager.default
+        let sandbox = fm.temporaryDirectory.appendingPathComponent("ceptra-runtime-\(UUID().uuidString)", isDirectory: true)
+        let binDir = sandbox.appendingPathComponent("fake-bin", isDirectory: true)
+        let codeceptPkgBin = sandbox.appendingPathComponent("node_modules/codeceptjs/bin", isDirectory: true)
+        let dotBin = sandbox.appendingPathComponent("node_modules/.bin", isDirectory: true)
+        try fm.createDirectory(at: binDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: codeceptPkgBin, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dotBin, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: sandbox) }
+
+        // Create fake executable `bun` and `node` binaries
+        let fakeBun = binDir.appendingPathComponent("bun")
+        try "#!/bin/sh\necho bun\n".write(to: fakeBun, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeBun.path)
+
+        let fakeNode = binDir.appendingPathComponent("node")
+        try "#!/bin/sh\necho node\n".write(to: fakeNode, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeNode.path)
+
+        // Create local node_modules/codeceptjs/bin/codecept.js and symlink from .bin/codeceptjs
+        let codeceptEntry = codeceptPkgBin.appendingPathComponent("codecept.js")
+        try "#!/usr/bin/env node\nconsole.log('codecept');\n".write(to: codeceptEntry, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codeceptEntry.path)
+        let dotBinSymlink = dotBin.appendingPathComponent("codeceptjs")
+        try fm.createSymbolicLink(at: dotBinSymlink, withDestinationURL: codeceptEntry)
+
+        // 1. Node runtime resolves ./node_modules/.bin/codeceptjs directly and injects NODE_OPTIONS compat
+        let nodeTC = NodeToolchainResolver.resolve(
+            workspaceRoot: sandbox,
+            runtime: .node,
+            customNodePath: fakeNode.path,
+            customBunPath: fakeBun.path
+        )
+        XCTAssertEqual(nodeTC.runtime, .node)
+        XCTAssertEqual(nodeTC.nodePath, fakeNode.path)
+        XCTAssertEqual(nodeTC.bunPath, fakeBun.path)
+        XCTAssertTrue(nodeTC.isActiveRuntimeAvailable)
+        XCTAssertEqual(nodeTC.codeceptExecutable, dotBinSymlink.path)
+        XCTAssertEqual(nodeTC.prefixArguments, [])
+
+        let nodeCmd = CommandBuilder.build(
+            mode: .runAll,
+            options: RunOptions(esmCjsCompat: true),
+            workspaceRoot: sandbox,
+            toolchain: nodeTC
+        )
+        XCTAssertNotNil(nodeCmd.environment["NODE_OPTIONS"])
+        XCTAssertTrue(nodeCmd.arguments.contains("--no-colors"))
+        XCTAssertEqual(nodeCmd.environment["NO_COLOR"], "1")
+
+        // 2. Bun runtime resolves symlink to underlying codecept.js and executes via bun (omitting Node-only NODE_OPTIONS)
+        let bunTC = NodeToolchainResolver.resolve(
+            workspaceRoot: sandbox,
+            runtime: .bun,
+            customNodePath: fakeNode.path,
+            customBunPath: fakeBun.path
+        )
+        XCTAssertEqual(bunTC.runtime, .bun)
+        XCTAssertEqual(bunTC.activeRuntimePath, fakeBun.path)
+        XCTAssertEqual(bunTC.codeceptExecutable, fakeBun.path)
+        XCTAssertEqual(bunTC.prefixArguments, [codeceptEntry.resolvingSymlinksInPath().path])
+
+        let bunCmd = CommandBuilder.build(
+            mode: .runAll,
+            options: RunOptions(environmentVariables: ["ENV": "STAGING"], esmCjsCompat: true),
+            workspaceRoot: sandbox,
+            toolchain: bunTC,
+            colorOutput: true
+        )
+        XCTAssertEqual(bunCmd.executablePath, fakeBun.path)
+        XCTAssertEqual(bunCmd.arguments.first, codeceptEntry.resolvingSymlinksInPath().path)
+        XCTAssertTrue(bunCmd.arguments.contains("run"))
+        XCTAssertFalse(bunCmd.arguments.contains("--no-colors"), "colorOutput: true must preserve terminal ANSI colors")
+        XCTAssertNil(bunCmd.environment["NO_COLOR"])
+        XCTAssertNil(bunCmd.environmentOverrides["NODE_OPTIONS"], "Bun must not receive Node-specific preload hooks")
+        XCTAssertEqual(bunCmd.environmentOverrides["ENV"], "STAGING")
+        XCTAssertTrue(bunCmd.displayCommand.hasPrefix("bun "))
+
+        // 3. Bun fallback when no local codeceptjs exists uses `bun x --bun codeceptjs`
+        let emptyWorkspace = fm.temporaryDirectory.appendingPathComponent("ceptra-empty-bun-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: emptyWorkspace, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: emptyWorkspace) }
+
+        let fallbackBunTC = NodeToolchainResolver.resolve(
+            workspaceRoot: emptyWorkspace,
+            runtime: .bun,
+            customBunPath: fakeBun.path
+        )
+        XCTAssertEqual(fallbackBunTC.codeceptExecutable, fakeBun.path)
+        XCTAssertEqual(fallbackBunTC.prefixArguments, ["x", "--bun", "codeceptjs"])
+    }
+
+    func testSystemTerminalLauncherScriptAndSettingsBackwardCompatibility() throws {
+        // 1. Verify launcher script quoting, PATH preservation, NODE_OPTIONS idempotent merge, and interactive shell handoff
+        let trickyDir = URL(fileURLWithPath: "/tmp/QA O'Brien Tests")
+        let cmd = BuiltCommand(
+            executablePath: "/opt/homebrew/bin/bun",
+            arguments: ["/tmp/QA O'Brien Tests/node_modules/codeceptjs/bin/codecept.js", "run", "--steps"],
+            workingDirectory: trickyDir,
+            environment: [:],
+            environmentOverrides: [
+                "ENV": "TEST",
+                "NODE_OPTIONS": "--import file:///tmp/preload.mjs"
+            ],
+            displayCommand: "bun node_modules/codeceptjs/bin/codecept.js run --steps"
+        )
+        let script = SystemTerminalLauncher.buildLauncherScript(
+            command: cmd,
+            runtime: .bun,
+            title: "Run All Tests",
+            priorityPathDirs: ["/opt/homebrew/bin", "/tmp/QA O'Brien Tests/node_modules/.bin"],
+            fallbackPathDirs: ["/usr/local/bin"],
+            keepShellOpen: true
+        )
+        XCTAssertTrue(script.hasPrefix("#!/bin/zsh -l\n"))
+        XCTAssertTrue(script.contains("cd '/tmp/QA O'\\''Brien Tests' || exit 1"))
+        XCTAssertTrue(script.contains(":\"$PATH\":"))
+        XCTAssertTrue(script.contains("export ENV='TEST'"))
+        XCTAssertTrue(script.contains("export NODE_OPTIONS=\"${NODE_OPTIONS:+${NODE_OPTIONS} }\"'--import file:///tmp/preload.mjs'"))
+        XCTAssertTrue(script.contains("'/opt/homebrew/bin/bun' '/tmp/QA O'\\''Brien Tests/node_modules/codeceptjs/bin/codecept.js' 'run' '--steps'"))
+        XCTAssertTrue(script.contains("exec \"${SHELL:-/bin/zsh}\" -i"))
+
+        // 2. Verify custom /bin/zsh -c shell commands run directly without double quoting
+        let customShellCmd = BuiltCommand(
+            executablePath: "/bin/zsh",
+            arguments: ["-c", "npm outdated | head -n 5"],
+            workingDirectory: trickyDir,
+            environment: [:],
+            environmentOverrides: [:],
+            displayCommand: "npm outdated | head -n 5"
+        )
+        let shellScript = SystemTerminalLauncher.buildLauncherScript(
+            command: customShellCmd,
+            runtime: .node,
+            title: "Outdated",
+            keepShellOpen: false
+        )
+        XCTAssertTrue(shellScript.contains("\nnpm outdated | head -n 5\n"))
+        XCTAssertTrue(shellScript.contains("exit \"$CEPTRA_EXIT\""))
+
+        // 3. Verify legacy AppSettings JSON decodes safely with defaults and new fields round-trip cleanly
+        let legacyJSON = #"{"recentProjectPaths":["/tmp/a"],"editorFontSize":14}"#.data(using: .utf8)!
+        let decodedLegacy = try JSONDecoder().decode(AppSettings.self, from: legacyJSON)
+        XCTAssertEqual(decodedLegacy.jsRuntime, .node)
+        XCTAssertEqual(decodedLegacy.customBunPath, "")
+        XCTAssertEqual(decodedLegacy.consoleExecutionMode, .builtIn)
+        XCTAssertEqual(decodedLegacy.customTerminalAppPath, "")
+
+        var updated = decodedLegacy
+        updated.jsRuntime = .bun
+        updated.customBunPath = "/Users/dev/.bun/bin/bun"
+        updated.consoleExecutionMode = .systemTerminal
+        updated.customTerminalAppPath = "/Applications/iTerm.app"
+        let roundTripped = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(updated))
+        XCTAssertEqual(roundTripped, updated)
+
+        // 4. Verify macOS default terminal resolution returns an existing .app bundle
+        let defaultTermURL = SystemTerminalLauncher.resolveSystemDefaultTerminalAppURL()
+        XCTAssertTrue(defaultTermURL.path.hasSuffix(".app"))
+        XCTAssertFalse(SystemTerminalLauncher.displayName(forAppAt: defaultTermURL).isEmpty)
+
+        // 5. Execute a real generated launcher script (keepShellOpen: false) under /bin/zsh to prove valid shell syntax
+        let fm = FileManager.default
+        let runDir = fm.temporaryDirectory.appendingPathComponent("ceptra-shell-exec-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: runDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: runDir) }
+
+        let execCmd = BuiltCommand(
+            executablePath: "/bin/zsh",
+            arguments: ["-c", "printf 'RUNTIME_ENV=%s PWD=%s\\n' \"$CEPTRA_TEST_VAR\" \"$(pwd -P)\""],
+            workingDirectory: runDir,
+            environment: [:],
+            environmentOverrides: ["CEPTRA_TEST_VAR": "hello-system-console"],
+            displayCommand: "echo env"
+        )
+        let runnableScript = SystemTerminalLauncher.buildLauncherScript(
+            command: execCmd,
+            runtime: .bun,
+            title: "Smoke Check",
+            priorityPathDirs: [runDir.path],
+            fallbackPathDirs: [],
+            keepShellOpen: false
+        )
+        let scriptFile = runDir.appendingPathComponent("smoke.command")
+        try runnableScript.write(to: scriptFile, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptFile.path)
+
+        let proc = Process()
+        proc.executableURL = scriptFile
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = outPipe
+        try proc.run()
+        proc.waitUntilExit()
+
+        let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(proc.terminationStatus, 0, "Generated .command script failed: \(out)")
+        XCTAssertTrue(out.contains("RUNTIME_ENV=hello-system-console"), "Expected env export in output: \(out)")
+        XCTAssertTrue(out.contains("Finished with exit code 0"), "Expected exit summary in output: \(out)")
+    }
 }

@@ -5,6 +5,7 @@ public struct BuiltCommand: Equatable, Sendable {
     public let arguments: [String]
     public let workingDirectory: URL
     public let environment: [String: String]
+    public let environmentOverrides: [String: String]
     public let displayCommand: String
 
     public init(
@@ -12,12 +13,14 @@ public struct BuiltCommand: Equatable, Sendable {
         arguments: [String],
         workingDirectory: URL,
         environment: [String: String],
+        environmentOverrides: [String: String] = [:],
         displayCommand: String
     ) {
         self.executablePath = executablePath
         self.arguments = arguments
         self.workingDirectory = workingDirectory
         self.environment = environment
+        self.environmentOverrides = environmentOverrides
         self.displayCommand = displayCommand
     }
 }
@@ -30,36 +33,38 @@ public enum CommandBuilder {
         configFilePath: String? = nil,
         toolchain: ResolvedToolchain,
         debugOptions: DebugLaunchOptions? = nil,
-        traceOutputDirectory: URL? = nil
+        traceOutputDirectory: URL? = nil,
+        colorOutput: Bool = false
     ) -> BuiltCommand {
         var args: [String] = toolchain.prefixArguments
+        let allowNoColors = !colorOutput
 
         switch mode {
         case .runAll:
             args.append("run")
-            appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: true)
+            appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: allowNoColors)
 
         case .runFile(let relativePath):
             args.append("run")
             args.append(resolveTestArgument(relativePath, workspaceRoot: workspaceRoot, configFilePath: configFilePath))
-            appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: true)
+            appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: allowNoColors)
 
         case .runScenario(let relativePath, let scenarioTitle):
             args.append("run")
             if let relativePath, !relativePath.isEmpty {
                 args.append(resolveTestArgument(relativePath, workspaceRoot: workspaceRoot, configFilePath: configFilePath))
             }
-            appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: true, overrideGrep: escapeRegExp(scenarioTitle))
+            appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: allowNoColors, overrideGrep: escapeRegExp(scenarioTitle))
 
         case .runTag(let tag):
             args.append("run")
             let normalizedTag = tag.hasPrefix("@") ? tag : "@\(tag)"
-            appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: true, overrideGrep: escapeRegExp(normalizedTag))
+            appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: allowNoColors, overrideGrep: escapeRegExp(normalizedTag))
 
         case .runLastFailed:
             args.append("run")
             args.append("--last-failed")
-            appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: true)
+            appendCommonRunFlags(to: &args, options: options, configFilePath: configFilePath, allowNoColors: allowNoColors)
 
         case .runWorkers(let count, let strategy, let selectedRuns, let serialPattern, let lastFailed):
             args.append("run-workers")
@@ -162,15 +167,31 @@ public enum CommandBuilder {
         }
 
         var env = ProcessInfo.processInfo.environment
+        var envOverrides: [String: String] = [:]
         env["PATH"] = toolchain.searchPath
-        env["FORCE_COLOR"] = "0"
-        env["NO_COLOR"] = "1"
-        for (key, value) in options.environmentVariables where !key.trimmingCharacters(in: .whitespaces).isEmpty {
-            env[key.trimmingCharacters(in: .whitespaces)] = value
+        if !colorOutput {
+            env["FORCE_COLOR"] = "0"
+            env["NO_COLOR"] = "1"
+        } else {
+            env.removeValue(forKey: "NO_COLOR")
+            if env["FORCE_COLOR"] == "0" {
+                env.removeValue(forKey: "FORCE_COLOR")
+            }
         }
-        if options.esmCjsCompat, let preloadURL = NodeCompatLoader.ensurePreloadFileURL() {
+        for (key, value) in options.environmentVariables where !key.trimmingCharacters(in: .whitespaces).isEmpty {
+            let trimmedKey = key.trimmingCharacters(in: .whitespaces)
+            env[trimmedKey] = value
+            envOverrides[trimmedKey] = value
+        }
+        if toolchain.runtime == .node,
+           options.esmCjsCompat,
+           let preloadURL = NodeCompatLoader.ensurePreloadFileURL() {
             env["NODE_OPTIONS"] = NodeCompatLoader.mergedNodeOptions(
                 existing: env["NODE_OPTIONS"],
+                preloadFileURL: preloadURL
+            )
+            envOverrides["NODE_OPTIONS"] = NodeCompatLoader.mergedNodeOptions(
+                existing: envOverrides["NODE_OPTIONS"],
                 preloadFileURL: preloadURL
             )
         }
@@ -184,8 +205,13 @@ public enum CommandBuilder {
             if !existingNodeOpts.contains("--inspect") {
                 env["NODE_OPTIONS"] = existingNodeOpts.isEmpty ? inspectFlag : "\(existingNodeOpts) \(inspectFlag)"
             }
+            let existingOverrideOpts = (envOverrides["NODE_OPTIONS"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !existingOverrideOpts.contains("--inspect") {
+                envOverrides["NODE_OPTIONS"] = existingOverrideOpts.isEmpty ? inspectFlag : "\(existingOverrideOpts) \(inspectFlag)"
+            }
             if debugOptions.headedBrowser && env["HEADLESS"] == nil {
                 env["HEADLESS"] = "false"
+                envOverrides["HEADLESS"] = "false"
             }
         }
 
@@ -194,16 +220,33 @@ public enum CommandBuilder {
            supportsTimeTravelTrace(mode),
            let pluginURL = TimeTravelRecorderLoader.ensurePluginFileURL() {
             env["CEPTRA_TIME_TRAVEL_DIR"] = traceOutputDirectory.path
+            envOverrides["CEPTRA_TIME_TRAVEL_DIR"] = traceOutputDirectory.path
             args.append(contentsOf: ["-o", TimeTravelRecorderLoader.overrideJSONArgument(pluginFileURL: pluginURL)])
         }
 
-        let displayParts = [URL(fileURLWithPath: toolchain.codeceptExecutable).lastPathComponent] + args.map { displayQuote($0) }
+        let rootPrefixes: [String] = [
+            workspaceRoot.standardizedFileURL.path,
+            workspaceRoot.resolvingSymlinksInPath().path
+        ].map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        let displayArgs = args.enumerated().map { idx, arg -> String in
+            if idx < toolchain.prefixArguments.count {
+                for prefix in rootPrefixes where arg.hasPrefix(prefix) {
+                    return displayQuote(String(arg.dropFirst(prefix.count)))
+                }
+            }
+            return displayQuote(arg)
+        }
+        let execDisplayName = URL(fileURLWithPath: toolchain.codeceptExecutable).lastPathComponent
+        let displayParts = (execDisplayName == "env" && !displayArgs.isEmpty)
+            ? displayArgs
+            : ([execDisplayName] + displayArgs)
 
         return BuiltCommand(
             executablePath: toolchain.codeceptExecutable,
             arguments: args,
             workingDirectory: workspaceRoot,
             environment: env,
+            environmentOverrides: envOverrides,
             displayCommand: displayParts.joined(separator: " ")
         )
     }

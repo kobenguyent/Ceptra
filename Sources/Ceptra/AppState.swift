@@ -225,9 +225,86 @@ final class AppState: ObservableObject {
         guard let root = workspace?.rootURL else { return nil }
         return NodeToolchainResolver.resolve(
             workspaceRoot: root,
+            runtime: settings.jsRuntime,
             customNodePath: settings.customNodePath,
+            customBunPath: settings.customBunPath,
             customCodeceptPath: settings.customCodeceptPath
         )
+    }
+
+    var isSystemConsoleMode: Bool {
+        settings.consoleExecutionMode == .systemTerminal
+    }
+
+    var activeTerminalDisplayName: String {
+        SystemTerminalLauncher.activeTerminalDisplayName(preferredAppPath: settings.customTerminalAppPath)
+    }
+
+    var systemDefaultTerminalDisplayName: String {
+        SystemTerminalLauncher.systemDefaultTerminalDisplayName()
+    }
+
+    var detectedTerminalApps: [DetectedTerminalApp] {
+        SystemTerminalLauncher.detectInstalledTerminalApps()
+    }
+
+    func setJSRuntime(_ runtime: JSRuntimeKind) {
+        guard settings.jsRuntime != runtime else { return }
+        settings.jsRuntime = runtime
+        saveSettings()
+        if let tc = resolvedToolchain {
+            if let binPath = tc.activeRuntimePath {
+                showBanner("Runtime switched to \(runtime.displayName) (\(binPath))")
+            } else {
+                showBanner("\(runtime.displayName) was not found in PATH — install \(runtime.executableName) or set Custom \(runtime.shortName) Path in Settings.", isError: true)
+            }
+        } else {
+            showBanner("Runtime switched to \(runtime.displayName)")
+        }
+    }
+
+    func setConsoleExecutionMode(_ mode: ConsoleExecutionMode) {
+        guard settings.consoleExecutionMode != mode else { return }
+        settings.consoleExecutionMode = mode
+        saveSettings()
+        switch mode {
+        case .builtIn:
+            showBanner("Console switched to Built-in Console")
+        case .systemTerminal:
+            showBanner("Console switched to System Console (\(activeTerminalDisplayName))")
+        }
+    }
+
+    func openWorkspaceInSystemTerminal() {
+        guard let workspace else {
+            showBanner("Open a workspace first.", isError: true)
+            return
+        }
+        do {
+            let terminalName = try SystemTerminalLauncher.openWorkspaceDirectory(
+                workspace.rootURL,
+                preferredAppPath: settings.customTerminalAppPath
+            )
+            showBanner("Opened \(workspace.config.projectName) in \(terminalName)")
+        } catch {
+            showBanner(error.localizedDescription, isError: true)
+        }
+    }
+
+    func selectCustomTerminalAppPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.prompt = "Select Terminal App"
+        panel.message = "Choose a macOS terminal application (e.g. Terminal.app, iTerm.app, Ghostty.app, Warp.app)."
+        if panel.runModal() == .OK, let url = panel.url {
+            settings.customTerminalAppPath = url.path
+            saveSettings()
+            showBanner("System console set to \(SystemTerminalLauncher.displayName(forAppAt: url))")
+        }
     }
 
     var workspaceRelativeDirectories: [String] {
@@ -693,8 +770,68 @@ final class AppState: ObservableObject {
             showBanner("Step-through debugging is supported for single-process runs (Run File / Scenario / All), not parallel workers.", isError: true)
             return
         }
+        if isDebugSession && toolchain.runtime == .bun {
+            showBanner("Interactive CDP step-through debugging requires Node.js. Switch runtime to Node in the toolbar or Settings.", isError: true)
+            return
+        }
 
         saveAllDirtyFiles()
+
+        // Launch directly in the system's default (or chosen) terminal app when System Console mode is enabled
+        if settings.consoleExecutionMode == .systemTerminal && !isDebugSession {
+            let command = CommandBuilder.build(
+                mode: mode,
+                options: runOptions,
+                workspaceRoot: workspace.rootURL,
+                configFilePath: workspace.config.configFilePath,
+                toolchain: toolchain,
+                debugOptions: nil,
+                traceOutputDirectory: nil,
+                colorOutput: true
+            )
+            lastCommandLine = command.displayCommand
+            do {
+                let terminalName = try SystemTerminalLauncher.launch(
+                    command: command,
+                    runtime: toolchain.runtime,
+                    title: mode.displayLabel,
+                    toolchain: toolchain,
+                    preferredAppPath: settings.customTerminalAppPath
+                )
+                consoleLogs.append(ConsoleLogEntry(
+                    timestamp: Date(),
+                    text: "↗ [\(terminalName) · \(toolchain.runtime.displayName)] $ \(command.displayCommand)",
+                    isError: false,
+                    isStep: false,
+                    isHighlight: true
+                ))
+                showBanner("Launched \(mode.displayLabel) in \(terminalName) (\(toolchain.runtime.shortName))")
+            } catch {
+                consoleLogs.append(ConsoleLogEntry(
+                    timestamp: Date(),
+                    text: "System console launch failed: \(error.localizedDescription)",
+                    isError: true,
+                    isStep: false,
+                    isHighlight: false
+                ))
+                showBanner("Could not launch system console: \(error.localizedDescription)", isError: true)
+            }
+            return
+        }
+
+        if toolchain.runtime == .bun && !toolchain.isActiveRuntimeAvailable {
+            let msg = "Bun executable was not found in PATH. Install Bun (https://bun.sh), set Custom Bun Path in Settings, or switch runtime to Node.js."
+            isConsoleVisible = true
+            consoleLogs.append(ConsoleLogEntry(
+                timestamp: Date(),
+                text: msg,
+                isError: true,
+                isStep: false,
+                isHighlight: false
+            ))
+            showBanner("Bun executable not found. Configure Bun in Settings or switch to Node.js.", isError: true)
+            return
+        }
 
         let outputURL = workspace.config.resolvedOutputURL(rootURL: workspace.rootURL)
         let projectPath = workspace.rootURL.path
@@ -925,6 +1062,45 @@ final class AppState: ObservableObject {
                 commandHistory = Array(commandHistory.prefix(40))
             }
             commandInputText = ""
+        }
+
+        if settings.consoleExecutionMode == .systemTerminal {
+            let command = PackageManagerSupport.buildCommand(
+                action: action,
+                packageManager: workspace.packageManager,
+                workspaceRoot: workspace.rootURL,
+                toolchain: toolchain,
+                extraEnv: runOptions.environmentVariables,
+                colorOutput: true
+            )
+            lastCommandLine = command.displayCommand
+            do {
+                let terminalName = try SystemTerminalLauncher.launch(
+                    command: command,
+                    runtime: toolchain.runtime,
+                    title: action.displayTitle,
+                    toolchain: toolchain,
+                    preferredAppPath: settings.customTerminalAppPath
+                )
+                consoleLogs.append(ConsoleLogEntry(
+                    timestamp: Date(),
+                    text: "↗ [\(terminalName)] $ \(command.displayCommand)",
+                    isError: false,
+                    isStep: false,
+                    isHighlight: true
+                ))
+                showBanner("Launched \(action.displayTitle) in \(terminalName)")
+            } catch {
+                consoleLogs.append(ConsoleLogEntry(
+                    timestamp: Date(),
+                    text: "System console launch failed: \(error.localizedDescription)",
+                    isError: true,
+                    isStep: false,
+                    isHighlight: false
+                ))
+                showBanner("Could not launch system console: \(error.localizedDescription)", isError: true)
+            }
+            return
         }
 
         let command = PackageManagerSupport.buildCommand(
