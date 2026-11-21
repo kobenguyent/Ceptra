@@ -65,8 +65,10 @@ public enum TimeTravelTraceMerger {
                     result.append(primary)
                 }
             }
-            result.append(contentsOf: remainingTraces)
-            merged = result
+            // Place chronological setup traces (e.g. BeforeSuite HTTP calls) ahead of scenarios they preceded
+            let setupTraces = remainingTraces.filter { $0.tags.contains("@setup") }
+            let trailingTraces = remainingTraces.filter { !$0.tags.contains("@setup") }
+            merged = setupTraces + result + trailingTraces
         }
 
         return synthesizeMissingTimestamps(in: merged, runStartedAt: runStartedAt)

@@ -581,4 +581,250 @@ final class TimeTravelReportTests: XCTestCase {
         XCTAssertNotNil(merged[1].steps[0].finishedAt)
         XCTAssertGreaterThanOrEqual(merged[1].startedAt!, merged[0].finishedAt!)
     }
+
+    func testApiTimeTravelRecorderCapturesNodeHttpFetchGzipBeforeSuiteAndAssertions() throws {
+        let fm = FileManager.default
+        let sandbox = fm.temporaryDirectory.appendingPathComponent("ceptra-api-tt-\(UUID().uuidString)", isDirectory: true)
+        let traceDir = sandbox.appendingPathComponent("traces", isDirectory: true)
+        try fm.createDirectory(at: traceDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: sandbox) }
+
+        let toolchain = NodeToolchainResolver.resolve(workspaceRoot: sandbox)
+        guard let nodePath = toolchain.nodePath else {
+            throw XCTSkip("Node binary not available in test environment")
+        }
+
+        let pluginURL = try XCTUnwrap(TimeTravelRecorderLoader.ensurePluginFileURL(baseDirectory: sandbox))
+
+        // Mock CodeceptJS module WITHOUT any browser/Playwright page (pure API suite!)
+        let mockCodeceptDir = sandbox.appendingPathComponent("node_modules/codeceptjs", isDirectory: true)
+        try fm.createDirectory(at: mockCodeceptDir, withIntermediateDirectories: true)
+        let mockCodeceptJS = """
+        const { EventEmitter } = require('node:events');
+        const dispatcher = new EventEmitter();
+        module.exports = {
+          event: {
+            dispatcher,
+            suite: { before: 'suite.before', after: 'suite.after' },
+            test: { before: 'test.before', passed: 'test.passed', failed: 'test.failed', skipped: 'test.skipped', after: 'test.after' },
+            step: { before: 'step.before', passed: 'step.passed', failed: 'step.failed', after: 'step.after' },
+            all: { result: 'all.result' }
+          },
+          container: {
+            helpers: () => ({ REST: {}, JSONResponse: {} })
+          }
+        };
+        """
+        try mockCodeceptJS.write(to: mockCodeceptDir.appendingPathComponent("index.js"), atomically: true, encoding: .utf8)
+
+        let driverScript = sandbox.appendingPathComponent("run-api-mock.cjs")
+        let driverSource = """
+        const http = require('node:http');
+        const zlib = require('node:zlib');
+        const codeceptjs = require('codeceptjs');
+        const registerPlugin = require(\(String(reflecting: pluginURL.path)));
+        registerPlugin({ enabled: true });
+
+        function httpCall(url, opts, body) {
+          return new Promise((resolve, reject) => {
+            const req = http.request(url, opts, (res) => {
+              const chunks = [];
+              res.on('data', (c) => chunks.push(c));
+              res.on('end', () => resolve({ status: res.statusCode, raw: Buffer.concat(chunks) }));
+            });
+            req.on('error', reject);
+            if (body) req.write(body);
+            req.end();
+          });
+        }
+
+        (async () => {
+          // Local real HTTP server serving token JSON, gzip-compressed accounts JSON, and POST echo
+          const server = http.createServer((req, res) => {
+            const chunks = [];
+            req.on('data', (c) => chunks.push(c));
+            req.on('end', () => {
+              if (req.url === '/oauth/token') {
+                res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': 'session=secret' });
+                res.end(JSON.stringify({ access_token: 'tok-123' }));
+              } else if (req.url.startsWith('/admin/accounts')) {
+                const gz = zlib.gzipSync(Buffer.from(JSON.stringify({ items: [{ id: 1, name: 'Acme' }] })));
+                res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' });
+                res.end(gz);
+              } else if (req.url === '/admin/users' && req.method === 'POST') {
+                res.writeHead(201, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ created: true, echo: JSON.parse(Buffer.concat(chunks).toString('utf8')) }));
+              } else {
+                res.writeHead(403, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Forbidden' }));
+              }
+            });
+          });
+          await new Promise((r) => server.listen(0, '127.0.0.1', r));
+          const port = server.address().port;
+          const base = `http://127.0.0.1:${port}`;
+
+          const { event } = codeceptjs;
+          event.dispatcher.emit(event.suite.before, { title: 'Admin > Accounts' });
+
+          // 1. BeforeSuite HTTP call (outside any scenario/step, like kcApi.getTokenWithPasswordGrant)
+          await httpCall(`${base}/oauth/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic dXNlcjpwYXNz' }
+          }, JSON.stringify({ grant_type: 'password' }));
+
+          // 2. Scenario with direct axios/http call OUTSIDE I.* step + fetch inside I.* step + assertion step
+          const test = {
+            title: 'Fetch and create accounts @api',
+            parent: { title: 'Admin > Accounts' },
+            file: '/repo/tests/api/accounts.spec.ts',
+            tags: ['@api']
+          };
+          event.dispatcher.emit(event.test.before, test);
+
+          // Direct http.request outside any I.* step (gzipped response!)
+          await httpCall(`${base}/admin/accounts?page=1&size=10`, {
+            method: 'GET',
+            headers: { 'Authorization': 'Bearer super-secret', 'Accept': 'application/json' }
+          });
+
+          // Fetch inside an active I.sendPostRequest step
+          const postStep = { name: 'sendPostRequest', args: ['/admin/users'], toString: () => 'I sendPostRequest "/admin/users"' };
+          event.dispatcher.emit(event.step.before, postStep);
+          const fRes = await fetch(`${base}/admin/users`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': 'secret-key' },
+            body: JSON.stringify({ email: 'qa@example.test' })
+          });
+          await fRes.json();
+          event.dispatcher.emit(event.step.after, postStep);
+
+          // Assertion step linked to the preceding API exchange
+          const assertStep = {
+            name: 'expectContain',
+            args: ['{"created":true}', 'created'],
+            toString: () => 'I expectContain "{\\"created\\":true}", "created"'
+          };
+          event.dispatcher.emit(event.step.before, assertStep);
+          event.dispatcher.emit(event.step.after, assertStep);
+
+          event.dispatcher.emit(event.test.passed, test);
+          event.dispatcher.emit(event.test.after, test);
+          event.dispatcher.emit(event.all.result);
+          await new Promise((r) => setTimeout(r, 80));
+          server.close();
+        })();
+        """
+        try driverSource.write(to: driverScript, atomically: true, encoding: .utf8)
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: nodePath)
+        proc.arguments = [driverScript.path]
+        proc.currentDirectoryURL = sandbox
+        var env = ProcessInfo.processInfo.environment
+        env["CEPTRA_TIME_TRAVEL_DIR"] = traceDir.path
+        proc.environment = env
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        try proc.run()
+        proc.waitUntilExit()
+
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(proc.terminationStatus, 0, "Mock API Node run failed: \(output)")
+
+        let loaded = TimeTravelTraceMerger.loadWorkerTraces(from: traceDir)
+        XCTAssertEqual(loaded.count, 2, "Expected BeforeSuite setup bucket + 1 scenario, got: \(loaded.map(\.scenarioTitle))")
+
+        let setupSc = try XCTUnwrap(loaded.first(where: { $0.tags.contains("@setup") }))
+        XCTAssertEqual(setupSc.steps.count, 1)
+        let setupReq = try XCTUnwrap(setupSc.steps.first?.diagnostics?.networkRequests.first)
+        XCTAssertEqual(setupReq.method, "POST")
+        XCTAssertEqual(setupReq.status, 200)
+        XCTAssertEqual(setupReq.requestHeaders["authorization"], "[REDACTED]")
+        XCTAssertEqual(setupReq.responseHeaders["set-cookie"], "[REDACTED]")
+        XCTAssertTrue(setupReq.responseBody?.contains("tok-123") == true)
+
+        let mainSc = try XCTUnwrap(loaded.first(where: { $0.scenarioTitle == "Fetch and create accounts @api" }))
+        XCTAssertEqual(mainSc.steps.count, 3, "Expected synthetic GET step + I.sendPostRequest step + I.expectContain step")
+
+        // Step 1: synthetic HTTP GET step with decompressed gzip JSON + timing breakdown
+        let getStep = mainSc.steps[0]
+        XCTAssertTrue(getStep.text.contains("HTTP GET /admin/accounts?page=1&size=10"))
+        let getReq = try XCTUnwrap(getStep.diagnostics?.networkRequests.first)
+        XCTAssertEqual(getReq.status, 200)
+        XCTAssertEqual(getReq.source, "http")
+        XCTAssertEqual(getReq.requestHeaders["authorization"], "[REDACTED]")
+        XCTAssertTrue(getReq.responseBody?.contains(#""name":"Acme""#) == true, "Expected gunzipped JSON body, got: \(getReq.responseBody ?? "nil")")
+        XCTAssertNotNil(getReq.timings?.totalMs)
+
+        // Step 2: fetch() inside I.sendPostRequest
+        let postStep = mainSc.steps[1]
+        let postReq = try XCTUnwrap(postStep.diagnostics?.networkRequests.first)
+        XCTAssertEqual(postReq.method, "POST")
+        XCTAssertEqual(postReq.status, 201)
+        XCTAssertEqual(postReq.source, "fetch")
+        XCTAssertEqual(postReq.requestHeaders["x-api-key"], "[REDACTED]")
+        XCTAssertTrue(postReq.requestBody?.contains("qa@example.test") == true)
+        XCTAssertTrue(postReq.responseBody?.contains("qa@example.test") == true)
+
+        // Step 3: assertion linked to the preceding POST request
+        let assertStep = mainSc.steps[2]
+        let assertion = try XCTUnwrap(assertStep.diagnostics?.assertion)
+        XCTAssertEqual(assertion.method, "expectContain")
+        XCTAssertTrue(assertion.passed)
+        XCTAssertEqual(assertion.relatedRequestId, postReq.id)
+
+        // Verify TimeTravelTraceMerger places @setup BeforeSuite traces ahead of primary scenarios
+        let primaryOnly = [
+            ExecutedScenarioRecord(featureTitle: "Admin > Accounts", scenarioTitle: "Fetch and create accounts @api", status: .passed, durationMs: 90)
+        ]
+        let merged = TimeTravelTraceMerger.merge(primaryScenarios: primaryOnly, traceScenarios: loaded, runStartedAt: Date())
+        XCTAssertEqual(merged.count, 2)
+        XCTAssertTrue(merged[0].tags.contains("@setup"))
+        XCTAssertEqual(merged[1].steps.count, 3)
+
+        // Generate API Replay HTML and verify mode auto-detection + valid JS syntax
+        let report = TestRunReport(
+            projectPath: sandbox.path,
+            projectName: "QA API Suite",
+            label: "Run accounts.spec.ts",
+            commandLine: "codeceptjs run tests/api/accounts.spec.ts --steps",
+            startedAt: Date(),
+            finishedAt: Date().addingTimeInterval(0.4),
+            exitCode: 0,
+            passedCount: 1,
+            failedCount: 0,
+            skippedCount: 0,
+            durationMs: 400,
+            scenarios: merged,
+            rawOutput: "OK | 1 passed"
+        )
+        let html = ReportExporter.toHTML(report)
+        XCTAssertTrue(html.contains(#"data-report-mode="api""#))
+        XCTAssertTrue(html.contains("API REPLAY"))
+        XCTAssertTrue(html.contains("API Calls"))
+        XCTAssertTrue(html.contains("API Exchange"))
+        XCTAssertTrue(html.contains("Waterfall &amp; Diff"))
+        XCTAssertTrue(html.contains("Copy cURL"))
+        XCTAssertTrue(html.contains("Replay Live"))
+
+        let appScriptMarker = #"<script id="ceptra-report-app">"#
+        let jsStart = try XCTUnwrap(html.range(of: appScriptMarker))
+        let jsEnd = try XCTUnwrap(html.range(of: "</script>", range: jsStart.upperBound..<html.endIndex))
+        let jsCode = String(html[jsStart.upperBound..<jsEnd.lowerBound])
+        let tmpJS = sandbox.appendingPathComponent("api-replay-check.js")
+        try jsCode.write(to: tmpJS, atomically: true, encoding: .utf8)
+
+        let checkProc = Process()
+        checkProc.executableURL = URL(fileURLWithPath: nodePath)
+        checkProc.arguments = ["--check", tmpJS.path]
+        let checkPipe = Pipe()
+        checkProc.standardOutput = checkPipe
+        checkProc.standardError = checkPipe
+        try checkProc.run()
+        checkProc.waitUntilExit()
+        let checkOut = String(data: checkPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(checkProc.terminationStatus, 0, "API Replay HTML JS syntax check failed: \(checkOut)")
+    }
 }

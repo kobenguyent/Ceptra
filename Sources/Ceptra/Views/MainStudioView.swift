@@ -1751,7 +1751,7 @@ private struct RunOptionsPopover: View {
                 Toggle("Enable AI Assistant (--ai)", isOn: $appState.runOptions.aiEnabled)
                 Toggle("Bail on First Failure (--bail)", isOn: $appState.runOptions.bailOnFail)
                 Toggle("Disable Timeouts (--no-timeouts)", isOn: $appState.runOptions.noTimeouts)
-                Toggle("Capture Time-Travel Trace (DOM, Network, Shots)", isOn: $appState.runOptions.timeTravelTrace)
+                Toggle("Capture Time-Travel Trace (Web DOM/Shots & API HTTP)", isOn: $appState.runOptions.timeTravelTrace)
                     .disabled(appState.isSystemConsoleMode)
                 Toggle(
                     appState.settings.jsRuntime == .bun

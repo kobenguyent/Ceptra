@@ -1,9 +1,12 @@
 import Foundation
 
 /// Generates and caches a zero-dependency CodeceptJS plugin that captures per-step
-/// time-travel telemetry (before/after screenshots, DOM snapshots with target highlighting,
-/// HTTP/XHR/REST network traffic with credential redaction, and browser console/page errors)
-/// without modifying the user's `codecept.conf.*`.
+/// time-travel telemetry for BOTH Web and API tests without modifying the user's `codecept.conf.*`:
+/// - Web: before/after screenshots, DOM snapshots with target highlighting, browser network/console/pageerror
+/// - API: universal Node/Bun `http`/`https` + `globalThis.fetch` + CodeceptJS `REST`/`GraphQL`/`JSONResponse`
+///   request/response bodies (with gzip/deflate/br decoding), DNS/TCP/TLS/TTFB/download timings,
+///   credential header redaction, synthetic API steps for direct axios/flex-rest/fetch calls outside `I.*`,
+///   BeforeSuite setup traffic, and structured assertion linking.
 public enum TimeTravelRecorderLoader {
     private static let directoryName = "ceptra-time-travel-v1"
     private static let pluginFileName = "ceptra-time-travel-plugin.cjs"
@@ -23,9 +26,13 @@ public enum TimeTravelRecorderLoader {
     const fs = require('node:fs');
     const path = require('node:path');
     const crypto = require('node:crypto');
+    const http = require('node:http');
+    const https = require('node:https');
+    const zlib = require('node:zlib');
 
     const MAX_DOM_CHARS = 256 * 1024;
-    const MAX_BODY_CHARS = 32 * 1024;
+    const MAX_BODY_CHARS = 64 * 1024;
+    const MAX_CAPTURE_BYTES = 256 * 1024;
     const MAX_CONSOLE_CHARS = 4096;
     const MAX_TARGET_HTML_CHARS = 4096;
     const MAX_HEADER_VALUE_CHARS = 1024;
@@ -51,16 +58,39 @@ public enum TimeTravelRecorderLoader {
       'grabNumberOfVisibleElements', 'pressKey', 'type', 'see', 'dontSee'
     ]);
 
-    const TEXT_CONTENT_RE = /(?:json|text|xml|javascript|ecmascript|x-www-form-urlencoded|graphql)/i;
+    const ASSERTION_METHOD_RE = /^(?:seeResponse|dontSeeResponse|expect|assert)/i;
+    const TEXT_CONTENT_RE = /(?:json|text|xml|javascript|ecmascript|x-www-form-urlencoded|graphql|csv|yaml|problem\+json)/i;
+    const INTERNAL_CONTROL_URL_RE = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+\/(?:json(?:\/|$)|devtools\/|wd\/hub\/|session(?:\/|$)|status$)/i;
 
     function resolveCodeceptJS() {
       try {
         return require('codeceptjs');
       } catch {}
-      try {
-        return require(path.join(process.cwd(), 'node_modules', 'codeceptjs'));
-      } catch {}
+      let dir = process.cwd();
+      for (let i = 0; i < 5; i++) {
+        try {
+          return require(path.join(dir, 'node_modules', 'codeceptjs'));
+        } catch {}
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+      if (require.main && typeof require.main.filename === 'string') {
+        let mdir = path.dirname(require.main.filename);
+        for (let i = 0; i < 6; i++) {
+          try {
+            return require(path.join(mdir, 'node_modules', 'codeceptjs'));
+          } catch {}
+          const parent = path.dirname(mdir);
+          if (parent === mdir) break;
+          mdir = parent;
+        }
+      }
       return null;
+    }
+
+    function genId() {
+      return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     }
 
     function truncate(str, max) {
@@ -69,10 +99,19 @@ public enum TimeTravelRecorderLoader {
       return str.slice(0, max) + '\n/* [truncated by Ceptra] */';
     }
 
+    function formatBytes(n) {
+      if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return '0 B';
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+    }
+
     function redactHeaders(raw) {
       const out = {};
       if (!raw || typeof raw !== 'object') return out;
-      for (const [k, v] of Object.entries(raw)) {
+      const entries = typeof raw.entries === 'function' ? Array.from(raw.entries()) : Object.entries(raw);
+      for (const [k, v] of entries) {
+        if (v === undefined) continue;
         const lower = String(k).toLowerCase();
         if (REDACTED_HEADERS.has(lower)) {
           out[lower] = '[REDACTED]';
@@ -84,13 +123,66 @@ public enum TimeTravelRecorderLoader {
       return out;
     }
 
+    function isLikelyBinaryContentType(contentType) {
+      if (!contentType) return false;
+      const lower = String(contentType).toLowerCase();
+      if (TEXT_CONTENT_RE.test(lower)) return false;
+      return /(?:image\/|audio\/|video\/|font\/|application\/octet-stream|application\/pdf|application\/zip|application\/gzip|multipart\/form-data)/i.test(lower);
+    }
+
+    function decodeBufferToBody(buf, contentType, contentEncoding, totalBytes) {
+      if (!buf || buf.length === 0) return null;
+      if (isLikelyBinaryContentType(contentType)) {
+        return `[binary ${contentType || 'payload'}: ${formatBytes(totalBytes || buf.length)}]`;
+      }
+      let decoded = buf;
+      const enc = String(contentEncoding || '').toLowerCase().trim();
+      if (enc) {
+        try {
+          if (enc.includes('gzip')) {
+            decoded = zlib.gunzipSync(buf);
+          } else if (enc.includes('br') && typeof zlib.brotliDecompressSync === 'function') {
+            decoded = zlib.brotliDecompressSync(buf);
+          } else if (enc.includes('deflate')) {
+            decoded = zlib.inflateSync(buf);
+          }
+        } catch {
+          // If body was truncated before decompression completed or malformed, fall back gracefully
+          if (buf.length >= MAX_CAPTURE_BYTES) {
+            return `[compressed ${enc} body > ${formatBytes(MAX_CAPTURE_BYTES)}; total ${formatBytes(totalBytes || buf.length)}]`;
+          }
+          decoded = buf;
+        }
+      }
+      // Check for null bytes indicating binary payload without an explicit binary content-type
+      const sampleLen = Math.min(decoded.length, 512);
+      let nulCount = 0;
+      for (let i = 0; i < sampleLen; i++) {
+        if (decoded[i] === 0) nulCount++;
+      }
+      if (nulCount > 4) {
+        return `[binary payload: ${formatBytes(totalBytes || decoded.length)}]`;
+      }
+      return truncate(decoded.toString('utf8'), MAX_BODY_CHARS);
+    }
+
+    function safeShortUrlLabel(rawUrl) {
+      try {
+        const u = new URL(rawUrl);
+        const pq = (u.pathname || '/') + (u.search || '');
+        return pq.length > 92 ? pq.slice(0, 89) + '…' : pq;
+      } catch {
+        const s = String(rawUrl || '');
+        return s.length > 92 ? s.slice(0, 89) + '…' : s;
+      }
+    }
+
     function extractTargetSelector(step) {
       if (!step) return null;
       const method = String(step.name || step.helperMethod || '');
       const args = Array.isArray(step.args) ? step.args : [];
       if (!args.length) return null;
 
-      // For `see("Text", "#container")`, prefer explicit 2nd locator argument if present
       if ((method === 'see' || method === 'dontSee') && args.length >= 2) {
         const second = normalizeLocator(args[1]);
         if (second) return second;
@@ -115,6 +207,17 @@ public enum TimeTravelRecorderLoader {
         if (typeof arg.value === 'string') return arg.value;
       }
       return null;
+    }
+
+    function safeSerializeArg(arg, maxLen = 600) {
+      if (arg === undefined) return 'undefined';
+      if (typeof arg === 'string') return truncate(arg, maxLen);
+      if (typeof arg === 'function') return arg.name ? `[Function ${arg.name}]` : '[Function]';
+      try {
+        return truncate(JSON.stringify(arg, null, 2), maxLen);
+      } catch {
+        return truncate(String(arg), maxLen);
+      }
     }
 
     function formatStepText(step) {
@@ -147,6 +250,44 @@ public enum TimeTravelRecorderLoader {
         if (h && h.page) return { helperName: name, helper: h, page: h.page };
       }
       return null;
+    }
+
+    function parseHttpRequestArgs(defaultProtocol, args) {
+      let urlObj = null;
+      let opts = {};
+      if (typeof args[0] === 'string') {
+        try { urlObj = new URL(args[0]); } catch {}
+        if (args[1] && typeof args[1] === 'object' && typeof args[1] !== 'function') {
+          opts = args[1];
+        }
+      } else if (args[0] instanceof URL) {
+        urlObj = args[0];
+        if (args[1] && typeof args[1] === 'object' && typeof args[1] !== 'function') {
+          opts = args[1];
+        }
+      } else if (args[0] && typeof args[0] === 'object') {
+        opts = args[0];
+      }
+
+      const protocol = (opts.protocol || (urlObj && urlObj.protocol) || defaultProtocol || 'http:');
+      const method = String(opts.method || 'GET').toUpperCase();
+      let fullUrl = '';
+      if (urlObj && !opts.hostname && !opts.host && !opts.path) {
+        fullUrl = urlObj.href;
+      } else {
+        const host = opts.hostname || opts.host || (urlObj && urlObj.hostname) || 'localhost';
+        const port = opts.port || (urlObj && urlObj.port) || '';
+        const hostHasPort = typeof host === 'string' && host.includes(':') && !host.startsWith('[');
+        const portPart = port && !hostHasPort &&
+          !((protocol === 'http:' && String(port) === '80') || (protocol === 'https:' && String(port) === '443'))
+          ? `:${port}`
+          : '';
+        const reqPath = opts.path || (urlObj ? (urlObj.pathname + urlObj.search) : '/');
+        const cleanPath = String(reqPath).startsWith('/') ? String(reqPath) : '/' + String(reqPath);
+        fullUrl = `${protocol}//${host}${portPart}${cleanPath}`;
+      }
+      const headers = opts.headers || {};
+      return { method, url: fullUrl, headers };
     }
 
     async function captureScreenshot(page) {
@@ -291,8 +432,12 @@ public enum TimeTravelRecorderLoader {
       const workerFile = path.join(outputDir, `worker-${process.pid}-${crypto.randomBytes(4).toString('hex')}.json`);
 
       const scenarios = [];
+      let currentSuiteTitle = 'Suite';
       let currentScenario = null;
       let currentStep = null;
+      let lastStepRecord = null;
+      let lastApiRequestInScenario = null;
+      let suiteSetupScenario = null;
       const attachedPages = new WeakSet();
       const pendingTasks = new Set();
 
@@ -301,6 +446,439 @@ public enum TimeTravelRecorderLoader {
         pendingTasks.add(promise);
         promise.finally(() => pendingTasks.delete(promise));
       }
+
+      function createEmptyDiagnostics(pageURL) {
+        return {
+          pageURL: pageURL || null,
+          beforeScreenshotDataURI: null,
+          afterScreenshotDataURI: null,
+          domSnapshot: null,
+          networkRequests: [],
+          consoleEntries: [],
+          assertion: null
+        };
+      }
+
+      function registerApiExchange(entry) {
+        // Attach to active I.* step if one is running; otherwise synthesize a clean API step
+        if (currentStep) {
+          currentStep.diagnostics.networkRequests.push(entry);
+          if (!currentStep.diagnostics.pageURL) {
+            currentStep.diagnostics.pageURL = entry.url;
+          }
+          lastApiRequestInScenario = entry;
+          return null;
+        }
+
+        let targetScenario = currentScenario;
+        if (!targetScenario) {
+          // Capture BeforeSuite / setup HTTP calls (e.g., OAuth token fetch) in a dedicated setup bucket
+          if (!suiteSetupScenario) {
+            suiteSetupScenario = {
+              featureTitle: currentSuiteTitle || 'Suite',
+              scenarioTitle: 'Suite Setup (BeforeSuite)',
+              filePath: null,
+              status: 'passed',
+              durationMs: 0,
+              startedAt: entry.startedAt,
+              _startMs: entry._startMs || Date.now(),
+              finishedAt: null,
+              tags: ['@setup'],
+              errorMessage: null,
+              errorStack: null,
+              steps: []
+            };
+            scenarios.push(suiteSetupScenario);
+          }
+          targetScenario = suiteSetupScenario;
+        }
+
+        const syntheticStep = {
+          text: `HTTP ${entry.method} ${safeShortUrlLabel(entry.url)}`,
+          depth: 0,
+          status: 'passed',
+          durationMs: null,
+          startedAt: entry.startedAt,
+          _startMs: entry._startMs || Date.now(),
+          finishedAt: null,
+          targetSelector: null,
+          errorMessage: null,
+          diagnostics: createEmptyDiagnostics(entry.url)
+        };
+        syntheticStep.diagnostics.networkRequests.push(entry);
+        targetScenario.steps.push(syntheticStep);
+        if (currentScenario) {
+          lastApiRequestInScenario = entry;
+        }
+        return syntheticStep;
+      }
+
+      function finalizeSyntheticStep(syntheticStep, entry) {
+        if (!syntheticStep) return;
+        const now = Date.now();
+        syntheticStep.finishedAt = new Date(now).toISOString();
+        syntheticStep.durationMs = typeof entry.durationMs === 'number'
+          ? entry.durationMs
+          : Math.max(0, now - (syntheticStep._startMs || now));
+        if (entry.errorText) {
+          syntheticStep.status = 'failed';
+          syntheticStep.errorMessage = entry.errorText;
+        }
+        if (suiteSetupScenario && suiteSetupScenario.steps.includes(syntheticStep)) {
+          suiteSetupScenario.finishedAt = syntheticStep.finishedAt;
+          suiteSetupScenario.durationMs = Math.max(0, now - (suiteSetupScenario._startMs || now));
+        }
+      }
+
+      // Universal Node/Bun HTTP & HTTPS interceptor (captures axios, flex-rest, CodeceptJS REST/GraphQL, got, etc.)
+      function installNodeHttpInterceptor() {
+        const activeState = globalThis.__ceptraHttpRecorderState || { onExchange: null, onComplete: null };
+        activeState.onExchange = registerApiExchange;
+        activeState.onComplete = finalizeSyntheticStep;
+        globalThis.__ceptraHttpRecorderState = activeState;
+
+        if (globalThis.__ceptraHttpPatched) return;
+        globalThis.__ceptraHttpPatched = true;
+
+        const trackedClientRequests = new WeakSet();
+
+        function wrapModule(mod, defaultProtocol, sourceLabel) {
+          const origRequest = mod.request;
+          const origGet = mod.get;
+          if (typeof origRequest !== 'function') return;
+
+          function instrumentedRequest(...args) {
+            const req = origRequest.apply(this, args);
+            if (!req || trackedClientRequests.has(req)) return req;
+            trackedClientRequests.add(req);
+
+            const rec = globalThis.__ceptraHttpRecorderState;
+            if (!rec || typeof rec.onExchange !== 'function') return req;
+
+            const parsed = parseHttpRequestArgs(defaultProtocol, args);
+            if (!parsed.url || INTERNAL_CONTROL_URL_RE.test(parsed.url)) return req;
+
+            const startMs = Date.now();
+            const entry = {
+              id: genId(),
+              method: parsed.method,
+              url: parsed.url,
+              resourceType: 'api',
+              source: sourceLabel,
+              status: null,
+              statusText: null,
+              startedAt: new Date(startMs).toISOString(),
+              _startMs: startMs,
+              durationMs: null,
+              requestSizeBytes: 0,
+              responseSizeBytes: 0,
+              timings: null,
+              requestHeaders: redactHeaders(parsed.headers),
+              responseHeaders: {},
+              requestBody: null,
+              responseBody: null,
+              errorText: null
+            };
+
+            const syntheticStep = rec.onExchange(entry);
+
+            const reqChunks = [];
+            let reqCapturedBytes = 0;
+            let reqTotalBytes = 0;
+
+            function captureWriteChunk(chunk, encoding) {
+              if (chunk == null) return;
+              try {
+                const buf = Buffer.isBuffer(chunk)
+                  ? chunk
+                  : Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
+                reqTotalBytes += buf.length;
+                if (reqCapturedBytes < MAX_CAPTURE_BYTES) {
+                  const remain = MAX_CAPTURE_BYTES - reqCapturedBytes;
+                  reqChunks.push(buf.length <= remain ? buf : buf.subarray(0, remain));
+                  reqCapturedBytes += Math.min(buf.length, remain);
+                }
+              } catch {}
+            }
+
+            const origWrite = req.write;
+            if (typeof origWrite === 'function') {
+              req.write = function (chunk, encoding, cb) {
+                captureWriteChunk(chunk, encoding);
+                return origWrite.apply(this, arguments);
+              };
+            }
+
+            const origEnd = req.end;
+            if (typeof origEnd === 'function') {
+              req.end = function (chunk, encoding, cb) {
+                if (typeof chunk !== 'function') {
+                  captureWriteChunk(chunk, encoding);
+                }
+                try {
+                  if (typeof req.getHeaders === 'function') {
+                    const liveHeaders = req.getHeaders();
+                    if (liveHeaders && Object.keys(liveHeaders).length > 0) {
+                      entry.requestHeaders = redactHeaders(liveHeaders);
+                    }
+                  }
+                  if (reqTotalBytes > 0) {
+                    entry.requestSizeBytes = reqTotalBytes;
+                    const ct = entry.requestHeaders['content-type'] || '';
+                    entry.requestBody = decodeBufferToBody(Buffer.concat(reqChunks), ct, '', reqTotalBytes);
+                  }
+                } catch {}
+                return origEnd.apply(this, arguments);
+              };
+            }
+
+            let lookupMs = null;
+            let connectMs = null;
+            let tlsMs = null;
+            let ttfbMs = null;
+
+            req.on('socket', (socket) => {
+              if (!socket || typeof socket.once !== 'function') return;
+              socket.once('lookup', () => {
+                if (lookupMs === null) lookupMs = Math.max(0, Date.now() - startMs);
+              });
+              socket.once('connect', () => {
+                if (connectMs === null) connectMs = Math.max(0, Date.now() - startMs);
+              });
+              socket.once('secureConnect', () => {
+                if (tlsMs === null) tlsMs = Math.max(0, Date.now() - startMs);
+              });
+            });
+
+            req.on('response', (res) => {
+              const firstByteAt = Date.now();
+              ttfbMs = Math.max(0, firstByteAt - startMs);
+              entry.status = typeof res.statusCode === 'number' ? res.statusCode : null;
+              entry.statusText = res.statusMessage ? String(res.statusMessage) : null;
+              entry.responseHeaders = redactHeaders(res.headers || {});
+
+              const resChunks = [];
+              let resCapturedBytes = 0;
+              let resTotalBytes = 0;
+
+              res.on('data', (chunk) => {
+                try {
+                  const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                  resTotalBytes += buf.length;
+                  if (resCapturedBytes < MAX_CAPTURE_BYTES) {
+                    const remain = MAX_CAPTURE_BYTES - resCapturedBytes;
+                    resChunks.push(buf.length <= remain ? buf : buf.subarray(0, remain));
+                    resCapturedBytes += Math.min(buf.length, remain);
+                  }
+                } catch {}
+              });
+
+              res.on('end', () => {
+                const endAt = Date.now();
+                const totalMs = Math.max(0, endAt - startMs);
+                const dnsDur = lookupMs;
+                const tcpDur = connectMs != null ? Math.max(0, connectMs - (lookupMs || 0)) : null;
+                const tlsDur = tlsMs != null ? Math.max(0, tlsMs - (connectMs || lookupMs || 0)) : null;
+                const waitDur = Math.max(0, ttfbMs - (tlsMs ?? connectMs ?? lookupMs ?? 0));
+                const dlDur = Math.max(0, totalMs - ttfbMs);
+
+                entry.durationMs = totalMs;
+                entry.responseSizeBytes = resTotalBytes;
+                entry.timings = {
+                  dnsMs: dnsDur,
+                  connectMs: tcpDur,
+                  tlsMs: tlsDur,
+                  ttfbMs: waitDur,
+                  downloadMs: dlDur,
+                  totalMs
+                };
+                if (resTotalBytes > 0) {
+                  const ct = entry.responseHeaders['content-type'] || '';
+                  const ce = entry.responseHeaders['content-encoding'] || '';
+                  entry.responseBody = decodeBufferToBody(Buffer.concat(resChunks), ct, ce, resTotalBytes);
+                }
+                if (rec && typeof rec.onComplete === 'function') {
+                  rec.onComplete(syntheticStep, entry);
+                }
+              });
+            });
+
+            req.on('error', (err) => {
+              entry.durationMs = Math.max(0, Date.now() - startMs);
+              entry.errorText = err && err.message ? String(err.message) : String(err || 'Request failed');
+              entry.timings = { dnsMs: null, connectMs: null, tlsMs: null, ttfbMs: null, downloadMs: null, totalMs: entry.durationMs };
+              if (rec && typeof rec.onComplete === 'function') {
+                rec.onComplete(syntheticStep, entry);
+              }
+            });
+
+            req.on('timeout', () => {
+              if (!entry.errorText && entry.status == null) {
+                entry.durationMs = Math.max(0, Date.now() - startMs);
+                entry.errorText = 'Request timed out';
+              }
+            });
+
+            return req;
+          }
+
+          mod.request = instrumentedRequest;
+          if (typeof origGet === 'function') {
+            mod.get = function (...args) {
+              const req = mod.request.apply(this, args);
+              if (req && typeof req.end === 'function') req.end();
+              return req;
+            };
+          }
+        }
+
+        wrapModule(http, 'http:', 'http');
+        wrapModule(https, 'https:', 'https');
+        try {
+          const nodeModule = require('node:module');
+          if (nodeModule && typeof nodeModule.syncBuiltinESMExports === 'function') {
+            nodeModule.syncBuiltinESMExports();
+          }
+        } catch {}
+      }
+
+      // Global `fetch()` interceptor (captures Node undici fetch & Bun native fetch)
+      function installGlobalFetchInterceptor() {
+        const activeState = globalThis.__ceptraHttpRecorderState || { onExchange: null, onComplete: null };
+        activeState.onExchange = registerApiExchange;
+        activeState.onComplete = finalizeSyntheticStep;
+        globalThis.__ceptraHttpRecorderState = activeState;
+
+        if (globalThis.__ceptraFetchPatched || typeof globalThis.fetch !== 'function') return;
+        globalThis.__ceptraFetchPatched = true;
+
+        const origFetch = globalThis.fetch.bind(globalThis);
+        globalThis.fetch = async function ceptraInstrumentedFetch(input, init) {
+          const rec = globalThis.__ceptraHttpRecorderState;
+          let url = '';
+          let method = 'GET';
+          let rawHeaders = {};
+          let reqBodyStr = null;
+          let reqSize = 0;
+
+          try {
+            if (typeof input === 'string') {
+              url = input;
+            } else if (input instanceof URL) {
+              url = input.href;
+            } else if (input && typeof input === 'object') {
+              url = String(input.url || '');
+              if (input.method) method = String(input.method).toUpperCase();
+              if (input.headers) rawHeaders = input.headers;
+            }
+            if (init && typeof init === 'object') {
+              if (init.method) method = String(init.method).toUpperCase();
+              if (init.headers) rawHeaders = init.headers;
+              if (init.body != null) {
+                if (typeof init.body === 'string') {
+                  reqSize = Buffer.byteLength(init.body, 'utf8');
+                  reqBodyStr = truncate(init.body, MAX_BODY_CHARS);
+                } else if (init.body instanceof URLSearchParams) {
+                  const s = init.body.toString();
+                  reqSize = Buffer.byteLength(s, 'utf8');
+                  reqBodyStr = truncate(s, MAX_BODY_CHARS);
+                } else if (Buffer.isBuffer(init.body) || init.body instanceof Uint8Array) {
+                  const buf = Buffer.from(init.body);
+                  reqSize = buf.length;
+                  reqBodyStr = decodeBufferToBody(buf.subarray(0, MAX_CAPTURE_BYTES), '', '', buf.length);
+                }
+              }
+            }
+          } catch {}
+
+          if (!rec || typeof rec.onExchange !== 'function' || !url || INTERNAL_CONTROL_URL_RE.test(url)) {
+            return origFetch(input, init);
+          }
+
+          const startMs = Date.now();
+          const entry = {
+            id: genId(),
+            method,
+            url,
+            resourceType: 'fetch',
+            source: 'fetch',
+            status: null,
+            statusText: null,
+            startedAt: new Date(startMs).toISOString(),
+            _startMs: startMs,
+            durationMs: null,
+            requestSizeBytes: reqSize,
+            responseSizeBytes: 0,
+            timings: null,
+            requestHeaders: redactHeaders(rawHeaders),
+            responseHeaders: {},
+            requestBody: reqBodyStr,
+            responseBody: null,
+            errorText: null
+          };
+
+          const syntheticStep = rec.onExchange(entry);
+
+          try {
+            const response = await origFetch(input, init);
+            const ttfbMs = Math.max(0, Date.now() - startMs);
+            entry.status = typeof response.status === 'number' ? response.status : null;
+            entry.statusText = response.statusText ? String(response.statusText) : null;
+            entry.responseHeaders = redactHeaders(response.headers);
+
+            const ct = entry.responseHeaders['content-type'] || '';
+            if (typeof response.clone === 'function' && (!ct || !isLikelyBinaryContentType(ct))) {
+              const cloned = response.clone();
+              track(
+                cloned.text().then((txt) => {
+                  const endAt = Date.now();
+                  const totalMs = Math.max(0, endAt - startMs);
+                  entry.durationMs = totalMs;
+                  if (typeof txt === 'string' && txt.length > 0) {
+                    entry.responseSizeBytes = Buffer.byteLength(txt, 'utf8');
+                    entry.responseBody = truncate(txt, MAX_BODY_CHARS);
+                  }
+                  entry.timings = {
+                    dnsMs: null,
+                    connectMs: null,
+                    tlsMs: null,
+                    ttfbMs,
+                    downloadMs: Math.max(0, totalMs - ttfbMs),
+                    totalMs
+                  };
+                  if (rec && typeof rec.onComplete === 'function') {
+                    rec.onComplete(syntheticStep, entry);
+                  }
+                }).catch(() => {
+                  entry.durationMs = ttfbMs;
+                  entry.timings = { dnsMs: null, connectMs: null, tlsMs: null, ttfbMs, downloadMs: 0, totalMs: ttfbMs };
+                  if (rec && typeof rec.onComplete === 'function') {
+                    rec.onComplete(syntheticStep, entry);
+                  }
+                })
+              );
+            } else {
+              entry.durationMs = ttfbMs;
+              entry.timings = { dnsMs: null, connectMs: null, tlsMs: null, ttfbMs, downloadMs: 0, totalMs: ttfbMs };
+              if (rec && typeof rec.onComplete === 'function') {
+                rec.onComplete(syntheticStep, entry);
+              }
+            }
+            return response;
+          } catch (err) {
+            entry.durationMs = Math.max(0, Date.now() - startMs);
+            entry.errorText = err && err.message ? String(err.message) : String(err || 'Fetch failed');
+            entry.timings = { dnsMs: null, connectMs: null, tlsMs: null, ttfbMs: null, downloadMs: null, totalMs: entry.durationMs };
+            if (rec && typeof rec.onComplete === 'function') {
+              rec.onComplete(syntheticStep, entry);
+            }
+            throw err;
+          }
+        };
+      }
+
+      installNodeHttpInterceptor();
+      installGlobalFetchInterceptor();
 
       function attachPageListeners(page) {
         if (!page || typeof page.on !== 'function' || attachedPages.has(page)) return;
@@ -313,15 +891,19 @@ public enum TimeTravelRecorderLoader {
             const rawHeaders = typeof req.headers === 'function' ? req.headers() : (req.headers || {});
             const postData = typeof req.postData === 'function' ? req.postData() : null;
             const entry = {
-              id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              id: genId(),
               method: typeof req.method === 'function' ? req.method() : 'GET',
               url: typeof req.url === 'function' ? req.url() : String(req.url || ''),
               resourceType: typeof req.resourceType === 'function' ? req.resourceType() : null,
+              source: 'browser',
               status: null,
               statusText: null,
               startedAt: new Date().toISOString(),
               _startMs: Date.now(),
               durationMs: null,
+              requestSizeBytes: typeof postData === 'string' ? Buffer.byteLength(postData, 'utf8') : 0,
+              responseSizeBytes: 0,
+              timings: null,
               requestHeaders: redactHeaders(rawHeaders),
               responseHeaders: {},
               requestBody: truncate(postData, MAX_BODY_CHARS),
@@ -339,15 +921,19 @@ public enum TimeTravelRecorderLoader {
             let entry = req ? reqMap.get(req) : null;
             if (!entry && currentStep) {
               entry = {
-                id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                id: genId(),
                 method: req && typeof req.method === 'function' ? req.method() : 'GET',
                 url: typeof res.url === 'function' ? res.url() : '',
                 resourceType: req && typeof req.resourceType === 'function' ? req.resourceType() : null,
+                source: 'browser',
                 status: null,
                 statusText: null,
                 startedAt: new Date().toISOString(),
                 _startMs: Date.now(),
                 durationMs: null,
+                requestSizeBytes: 0,
+                responseSizeBytes: 0,
+                timings: null,
                 requestHeaders: {},
                 responseHeaders: {},
                 requestBody: null,
@@ -369,6 +955,7 @@ public enum TimeTravelRecorderLoader {
                 Promise.resolve(res.text())
                   .then((txt) => {
                     if (typeof txt === 'string' && txt.length > 0) {
+                      entry.responseSizeBytes = Buffer.byteLength(txt, 'utf8');
                       entry.responseBody = truncate(txt, MAX_BODY_CHARS);
                     }
                   })
@@ -393,7 +980,7 @@ public enum TimeTravelRecorderLoader {
           try {
             const loc = typeof msg.location === 'function' ? msg.location() : null;
             currentStep.diagnostics.consoleEntries.push({
-              id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              id: genId(),
               level: typeof msg.type === 'function' ? msg.type() : 'log',
               message: truncate(typeof msg.text === 'function' ? msg.text() : String(msg), MAX_CONSOLE_CHARS) || '',
               timestamp: new Date().toISOString(),
@@ -407,7 +994,7 @@ public enum TimeTravelRecorderLoader {
           if (!currentStep) return;
           try {
             currentStep.diagnostics.consoleEntries.push({
-              id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              id: genId(),
               level: 'pageerror',
               message: truncate((err && (err.stack || err.message)) ? String(err.stack || err.message) : String(err), MAX_CONSOLE_CHARS) || 'Uncaught page error',
               timestamp: new Date().toISOString(),
@@ -444,15 +1031,20 @@ public enum TimeTravelRecorderLoader {
               beforeScreenshotDataURI: st.diagnostics.beforeScreenshotDataURI,
               afterScreenshotDataURI: st.diagnostics.afterScreenshotDataURI,
               domSnapshot: st.diagnostics.domSnapshot,
+              assertion: st.diagnostics.assertion || null,
               networkRequests: st.diagnostics.networkRequests.map((n) => ({
                 id: n.id,
                 method: n.method,
                 url: n.url,
                 resourceType: n.resourceType,
+                source: n.source || null,
                 status: n.status,
                 statusText: n.statusText,
                 startedAt: n.startedAt,
                 durationMs: n.durationMs,
+                requestSizeBytes: typeof n.requestSizeBytes === 'number' ? n.requestSizeBytes : null,
+                responseSizeBytes: typeof n.responseSizeBytes === 'number' ? n.responseSizeBytes : null,
+                timings: n.timings || null,
                 requestHeaders: n.requestHeaders,
                 responseHeaders: n.responseHeaders,
                 requestBody: n.requestBody,
@@ -480,13 +1072,25 @@ public enum TimeTravelRecorderLoader {
         } catch {}
       }
 
+      if (event.suite && event.suite.before) {
+        dispatcher.on(event.suite.before, (suite) => {
+          currentSuiteTitle = (suite && suite.title) ? String(suite.title) : 'Suite';
+          suiteSetupScenario = null;
+        });
+      }
+
       dispatcher.on(event.test.before, (test) => {
         const active = getActivePage(container);
         if (active && active.page) attachPageListeners(active.page);
 
-        const featureTitle = (test && test.parent && test.parent.title) ? String(test.parent.title) : 'Suite';
+        const featureTitle = (test && test.parent && test.parent.title) ? String(test.parent.title) : currentSuiteTitle;
         const scenarioTitle = (test && test.title) ? String(test.title) : 'Scenario';
         const tags = Array.isArray(test && test.tags) ? test.tags.map(String) : [];
+
+        if (suiteSetupScenario && suiteSetupScenario.featureTitle === 'Suite' && featureTitle) {
+          suiteSetupScenario.featureTitle = featureTitle;
+        }
+        suiteSetupScenario = null;
 
         currentScenario = {
           featureTitle,
@@ -503,6 +1107,8 @@ public enum TimeTravelRecorderLoader {
           steps: []
         };
         currentStep = null;
+        lastStepRecord = null;
+        lastApiRequestInScenario = null;
         scenarios.push(currentScenario);
       });
 
@@ -511,8 +1117,14 @@ public enum TimeTravelRecorderLoader {
         const active = getActivePage(container);
         if (active && active.page) attachPageListeners(active.page);
 
+        const method = String((step && (step.name || step.helperMethod)) || '');
+        const args = Array.isArray(step && step.args) ? step.args : [];
         const targetSelector = extractTargetSelector(step);
         const depth = (step && step.metaStep) ? 1 : 0;
+        const pageURL = (active && active.page && typeof active.page.url === 'function')
+          ? active.page.url()
+          : (lastApiRequestInScenario ? lastApiRequestInScenario.url : null);
+
         const stepRecord = {
           text: formatStepText(step),
           depth,
@@ -523,16 +1135,30 @@ public enum TimeTravelRecorderLoader {
           finishedAt: null,
           targetSelector,
           errorMessage: null,
-          diagnostics: {
-            pageURL: (active && active.page && typeof active.page.url === 'function') ? active.page.url() : null,
-            beforeScreenshotDataURI: null,
-            afterScreenshotDataURI: null,
-            domSnapshot: null,
-            networkRequests: [],
-            consoleEntries: []
-          }
+          diagnostics: createEmptyDiagnostics(pageURL)
         };
+
+        if (ASSERTION_METHOD_RE.test(method)) {
+          let expected = null;
+          let actual = null;
+          if (/^expect/i.test(method) && args.length >= 2) {
+            actual = safeSerializeArg(args[0], 1024);
+            expected = safeSerializeArg(args.slice(1).length === 1 ? args[1] : args.slice(1), 1024);
+          } else if (args.length > 0) {
+            expected = safeSerializeArg(args.length === 1 ? args[0] : args, 1024);
+          }
+          stepRecord.diagnostics.assertion = {
+            method,
+            passed: true,
+            expected,
+            actual,
+            message: null,
+            relatedRequestId: lastApiRequestInScenario ? lastApiRequestInScenario.id : null
+          };
+        }
+
         currentStep = stepRecord;
+        lastStepRecord = stepRecord;
         currentScenario.steps.push(stepRecord);
 
         if (active && active.page) {
@@ -547,10 +1173,15 @@ public enum TimeTravelRecorderLoader {
       });
 
       dispatcher.on(event.step.failed, (step, err) => {
-        if (!currentStep) return;
-        currentStep.status = 'failed';
+        const targetStep = currentStep || lastStepRecord;
+        if (!targetStep) return;
+        targetStep.status = 'failed';
         if (err) {
-          currentStep.errorMessage = err.message ? String(err.message) : String(err);
+          targetStep.errorMessage = err.message ? String(err.message) : String(err);
+        }
+        if (targetStep.diagnostics.assertion) {
+          targetStep.diagnostics.assertion.passed = false;
+          targetStep.diagnostics.assertion.message = targetStep.errorMessage;
         }
       });
 
@@ -561,6 +1192,9 @@ public enum TimeTravelRecorderLoader {
         stepRecord.durationMs = Math.max(0, Date.now() - stepRecord._startMs);
         if (step && step.status === 'failed') {
           stepRecord.status = 'failed';
+          if (stepRecord.diagnostics.assertion) {
+            stepRecord.diagnostics.assertion.passed = false;
+          }
         }
 
         const active = getActivePage(container);
@@ -580,6 +1214,8 @@ public enum TimeTravelRecorderLoader {
             })
           );
         }
+        // Clear currentStep so subsequent direct axios/flex-rest/fetch calls get their own API step
+        currentStep = null;
       });
 
       dispatcher.on(event.test.passed, () => {
@@ -596,12 +1232,22 @@ public enum TimeTravelRecorderLoader {
         }
       });
 
+      if (event.test && event.test.skipped) {
+        dispatcher.on(event.test.skipped, (test) => {
+          if (currentScenario) {
+            currentScenario.status = 'skipped';
+          }
+        });
+      }
+
       dispatcher.on(event.test.after, () => {
         if (currentScenario) {
           currentScenario.finishedAt = new Date().toISOString();
           currentScenario.durationMs = Math.max(0, Date.now() - currentScenario._startMs);
         }
         currentStep = null;
+        lastStepRecord = null;
+        lastApiRequestInScenario = null;
         track(Promise.allSettled(Array.from(pendingTasks)).then(() => flushSync()));
       });
 

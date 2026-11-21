@@ -53,15 +53,79 @@ public struct TimeTravelDOMSnapshot: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+public struct TimeTravelNetworkTimings: Codable, Equatable, Hashable, Sendable {
+    public let dnsMs: Int?
+    public let connectMs: Int?
+    public let tlsMs: Int?
+    public let ttfbMs: Int?
+    public let downloadMs: Int?
+    public let totalMs: Int?
+
+    public init(
+        dnsMs: Int? = nil,
+        connectMs: Int? = nil,
+        tlsMs: Int? = nil,
+        ttfbMs: Int? = nil,
+        downloadMs: Int? = nil,
+        totalMs: Int? = nil
+    ) {
+        self.dnsMs = dnsMs
+        self.connectMs = connectMs
+        self.tlsMs = tlsMs
+        self.ttfbMs = ttfbMs
+        self.downloadMs = downloadMs
+        self.totalMs = totalMs
+    }
+}
+
+public struct TimeTravelAssertionRecord: Codable, Equatable, Hashable, Sendable {
+    public let method: String
+    public let passed: Bool
+    public let expected: String?
+    public let actual: String?
+    public let message: String?
+    public let relatedRequestId: String?
+
+    public init(
+        method: String,
+        passed: Bool,
+        expected: String? = nil,
+        actual: String? = nil,
+        message: String? = nil,
+        relatedRequestId: String? = nil
+    ) {
+        self.method = method
+        self.passed = passed
+        self.expected = expected
+        self.actual = actual
+        self.message = message
+        self.relatedRequestId = relatedRequestId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.method = try c.decodeIfPresent(String.self, forKey: .method) ?? "assert"
+        self.passed = try c.decodeIfPresent(Bool.self, forKey: .passed) ?? true
+        self.expected = try c.decodeIfPresent(String.self, forKey: .expected)
+        self.actual = try c.decodeIfPresent(String.self, forKey: .actual)
+        self.message = try c.decodeIfPresent(String.self, forKey: .message)
+        self.relatedRequestId = try c.decodeIfPresent(String.self, forKey: .relatedRequestId)
+    }
+}
+
 public struct TimeTravelNetworkEntry: Identifiable, Codable, Equatable, Hashable, Sendable {
     public let id: String
     public let method: String
     public let url: String
     public let resourceType: String?
+    public let source: String?
     public let status: Int?
     public let statusText: String?
     public let startedAt: Date?
     public let durationMs: Int?
+    public let requestSizeBytes: Int?
+    public let responseSizeBytes: Int?
+    public let timings: TimeTravelNetworkTimings?
     public let requestHeaders: [String: String]
     public let responseHeaders: [String: String]
     public let requestBody: String?
@@ -73,10 +137,14 @@ public struct TimeTravelNetworkEntry: Identifiable, Codable, Equatable, Hashable
         method: String,
         url: String,
         resourceType: String? = nil,
+        source: String? = nil,
         status: Int? = nil,
         statusText: String? = nil,
         startedAt: Date? = nil,
         durationMs: Int? = nil,
+        requestSizeBytes: Int? = nil,
+        responseSizeBytes: Int? = nil,
+        timings: TimeTravelNetworkTimings? = nil,
         requestHeaders: [String: String] = [:],
         responseHeaders: [String: String] = [:],
         requestBody: String? = nil,
@@ -87,10 +155,14 @@ public struct TimeTravelNetworkEntry: Identifiable, Codable, Equatable, Hashable
         self.method = method
         self.url = url
         self.resourceType = resourceType
+        self.source = source
         self.status = status
         self.statusText = statusText
         self.startedAt = startedAt
         self.durationMs = durationMs
+        self.requestSizeBytes = requestSizeBytes
+        self.responseSizeBytes = responseSizeBytes
+        self.timings = timings
         self.requestHeaders = requestHeaders
         self.responseHeaders = responseHeaders
         self.requestBody = requestBody
@@ -104,10 +176,14 @@ public struct TimeTravelNetworkEntry: Identifiable, Codable, Equatable, Hashable
         self.method = try c.decodeIfPresent(String.self, forKey: .method) ?? "GET"
         self.url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
         self.resourceType = try c.decodeIfPresent(String.self, forKey: .resourceType)
+        self.source = try c.decodeIfPresent(String.self, forKey: .source)
         self.status = try c.decodeIfPresent(Int.self, forKey: .status)
         self.statusText = try c.decodeIfPresent(String.self, forKey: .statusText)
         self.startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
         self.durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)
+        self.requestSizeBytes = try c.decodeIfPresent(Int.self, forKey: .requestSizeBytes)
+        self.responseSizeBytes = try c.decodeIfPresent(Int.self, forKey: .responseSizeBytes)
+        self.timings = try c.decodeIfPresent(TimeTravelNetworkTimings.self, forKey: .timings)
         self.requestHeaders = try c.decodeIfPresent([String: String].self, forKey: .requestHeaders) ?? [:]
         self.responseHeaders = try c.decodeIfPresent([String: String].self, forKey: .responseHeaders) ?? [:]
         self.requestBody = try c.decodeIfPresent(String.self, forKey: .requestBody)
@@ -179,6 +255,7 @@ public struct TimeTravelStepDiagnostics: Codable, Equatable, Hashable, Sendable 
     public let domSnapshot: TimeTravelDOMSnapshot?
     public let networkRequests: [TimeTravelNetworkEntry]
     public let consoleEntries: [TimeTravelConsoleEntry]
+    public let assertion: TimeTravelAssertionRecord?
 
     public init(
         pageURL: String? = nil,
@@ -186,7 +263,8 @@ public struct TimeTravelStepDiagnostics: Codable, Equatable, Hashable, Sendable 
         afterScreenshotDataURI: String? = nil,
         domSnapshot: TimeTravelDOMSnapshot? = nil,
         networkRequests: [TimeTravelNetworkEntry] = [],
-        consoleEntries: [TimeTravelConsoleEntry] = []
+        consoleEntries: [TimeTravelConsoleEntry] = [],
+        assertion: TimeTravelAssertionRecord? = nil
     ) {
         self.pageURL = pageURL
         self.beforeScreenshotDataURI = beforeScreenshotDataURI
@@ -194,6 +272,7 @@ public struct TimeTravelStepDiagnostics: Codable, Equatable, Hashable, Sendable 
         self.domSnapshot = domSnapshot
         self.networkRequests = networkRequests
         self.consoleEntries = consoleEntries
+        self.assertion = assertion
     }
 
     public init(from decoder: Decoder) throws {
@@ -204,6 +283,15 @@ public struct TimeTravelStepDiagnostics: Codable, Equatable, Hashable, Sendable 
         self.domSnapshot = try c.decodeIfPresent(TimeTravelDOMSnapshot.self, forKey: .domSnapshot)
         self.networkRequests = try c.decodeIfPresent([TimeTravelNetworkEntry].self, forKey: .networkRequests) ?? []
         self.consoleEntries = try c.decodeIfPresent([TimeTravelConsoleEntry].self, forKey: .consoleEntries) ?? []
+        self.assertion = try c.decodeIfPresent(TimeTravelAssertionRecord.self, forKey: .assertion)
+    }
+
+    public var hasWebVisuals: Bool {
+        beforeScreenshotDataURI != nil || afterScreenshotDataURI != nil || domSnapshot != nil
+    }
+
+    public var hasApiTraffic: Bool {
+        !networkRequests.isEmpty || assertion != nil
     }
 
     public var isEmpty: Bool {
@@ -211,7 +299,8 @@ public struct TimeTravelStepDiagnostics: Codable, Equatable, Hashable, Sendable 
             afterScreenshotDataURI == nil &&
             domSnapshot == nil &&
             networkRequests.isEmpty &&
-            consoleEntries.isEmpty
+            consoleEntries.isEmpty &&
+            assertion == nil
     }
 }
 

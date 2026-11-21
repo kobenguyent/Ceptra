@@ -1,10 +1,14 @@
 import CryptoKit
 import Foundation
 
-/// Builds a 100% self-contained, offline-capable interactive HTML test report with
-/// step-by-step execution timeline, time-travel playback controls, keyboard navigation,
-/// DOM snapshot inspector (with target highlighting and sandboxed preview),
-/// per-step network traffic inspector, before/after visual diff, and browser console logs.
+/// Builds a 100% self-contained, offline-capable interactive HTML replay report for both
+/// Web and API CodeceptJS tests:
+/// - Step-by-step execution timeline with time-travel playback controls & keyboard navigation
+/// - API Replay: Request/Response split inspector, interactive collapsible JSON tree with JSONPath copy,
+///   parsed query params, DNS/TCP/TLS/TTFB/download timing waterfall, structural JSON diff between any
+///   two exchanges, assertion inspector, one-click Copy as cURL / fetch() / CodeceptJS, and live replay
+/// - Web Replay: before/after screenshots with curtain diff & target reticle, DOM snapshot tree/source/
+///   sandboxed preview, per-step network traffic, and browser console/page errors
 public enum TimeTravelHTMLReportBuilder {
     private struct EmbeddedPayload: Encodable {
         let meta: ReportMeta
@@ -17,12 +21,16 @@ public enum TimeTravelHTMLReportBuilder {
         let projectName: String
         let label: String
         let commandLine: String
+        let reportMode: String
         let overallStatus: String
         let passRatePct: Int
         let passedCount: Int
         let failedCount: Int
         let skippedCount: Int
         let durationMs: Int
+        let apiCallCount: Int
+        let apiAvgLatencyMs: Int?
+        let apiErrorCount: Int
         let startedAtISO: String
         let finishedAtISO: String
         let rawOutput: String
@@ -69,6 +77,7 @@ public enum TimeTravelHTMLReportBuilder {
         let targetOuterHTML: String?
         let targetBoundingBox: TimeTravelBoundingBox?
         let matchedCount: Int?
+        let assertion: TimeTravelAssertionRecord?
         let networkRequests: [TimeTravelNetworkEntry]
         let consoleEntries: [TimeTravelConsoleEntry]
     }
@@ -138,6 +147,7 @@ public enum TimeTravelHTMLReportBuilder {
                     targetOuterHTML: nil,
                     targetBoundingBox: nil,
                     matchedCount: nil,
+                    assertion: nil,
                     networkRequests: [],
                     consoleEntries: []
                 ))
@@ -179,6 +189,7 @@ public enum TimeTravelHTMLReportBuilder {
                         targetOuterHTML: dom?.targetOuterHTML,
                         targetBoundingBox: dom?.targetBoundingBox,
                         matchedCount: dom?.matchedCount,
+                        assertion: diag?.assertion,
                         networkRequests: diag?.networkRequests ?? [],
                         consoleEntries: diag?.consoleEntries ?? []
                     ))
@@ -200,18 +211,53 @@ public enum TimeTravelHTMLReportBuilder {
             ))
         }
 
+        let hasWebVisuals = timelineSteps.contains {
+            $0.beforeShotAssetId != nil || $0.afterShotAssetId != nil || $0.domAssetId != nil
+        }
+        let allNetworkEntries = timelineSteps.flatMap(\.networkRequests)
+        let apiSourceSet: Set<String> = ["http", "https", "fetch", "rest", "graphql"]
+        let hasDirectApiEntries = allNetworkEntries.contains { entry in
+            if let src = entry.source?.lowercased(), apiSourceSet.contains(src) { return true }
+            if entry.resourceType?.lowercased() == "api" { return true }
+            return false
+        }
+        let hasAssertions = timelineSteps.contains { $0.assertion != nil }
+        let hasApiActivity = hasDirectApiEntries || hasAssertions || (!hasWebVisuals && !allNetworkEntries.isEmpty)
+
+        let reportMode: String
+        if hasWebVisuals && hasApiActivity {
+            reportMode = "hybrid"
+        } else if hasApiActivity {
+            reportMode = "api"
+        } else {
+            reportMode = "web"
+        }
+
+        let apiCallCount = allNetworkEntries.count
+        let measuredDurations = allNetworkEntries.compactMap(\.durationMs)
+        let apiAvgLatencyMs: Int? = measuredDurations.isEmpty
+            ? nil
+            : Int((Double(measuredDurations.reduce(0, +)) / Double(measuredDurations.count)).rounded())
+        let apiErrorCount = allNetworkEntries.filter { req in
+            req.errorText != nil || (req.status ?? 0) >= 400
+        }.count
+
         let passPct = Int((report.passRate * 100.0).rounded())
         let payload = EmbeddedPayload(
             meta: ReportMeta(
                 projectName: report.projectName,
                 label: report.label,
                 commandLine: report.commandLine,
+                reportMode: reportMode,
                 overallStatus: report.overallStatus.rawValue,
                 passRatePct: passPct,
                 passedCount: report.passedCount,
                 failedCount: report.failedCount,
                 skippedCount: report.skippedCount,
                 durationMs: report.durationMs,
+                apiCallCount: apiCallCount,
+                apiAvgLatencyMs: apiAvgLatencyMs,
+                apiErrorCount: apiErrorCount,
                 startedAtISO: iso.string(from: report.startedAt),
                 finishedAtISO: iso.string(from: report.finishedAt),
                 rawOutput: String(report.rawOutput.prefix(64 * 1024))
@@ -238,7 +284,27 @@ public enum TimeTravelHTMLReportBuilder {
         default: statusClass = "skip"
         }
 
+        let modeBadgeLabel: String
+        let modeBadgeClass: String
+        switch reportMode {
+        case "api":
+            modeBadgeLabel = "API REPLAY"
+            modeBadgeClass = "mode-api"
+        case "hybrid":
+            modeBadgeLabel = "WEB + API REPLAY"
+            modeBadgeClass = "mode-hybrid"
+        default:
+            modeBadgeLabel = "WEB REPLAY"
+            modeBadgeClass = "mode-web"
+        }
+
         let failureStepCount = timelineSteps.filter { $0.status == "failed" }.count
+        let apiKPIHTML: String = apiCallCount > 0
+            ? """
+                <div class="kpi"><span class="kpi-label">API Calls</span><span class="kpi-val cyan">\(apiCallCount)</span></div>
+                <div class="kpi"><span class="kpi-label">Avg Latency</span><span class="kpi-val">\(apiAvgLatencyMs.map { "\($0)ms" } ?? "—")</span></div>
+            """
+            : ""
 
         return """
         <!doctype html>
@@ -246,17 +312,18 @@ public enum TimeTravelHTMLReportBuilder {
         <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Ceptra Time-Travel Report — \(escapeHTML(report.projectName))</title>
+        <title>Ceptra \(reportMode == "api" ? "API Replay" : "Time-Travel") Report — \(escapeHTML(report.projectName))</title>
         <style>
         \(cssSource)
         </style>
         </head>
-        <body>
+        <body data-report-mode="\(reportMode)">
           <div class="app-shell">
             <header class="topbar">
               <div class="topbar-main">
                 <div class="brand-row">
                   <span class="status-pill \(statusClass)">\(escapeHTML(report.overallStatus.rawValue.uppercased()))</span>
+                  <span class="mode-pill \(modeBadgeClass)">\(modeBadgeLabel)</span>
                   <h1>\(escapeHTML(report.projectName)) <span class="sep">/</span> <span class="run-label">\(escapeHTML(report.label))</span></h1>
                 </div>
                 <div class="cmd-line" title="\(escapeHTML(report.commandLine))"><code>\(escapeHTML(report.commandLine))</code></div>
@@ -267,6 +334,7 @@ public enum TimeTravelHTMLReportBuilder {
                 <div class="kpi"><span class="kpi-label">Failed</span><span class="kpi-val fail">\(report.failedCount)</span></div>
                 <div class="kpi"><span class="kpi-label">Skipped</span><span class="kpi-val skip">\(report.skippedCount)</span></div>
                 <div class="kpi"><span class="kpi-label">Duration</span><span class="kpi-val accent">\(escapeHTML(ReportExporter.formatDuration(ms: report.durationMs)))</span></div>
+                \(apiKPIHTML)
                 <div class="kpi"><span class="kpi-label">Steps</span><span class="kpi-val">\(timelineSteps.count)</span></div>
               </div>
             </header>
@@ -313,8 +381,9 @@ public enum TimeTravelHTMLReportBuilder {
                     <button type="button" class="chip" data-filter="passed" aria-pressed="false">Passed</button>
                     <button type="button" class="chip" data-filter="failed" aria-pressed="false">Failed</button>
                     <button type="button" class="chip" data-filter="skipped" aria-pressed="false">Skipped</button>
+                    \(apiCallCount > 0 ? #"<button type="button" class="chip" data-filter="api" aria-pressed="false">HTTP Only</button>"# : "")
                   </div>
-                  <input type="search" id="timeline-search" class="search-input" placeholder="Filter steps, scenarios, selectors…" aria-label="Filter execution timeline" />
+                  <input type="search" id="timeline-search" class="search-input" placeholder="\(reportMode == "api" ? "Filter steps, methods, URLs, status, JSON…" : "Filter steps, scenarios, selectors, URLs…")" aria-label="Filter execution timeline" />
                 </div>
                 <div id="timeline-list" class="timeline-list" role="listbox" aria-label="Test execution steps"></div>
               </aside>
@@ -324,12 +393,20 @@ public enum TimeTravelHTMLReportBuilder {
 
                 <div class="tabs-shell">
                   <div class="tablist" focusgroup="tablist nomemory" role="tablist" aria-label="Diagnostic inspection panels">
+                    <button type="button" role="tab" id="tab-api" aria-selected="false">API Exchange <span class="tab-badge" id="badge-api"></span></button>
+                    <button type="button" role="tab" id="tab-waterfall" aria-selected="false">Waterfall &amp; Diff <span class="tab-badge" id="badge-waterfall"></span></button>
                     <button type="button" role="tab" id="tab-visual" aria-selected="true" focusgroupstart>Visual &amp; Console <span class="tab-badge" id="badge-visual"></span></button>
                     <button type="button" role="tab" id="tab-dom" aria-selected="false">DOM Snapshot <span class="tab-badge" id="badge-dom"></span></button>
                     <button type="button" role="tab" id="tab-network" aria-selected="false">Network <span class="tab-badge" id="badge-network"></span></button>
                   </div>
 
                   <div class="tabpanels">
+                    <div role="tabpanel" id="panel-api" aria-labelledby="tab-api" hidden="until-found">
+                      <div class="panel-inner" id="api-content"></div>
+                    </div>
+                    <div role="tabpanel" id="panel-waterfall" aria-labelledby="tab-waterfall" hidden="until-found">
+                      <div class="panel-inner" id="waterfall-content"></div>
+                    </div>
                     <div role="tabpanel" id="panel-visual" aria-labelledby="tab-visual" tabindex="0">
                       <div class="panel-inner" id="visual-content"></div>
                     </div>
@@ -406,6 +483,10 @@ public enum TimeTravelHTMLReportBuilder {
       --muted: #76839e;
       --accent: #60a5fa;
       --accent-soft: rgba(96, 165, 250, 0.16);
+      --cyan: #22d3ee;
+      --cyan-soft: rgba(34, 211, 238, 0.15);
+      --violet: #a78bfa;
+      --violet-soft: rgba(167, 139, 250, 0.16);
       --pass: #34d399;
       --pass-soft: rgba(52, 211, 153, 0.14);
       --fail: #f87171;
@@ -428,7 +509,7 @@ public enum TimeTravelHTMLReportBuilder {
 
     .topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; padding: 14px 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
     .topbar-main { min-width: 0; flex: 1 1 320px; }
-    .brand-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .brand-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .brand-row h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
     .brand-row .sep { color: var(--muted); font-weight: 400; }
     .brand-row .run-label { color: var(--text-2); font-weight: 500; }
@@ -440,6 +521,11 @@ public enum TimeTravelHTMLReportBuilder {
     .status-pill.fail { background: var(--fail-soft); color: var(--fail); border-color: rgba(248, 113, 113, 0.4); }
     .status-pill.skip { background: var(--warn-soft); color: var(--warn); border-color: rgba(251, 191, 36, 0.35); }
 
+    .mode-pill { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; padding: 3px 8px; border-radius: 999px; border: 1px solid transparent; }
+    .mode-pill.mode-api { background: var(--cyan-soft); color: var(--cyan); border-color: rgba(34, 211, 238, 0.38); }
+    .mode-pill.mode-hybrid { background: var(--violet-soft); color: var(--violet); border-color: rgba(167, 139, 250, 0.38); }
+    .mode-pill.mode-web { background: var(--accent-soft); color: var(--accent); border-color: rgba(96, 165, 250, 0.35); }
+
     .kpi-strip { display: flex; flex-wrap: wrap; gap: 8px; }
     .kpi { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 11px; min-width: 72px; }
     .kpi-label { display: block; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
@@ -448,15 +534,17 @@ public enum TimeTravelHTMLReportBuilder {
     .kpi-val.fail { color: var(--fail); }
     .kpi-val.skip { color: var(--warn); }
     .kpi-val.accent { color: var(--accent); }
+    .kpi-val.cyan { color: var(--cyan); }
 
     .playback-bar { position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 9px 20px; background: rgba(19, 23, 34, 0.94); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
     .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .tb-group { display: inline-flex; align-items: center; gap: 4px; }
+    .tb-group { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
     .tb-sep { display: inline-block; width: 0; height: 20px; border-inline-start: 1px solid var(--border-strong); margin: 0 2px; }
     .tb-btn { min-inline-size: 30px; min-block-size: 28px; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 12px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
     @media (hover: hover) { .tb-btn:hover:not([aria-disabled="true"]) { background: var(--surface-3); border-color: var(--border-strong); } }
     .tb-btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: #dbeafe; }
     .tb-btn[aria-disabled="true"] { opacity: 0.42; cursor: not-allowed; }
+    .tb-btn.primary { background: var(--cyan-soft); border-color: rgba(34, 211, 238, 0.45); color: #cffafe; }
     .tb-btn.fail-jump:not([aria-disabled="true"]) { background: var(--fail-soft); border-color: rgba(248, 113, 113, 0.45); color: #fecaca; }
     @media (prefers-reduced-motion: no-preference) { .tb-btn, .chip, .step-item { transition: background-color 120ms ease, border-color 120ms ease; } }
 
@@ -466,15 +554,17 @@ public enum TimeTravelHTMLReportBuilder {
     .scrubber-tick.pass { background: rgba(52, 211, 153, 0.55); }
     .scrubber-tick.fail { background: var(--fail); }
     .scrubber-tick.skip { background: var(--warn); }
+    .scrubber-tick.api-tick { background: rgba(34, 211, 238, 0.65); }
+    .scrubber-tick.api-tick.fail { background: var(--fail); }
     .scrubber-tick.active { outline: 1.5px solid #fff; transform: scaleY(1.35); }
     #step-scrubber { width: 100%; accent-color: var(--accent); margin: 0; cursor: pointer; }
 
     .playback-meta { display: flex; align-items: center; gap: 8px; }
     .counter { font-size: 12px; color: var(--text-2); min-width: 82px; text-align: right; }
-    #playback-speed { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font-size: 11.5px; }
+    #playback-speed, .select-input { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 11.5px; max-width: 100%; }
 
-    .workbench { flex: 1; display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); min-height: 0; }
-    @media (max-width: 920px) { .workbench { grid-template-columns: 1fr; } .timeline-pane { max-height: 320px; border-right: none; border-bottom: 1px solid var(--border); } }
+    .workbench { flex: 1; display: grid; grid-template-columns: minmax(300px, 390px) minmax(0, 1fr); min-height: 0; }
+    @media (max-width: 920px) { .workbench { grid-template-columns: 1fr; } .timeline-pane { max-height: 320px; border-right: none; border-bottom: 1px solid var(--border); position: static; } }
 
     .timeline-pane { display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface); min-height: 0; max-height: calc(100vh - 122px); position: sticky; top: 52px; }
     .pane-head { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
@@ -502,12 +592,16 @@ public enum TimeTravelHTMLReportBuilder {
     .step-text { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .step-item.fail .step-text { color: #fecaca; }
     .step-dur { font-size: 10.5px; color: var(--muted); flex: none; }
-    .step-row-meta { display: flex; align-items: center; gap: 6px; padding-left: 31px; font-size: 10px; color: var(--muted); flex-wrap: wrap; }
-    .dur-bar { flex: 1; min-width: 30px; max-width: 72px; height: 3px; background: var(--surface-3); border-radius: 2px; overflow: hidden; }
+    .step-row-meta { display: flex; align-items: center; gap: 5px; padding-left: 31px; font-size: 10px; color: var(--muted); flex-wrap: wrap; }
+    .dur-bar { flex: 1; min-width: 26px; max-width: 64px; height: 3px; background: var(--surface-3); border-radius: 2px; overflow: hidden; }
     .dur-fill { height: 100%; background: var(--accent); }
     .step-item.fail .dur-fill { background: var(--fail); }
     .mini-tag { padding: 1px 5px; border-radius: 4px; background: var(--surface-3); color: var(--text-2); font-family: var(--mono); font-size: 9.5px; }
     .mini-tag.err { background: var(--fail-soft); color: var(--fail); }
+    .mini-tag.pass { background: var(--pass-soft); color: var(--pass); }
+    .mini-tag.warn { background: var(--warn-soft); color: var(--warn); }
+    .mini-tag.cyan { background: var(--cyan-soft); color: var(--cyan); }
+    .mini-tag.violet { background: var(--violet-soft); color: var(--violet); }
 
     .inspector-pane { display: flex; flex-direction: column; min-width: 0; padding: 16px 20px 28px; gap: 14px; }
     .step-hero { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
@@ -515,13 +609,14 @@ public enum TimeTravelHTMLReportBuilder {
     .hero-breadcrumb { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
     .hero-title { font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--text); word-break: break-word; }
     .hero-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-    .meta-pill { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2); }
+    .meta-pill { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2); max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .meta-pill.target { background: var(--target-soft); border-color: rgba(245, 158, 11, 0.45); color: #fde68a; }
     .error-banner { background: var(--fail-soft); border: 1px solid rgba(248, 113, 113, 0.42); border-radius: 8px; padding: 10px 12px; color: #fecaca; font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; overflow-x: auto; }
 
     .tabs-shell { display: flex; flex-direction: column; min-width: 0; }
     .tablist { display: flex; overflow-x: auto; border-bottom: 1px solid var(--border); gap: 2px; scrollbar-width: none; }
     .tablist [role="tab"] { position: relative; flex: none; min-block-size: 36px; padding: 8px 14px; border: none; background: transparent; color: var(--text-2); font-size: 12.5px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+    .tablist [role="tab"][hidden] { display: none; }
     .tablist [role="tab"][aria-selected="true"] { color: var(--text); }
     .tablist [role="tab"][aria-selected="true"]::after { content: ""; position: absolute; inset: auto 8px 0; border-block-end: 2.5px solid var(--accent); }
     .tab-badge { font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); }
@@ -536,6 +631,94 @@ public enum TimeTravelHTMLReportBuilder {
     .card-title { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-2); }
     .card-body { padding: 14px; }
 
+    /* Method & Status Badges */
+    .method-badge { font-family: var(--mono); font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 5px; background: var(--surface-3); color: #bfdbfe; display: inline-block; }
+    .method-badge.m-get { background: rgba(96, 165, 250, 0.18); color: #93c5fd; }
+    .method-badge.m-post { background: rgba(52, 211, 153, 0.18); color: #6ee7b7; }
+    .method-badge.m-put { background: rgba(251, 191, 36, 0.18); color: #fcd34d; }
+    .method-badge.m-patch { background: rgba(167, 139, 250, 0.18); color: #c4b5fd; }
+    .method-badge.m-delete { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
+    .status-code { font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 5px; display: inline-block; }
+    .status-code.s2 { background: var(--pass-soft); color: var(--pass); }
+    .status-code.s3 { background: var(--accent-soft); color: var(--accent); }
+    .status-code.s4 { background: var(--warn-soft); color: var(--warn); }
+    .status-code.s5, .status-code.serr { background: var(--fail-soft); color: var(--fail); }
+
+    /* API Replay Stage */
+    .exchange-strip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+    .exchange-pill { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); cursor: pointer; font-family: var(--mono); font-size: 11px; }
+    .exchange-pill.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+
+    .api-hero-bar { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+    .api-hero-url-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .api-url-text { font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text); word-break: break-all; flex: 1 1 240px; }
+    .api-hero-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+
+    .api-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .api-split.single { grid-template-columns: minmax(0, 1fr); }
+    @media (max-width: 1080px) { .api-split { grid-template-columns: minmax(0, 1fr); } }
+    .api-pane { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+    .api-pane-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+    .api-pane-body { padding: 12px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+    .sub-section { display: flex; flex-direction: column; gap: 6px; }
+    .sub-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .sub-title { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .redacted-pill { display: inline-block; padding: 0 5px; border-radius: 4px; background: var(--warn-soft); color: var(--warn); font-size: 10px; font-weight: 700; }
+
+    /* Interactive JSON Tree */
+    .json-tree { font-family: var(--mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; padding: 10px; max-height: 360px; overflow: auto; }
+    .json-node { margin-left: 14px; }
+    .json-node.root { margin-left: 0; }
+    .json-line { display: flex; align-items: baseline; gap: 4px; padding: 1.5px 4px; border-radius: 4px; }
+    @media (hover: hover) { .json-line:hover { background: rgba(96, 165, 250, 0.09); } }
+    .json-key { color: #93c5fd; cursor: pointer; }
+    .json-str { color: #86efac; word-break: break-word; }
+    .json-num { color: #fcd34d; }
+    .json-bool { color: #c4b5fd; font-weight: 600; }
+    .json-null { color: var(--muted); font-style: italic; }
+    .json-punct { color: var(--muted); }
+    .json-meta { color: var(--muted); font-size: 10.5px; margin-left: 4px; }
+    .json-hit { background: var(--target-soft); color: #fef3c7; border-radius: 3px; padding: 0 2px; }
+
+    /* Timing Breakdown & Waterfall */
+    .timing-bar-track { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--surface-3); border: 1px solid var(--border); }
+    .t-seg { height: 100%; min-width: 2px; }
+    .t-dns { background: #2dd4bf; }
+    .t-tcp { background: #60a5fa; }
+    .t-tls { background: #a78bfa; }
+    .t-ttfb { background: #fbbf24; }
+    .t-dl { background: #34d399; }
+    .timing-legend { display: flex; flex-wrap: wrap; gap: 10px; font-family: var(--mono); font-size: 10.5px; color: var(--text-2); margin-top: 6px; }
+    .t-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+
+    .wf-list { display: flex; flex-direction: column; gap: 5px; }
+    .wf-row { display: grid; grid-template-columns: 62px 52px minmax(140px, 240px) minmax(140px, 1fr) 64px; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); cursor: pointer; }
+    @media (hover: hover) { .wf-row:hover { background: var(--surface-2); } }
+    .wf-row.active { border-color: var(--cyan); background: rgba(34, 211, 238, 0.09); }
+    .wf-path { font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+    .wf-track { position: relative; height: 14px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+    .wf-bar { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; display: flex; overflow: hidden; min-width: 4px; }
+    @media (max-width: 820px) { .wf-row { grid-template-columns: 56px 48px minmax(90px, 1fr) 56px; } .wf-track { display: none; } }
+
+    /* Structural JSON Diff */
+    .diff-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; margin-bottom: 10px; }
+    @media (max-width: 820px) { .diff-controls { grid-template-columns: 1fr; } }
+    .diff-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+    .diff-table th { text-align: left; padding: 6px 10px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+    .diff-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; word-break: break-word; }
+    .diff-row.added { background: rgba(52, 211, 153, 0.09); }
+    .diff-row.removed { background: rgba(248, 113, 113, 0.09); }
+    .diff-row.changed { background: rgba(251, 191, 36, 0.09); }
+
+    /* Assertion Card & Live Replay Drawer */
+    .assert-card { border-radius: 9px; padding: 12px 14px; border: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+    .assert-card.pass { background: rgba(52, 211, 153, 0.08); border-color: rgba(52, 211, 153, 0.35); }
+    .assert-card.fail { background: rgba(248, 113, 113, 0.09); border-color: rgba(248, 113, 113, 0.42); }
+    .replay-drawer { margin-top: 10px; padding: 12px; border-radius: 8px; border: 1px solid rgba(34, 211, 238, 0.38); background: rgba(34, 211, 238, 0.05); display: flex; flex-direction: column; gap: 10px; }
+    .replay-textarea { width: 100%; min-height: 74px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 11.5px; resize: vertical; }
+
+    /* Web Visual / DOM / Network */
     .visual-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
     .shot-frame { background: #090b10; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
     .shot-label { padding: 6px 10px; font-size: 11px; color: var(--text-2); background: var(--surface-2); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; }
@@ -583,18 +766,12 @@ public enum TimeTravelHTMLReportBuilder {
     .net-row { cursor: pointer; }
     @media (hover: hover) { .net-row:hover { background: var(--surface-2); } }
     .net-row.selected { background: var(--accent-soft); }
-    .method-badge { font-family: var(--mono); font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: var(--surface-3); color: #bfdbfe; }
-    .status-code { font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
-    .status-code.s2 { background: var(--pass-soft); color: var(--pass); }
-    .status-code.s3 { background: var(--accent-soft); color: var(--accent); }
-    .status-code.s4 { background: var(--warn-soft); color: var(--warn); }
-    .status-code.s5, .status-code.serr { background: var(--fail-soft); color: var(--fail); }
     .net-url { font-family: var(--mono); font-size: 11.5px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .net-detail { margin-top: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-    .kv-grid { display: grid; grid-template-columns: minmax(140px, 220px) minmax(0, 1fr); gap: 4px 12px; font-family: var(--mono); font-size: 11px; }
+    .kv-grid { display: grid; grid-template-columns: minmax(120px, 210px) minmax(0, 1fr); gap: 4px 12px; font-family: var(--mono); font-size: 11px; }
     .kv-k { color: #93c5fd; word-break: break-word; }
     .kv-v { color: var(--text-2); word-break: break-all; }
-    .code-box { font-family: var(--mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    .code-box { font-family: var(--mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin: 0; max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 
     .empty-state { padding: 24px 16px; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: 8px; font-size: 12.5px; }
 
@@ -618,14 +795,54 @@ public enum TimeTravelHTMLReportBuilder {
 
       const dataEl = document.getElementById('ceptra-report-data');
       const REPORT = JSON.parse(dataEl ? dataEl.textContent : '{"meta":{},"scenarios":[],"steps":[],"assets":{}}');
+      const META = REPORT.meta || {};
       const STEPS = Array.isArray(REPORT.steps) ? REPORT.steps : [];
       const ASSETS = REPORT.assets || {};
+      const REPORT_MODE = META.reportMode || 'web';
+
+      // Build flat index of all HTTP exchanges across the run for assertion linking, waterfall, and diffing
+      const ALL_EXCHANGES = [];
+      const EXCHANGE_BY_ID = new Map();
+      for (const step of STEPS) {
+        const reqs = step.networkRequests || [];
+        for (let i = 0; i < reqs.length; i++) {
+          const req = reqs[i];
+          const item = {
+            req,
+            stepIndex: step.globalIndex,
+            scenarioIndex: step.scenarioIndex,
+            featureTitle: step.featureTitle,
+            scenarioTitle: step.scenarioTitle,
+            stepOffsetMs: step.relativeOffsetMs || 0,
+            indexInStep: i,
+            ordinal: ALL_EXCHANGES.length + 1
+          };
+          ALL_EXCHANGES.push(item);
+          if (req.id) EXCHANGE_BY_ID.set(req.id, item);
+        }
+      }
+
+      const HAS_ANY_API = REPORT_MODE === 'api' || REPORT_MODE === 'hybrid' || ALL_EXCHANGES.length > 0 || STEPS.some((s) => Boolean(s.assertion));
 
       const state = {
         activeIndex: 0,
         statusFilter: 'all',
         searchQuery: '',
-        activeTab: 'visual',
+        activeTab: REPORT_MODE === 'api' ? 'api' : 'visual',
+        apiViewMode: 'split',
+        apiReqBodyMode: 'tree',
+        apiResBodyMode: 'tree',
+        apiReqSearch: '',
+        apiResSearch: '',
+        selectedApiExId: null,
+        liveReplayOpen: false,
+        liveReplayResult: null,
+        liveReplayBusy: false,
+        wfScope: 'scenario',
+        wfFilter: 'all',
+        diffBaseId: null,
+        diffTargetId: null,
+        diffOnlyChanges: true,
         visualMode: 'side',
         showReticle: true,
         curtainPct: 50,
@@ -662,9 +879,18 @@ public enum TimeTravelHTMLReportBuilder {
         stepHero: document.getElementById('step-hero'),
         tabs: Array.from(document.querySelectorAll('[role="tab"]')),
         panels: Array.from(document.querySelectorAll('[role="tabpanel"]')),
+        tabApi: document.getElementById('tab-api'),
+        tabWaterfall: document.getElementById('tab-waterfall'),
+        tabVisual: document.getElementById('tab-visual'),
+        tabDom: document.getElementById('tab-dom'),
+        tabNetwork: document.getElementById('tab-network'),
+        badgeApi: document.getElementById('badge-api'),
+        badgeWaterfall: document.getElementById('badge-waterfall'),
         badgeVisual: document.getElementById('badge-visual'),
         badgeDom: document.getElementById('badge-dom'),
         badgeNetwork: document.getElementById('badge-network'),
+        apiContent: document.getElementById('api-content'),
+        waterfallContent: document.getElementById('waterfall-content'),
         visualContent: document.getElementById('visual-content'),
         domContent: document.getElementById('dom-content'),
         networkContent: document.getElementById('network-content'),
@@ -673,6 +899,18 @@ public enum TimeTravelHTMLReportBuilder {
         lightboxImg: document.getElementById('lightbox-img'),
         lightboxClose: document.getElementById('lightbox-close')
       };
+
+      // Adapt visible tabs cleanly to the run type
+      if (!HAS_ANY_API) {
+        if (els.tabApi) els.tabApi.hidden = true;
+        if (els.tabWaterfall) els.tabWaterfall.hidden = true;
+      }
+      if (REPORT_MODE === 'api') {
+        if (els.tabDom) els.tabDom.hidden = true;
+        if (els.tabVisual) {
+          els.tabVisual.firstChild.textContent = 'Console & Raw ';
+        }
+      }
 
       function announce(msg) {
         if (els.liveStatus) els.liveStatus.textContent = msg;
@@ -683,6 +921,13 @@ public enum TimeTravelHTMLReportBuilder {
         if (ms < 1000) return `${ms}ms`;
         const s = ms / 1000;
         return s < 60 ? `${s.toFixed(2)}s` : `${Math.floor(s / 60)}m ${(s % 60).toFixed(1)}s`;
+      }
+
+      function fmtBytes(n) {
+        if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return null;
+        if (n < 1024) return `${n} B`;
+        if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+        return `${(n / (1024 * 1024)).toFixed(2)} MB`;
       }
 
       function fmtOffset(ms) {
@@ -701,6 +946,98 @@ public enum TimeTravelHTMLReportBuilder {
         if (st === 'passed') return 'pass';
         if (st === 'failed') return 'fail';
         return 'skip';
+      }
+
+      function methodCls(method) {
+        const m = String(method || 'GET').toLowerCase();
+        if (['get', 'post', 'put', 'patch', 'delete'].includes(m)) return `m-${m}`;
+        return '';
+      }
+
+      function statusBucket(req) {
+        if (!req || req.errorText || req.status == null) return 'serr';
+        if (req.status >= 500) return 's5';
+        if (req.status >= 400) return 's4';
+        if (req.status >= 300) return 's3';
+        return 's2';
+      }
+
+      function shortPath(rawUrl) {
+        try {
+          const u = new URL(rawUrl);
+          return (u.pathname || '/') + (u.search || '');
+        } catch {
+          return rawUrl || '';
+        }
+      }
+
+      function tryParseJSON(raw) {
+        if (typeof raw !== 'string') return { ok: false, value: null };
+        const trimmed = raw.trim();
+        if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return { ok: false, value: null };
+        try {
+          return { ok: true, value: JSON.parse(trimmed) };
+        } catch {
+          return { ok: false, value: null };
+        }
+      }
+
+      function prettyBody(raw) {
+        if (!raw) return '';
+        try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
+      }
+
+      function shellSingleQuote(str) {
+        return `'${String(str).replace(/'/g, `'\\''`)}'`;
+      }
+
+      function buildCurlCommand(req) {
+        const parts = ['curl'];
+        const m = (req.method || 'GET').toUpperCase();
+        if (m !== 'GET') parts.push(`-X ${m}`);
+        parts.push(shellSingleQuote(req.url || ''));
+        const hdrs = req.requestHeaders || {};
+        for (const k of Object.keys(hdrs).sort()) {
+          const kl = k.toLowerCase();
+          if (kl === 'content-length' || kl === 'host') continue;
+          const val = hdrs[k] === '[REDACTED]' ? `<${k.toUpperCase()}>` : hdrs[k];
+          parts.push(`-H ${shellSingleQuote(`${k}: ${val}`)}`);
+        }
+        if (req.requestBody) {
+          parts.push(`--data-raw ${shellSingleQuote(req.requestBody)}`);
+        }
+        return parts.join(' \\\n  ');
+      }
+
+      function buildFetchSnippet(req) {
+        const opts = { method: (req.method || 'GET').toUpperCase() };
+        const hdrs = {};
+        for (const [k, v] of Object.entries(req.requestHeaders || {})) {
+          const kl = k.toLowerCase();
+          if (kl === 'content-length' || kl === 'host') continue;
+          hdrs[k] = v === '[REDACTED]' ? `<${k.toUpperCase()}>` : v;
+        }
+        if (Object.keys(hdrs).length > 0) opts.headers = hdrs;
+        if (req.requestBody) opts.body = req.requestBody;
+        return `const res = await fetch(${JSON.stringify(req.url || '')}, ${JSON.stringify(opts, null, 2)});\nconst data = await res.json();`;
+      }
+
+      function buildCodeceptSnippet(req) {
+        const m = (req.method || 'GET').toUpperCase();
+        const fnMap = {
+          GET: 'sendGetRequest',
+          POST: 'sendPostRequest',
+          PUT: 'sendPutRequest',
+          PATCH: 'sendPatchRequest',
+          DELETE: 'sendDeleteRequest'
+        };
+        const fn = fnMap[m] || 'sendGetRequest';
+        const args = [JSON.stringify(req.url || '')];
+        if (req.requestBody && m !== 'GET') {
+          const parsed = tryParseJSON(req.requestBody);
+          args.push(parsed.ok ? JSON.stringify(parsed.value, null, 2) : JSON.stringify(req.requestBody));
+        }
+        return `await I.${fn}(${args.join(', ')});`;
       }
 
       function el(tag, attrs, children) {
@@ -732,37 +1069,285 @@ public enum TimeTravelHTMLReportBuilder {
         }
       }
 
-      // Safely parse captured HTML into an inert offscreen document via DOMParser for attribute-complete
-      // DOM tree inspection (never inserted into host DOM). Sandboxed preview strips unsafe scripts/handlers.
-      function parseCapturedHTML(rawHTML) {
-        if (!rawHTML) return null;
+      // Reusable interactive JSON tree renderer with JSONPath click-to-copy & live search
+      function buildJsonTreeNode(keyName, value, jsonPath, depth, query) {
+        const isArr = Array.isArray(value);
+        const isObj = value !== null && typeof value === 'object';
+        const q = (query || '').trim().toLowerCase();
+
+        if (!isObj) {
+          const keyStr = keyName != null ? String(keyName) : '';
+          const valStr = value === null ? 'null' : (typeof value === 'string' ? JSON.stringify(value) : String(value));
+          const selfMatch = !q || keyStr.toLowerCase().includes(q) || valStr.toLowerCase().includes(q);
+          if (!selfMatch) return null;
+
+          const line = el('div', { class: 'json-line' });
+          line.appendChild(el('span', { class: 'dom-toggle', text: ' ' }));
+          if (keyName != null) {
+            const kEl = el('span', {
+              class: `json-key${q && keyStr.toLowerCase().includes(q) ? ' json-hit' : ''}`,
+              text: `"${keyStr}"`,
+              title: `Click to copy JSONPath: ${jsonPath}`,
+              onClick: () => copyText(jsonPath, `JSONPath ${jsonPath}`)
+            });
+            line.appendChild(kEl);
+            line.appendChild(el('span', { class: 'json-punct', text: ': ' }));
+          }
+          const valCls = value === null
+            ? 'json-null'
+            : (typeof value === 'string' ? 'json-str' : (typeof value === 'number' ? 'json-num' : 'json-bool'));
+          line.appendChild(el('span', {
+            class: `${valCls}${q && valStr.toLowerCase().includes(q) ? ' json-hit' : ''}`,
+            text: valStr.length > 260 ? valStr.slice(0, 260) + '…"' : valStr,
+            title: `Click to copy value (${jsonPath})`,
+            onClick: () => copyText(typeof value === 'string' ? value : valStr, jsonPath)
+          }));
+          return el('div', { class: `json-node${depth === 0 ? ' root' : ''}` }, [line]);
+        }
+
+        const entries = isArr ? value.map((v, i) => [i, v]) : Object.entries(value);
+        const childNodes = [];
+        for (const [k, v] of entries) {
+          const childPath = isArr ? `${jsonPath}[${k}]` : (/^[A-Za-z_$][\w$]*$/.test(String(k)) ? `${jsonPath}.${k}` : `${jsonPath}[${JSON.stringify(k)}]`);
+          const rendered = buildJsonTreeNode(isArr ? null : k, v, childPath, depth + 1, q);
+          if (rendered) childNodes.push(rendered);
+        }
+        const keyStr = keyName != null ? String(keyName) : '';
+        const selfMatch = !q || keyStr.toLowerCase().includes(q);
+        if (q && !selfMatch && childNodes.length === 0) return null;
+
+        const openDefault = depth < 2 || Boolean(q) || entries.length <= 4;
+        const line = el('div', { class: 'json-line' });
+        const childrenWrap = childNodes.length > 0 ? el('div', { style: openDefault ? '' : 'display:none' }, childNodes) : null;
+
+        if (childrenWrap) {
+          const toggle = el('button', {
+            type: 'button',
+            class: 'dom-toggle',
+            'aria-expanded': openDefault ? 'true' : 'false',
+            text: openDefault ? '▾' : '▸',
+            onClick: () => {
+              const open = toggle.getAttribute('aria-expanded') === 'true';
+              toggle.setAttribute('aria-expanded', open ? 'false' : 'true');
+              toggle.textContent = open ? '▸' : '▾';
+              childrenWrap.style.display = open ? 'none' : '';
+            }
+          });
+          line.appendChild(toggle);
+        } else {
+          line.appendChild(el('span', { class: 'dom-toggle', text: ' ' }));
+        }
+
+        if (keyName != null) {
+          line.appendChild(el('span', {
+            class: `json-key${q && keyStr.toLowerCase().includes(q) ? ' json-hit' : ''}`,
+            text: `"${keyStr}"`,
+            title: `Click to copy JSONPath: ${jsonPath}`,
+            onClick: () => copyText(jsonPath, `JSONPath ${jsonPath}`)
+          }));
+          line.appendChild(el('span', { class: 'json-punct', text: ': ' }));
+        }
+
+        const openBracket = isArr ? '[' : '{';
+        const closeBracket = isArr ? ']' : '}';
+        const countLabel = isArr ? `${entries.length} item${entries.length === 1 ? '' : 's'}` : `${entries.length} key${entries.length === 1 ? '' : 's'}`;
+        line.appendChild(el('span', { class: 'json-punct', text: entries.length === 0 ? `${openBracket}${closeBracket}` : openBracket }));
+        if (entries.length > 0) {
+          line.appendChild(el('span', { class: 'json-meta', text: `${countLabel} ${closeBracket}` }));
+        }
+
+        return el('div', { class: `json-node${depth === 0 ? ' root' : ''}` }, [line, childrenWrap]);
+      }
+
+      function buildPayloadViewer(rawBody, modeKey, searchKey, copyLabel, rerenderFn) {
+        const container = el('div', { class: 'sub-section' });
+        const parsed = tryParseJSON(rawBody);
+        const mode = state[modeKey];
+        const controls = el('div', { class: 'tb-group' });
+        if (parsed.ok) {
+          for (const [m, lbl] of [['tree', 'JSON Tree'], ['raw', 'Raw']]) {
+            controls.appendChild(el('button', {
+              type: 'button',
+              class: 'chip',
+              'aria-pressed': mode === m ? 'true' : 'false',
+              onClick: () => { state[modeKey] = m; rerenderFn(); }
+            }, lbl));
+          }
+        }
+        controls.appendChild(el('button', {
+          type: 'button',
+          class: 'tb-btn',
+          text: 'Copy',
+          onClick: () => copyText(parsed.ok ? prettyBody(rawBody) : rawBody, copyLabel)
+        }));
+
+        container.appendChild(el('div', { class: 'sub-head' }, [
+          el('span', { class: 'sub-title', text: `${copyLabel}${parsed.ok ? ' (JSON)' : ''}` }),
+          controls
+        ]));
+
+        if (parsed.ok && mode === 'tree') {
+          const treeHost = el('div', { class: 'json-tree' });
+          const renderTree = () => {
+            treeHost.replaceChildren();
+            const rootNode = buildJsonTreeNode(null, parsed.value, '$', 0, state[searchKey]);
+            if (rootNode) treeHost.appendChild(rootNode);
+            else treeHost.appendChild(el('div', { class: 'empty-state', text: 'No JSON keys or values match your filter.' }));
+          };
+          container.appendChild(el('input', {
+            type: 'search',
+            class: 'search-input',
+            value: state[searchKey] || '',
+            placeholder: 'Search JSON keys or values… (click any key to copy $.path)',
+            onInput: (e) => { state[searchKey] = e.target.value; renderTree(); }
+          }));
+          renderTree();
+          container.appendChild(treeHost);
+        } else {
+          container.appendChild(el('pre', { class: 'code-box', text: parsed.ok ? prettyBody(rawBody) : rawBody }));
+        }
+        return container;
+      }
+
+      function buildQueryParamsSection(rawUrl) {
         try {
-          return new DOMParser().parseFromString(rawHTML, 'text/html');
+          const u = new URL(rawUrl);
+          const pairs = Array.from(u.searchParams.entries());
+          if (!pairs.length) return null;
+          const grid = el('div', { class: 'kv-grid' });
+          for (const [k, v] of pairs) {
+            grid.appendChild(el('span', { class: 'kv-k', text: k }));
+            grid.appendChild(el('span', { class: 'kv-v', text: v }));
+          }
+          return el('div', { class: 'sub-section' }, [
+            el('span', { class: 'sub-title', text: `Query Parameters (${pairs.length})` }),
+            grid
+          ]);
         } catch {
           return null;
         }
       }
 
+      function buildHeadersSection(title, hdrs) {
+        const keys = Object.keys(hdrs || {}).sort();
+        if (!keys.length) return null;
+        const grid = el('div', { class: 'kv-grid' });
+        for (const k of keys) {
+          grid.appendChild(el('span', { class: 'kv-k', text: k }));
+          if (hdrs[k] === '[REDACTED]') {
+            grid.appendChild(el('span', { class: 'kv-v' }, [el('span', { class: 'redacted-pill', text: 'REDACTED' })]));
+          } else {
+            grid.appendChild(el('span', { class: 'kv-v', text: hdrs[k] }));
+          }
+        }
+        return el('div', { class: 'sub-section' }, [
+          el('span', { class: 'sub-title', text: `${title} (${keys.length})` }),
+          grid
+        ]);
+      }
+
+      function buildTimingBreakdown(req) {
+        const t = req && req.timings;
+        const total = (t && t.totalMs != null) ? t.totalMs : req.durationMs;
+        if (!t || total == null || total <= 0) return null;
+        const parts = [
+          ['dns', 'DNS', t.dnsMs, 't-dns'],
+          ['tcp', 'TCP', t.connectMs, 't-tcp'],
+          ['tls', 'TLS', t.tlsMs, 't-tls'],
+          ['ttfb', 'TTFB', t.ttfbMs, 't-ttfb'],
+          ['dl', 'Download', t.downloadMs, 't-dl']
+        ].filter((p) => typeof p[2] === 'number' && p[2] > 0);
+        if (!parts.length) return null;
+
+        const sum = Math.max(1, parts.reduce((a, p) => a + p[2], 0));
+        const track = el('div', { class: 'timing-bar-track' });
+        const legend = el('div', { class: 'timing-legend' });
+        for (const [, lbl, ms, cls] of parts) {
+          const pct = Math.max(2, (ms / sum) * 100);
+          track.appendChild(el('div', { class: `t-seg ${cls}`, style: `width:${pct}%`, title: `${lbl}: ${ms}ms` }));
+          legend.appendChild(el('span', null, [
+            el('span', { class: `t-dot ${cls}` }),
+            `${lbl} ${ms}ms`
+          ]));
+        }
+        legend.appendChild(el('span', { style: 'margin-left:auto;color:var(--text)', text: `Total ${fmtDur(total)}` }));
+        return el('div', { style: 'padding:10px 14px;border-bottom:1px solid var(--border);background:var(--bg)' }, [track, legend]);
+      }
+
+      // Compute structural JSON diff between two parsed JS values
+      function computeStructuralDiff(a, b, basePath, out) {
+        if (a === b) return;
+        const aIsObj = a !== null && typeof a === 'object';
+        const bIsObj = b !== null && typeof b === 'object';
+        if (!aIsObj || !bIsObj || Array.isArray(a) !== Array.isArray(b)) {
+          out.push({ path: basePath, kind: 'changed', before: a, after: b });
+          return;
+        }
+        if (Array.isArray(a)) {
+          const maxLen = Math.max(a.length, b.length);
+          for (let i = 0; i < maxLen; i++) {
+            const p = `${basePath}[${i}]`;
+            if (i >= a.length) out.push({ path: p, kind: 'added', before: undefined, after: b[i] });
+            else if (i >= b.length) out.push({ path: p, kind: 'removed', before: a[i], after: undefined });
+            else computeStructuralDiff(a[i], b[i], p, out);
+          }
+          return;
+        }
+        const keys = Array.from(new Set([...Object.keys(a), ...Object.keys(b)])).sort();
+        for (const k of keys) {
+          const p = /^[A-Za-z_$][\w$]*$/.test(k) ? `${basePath}.${k}` : `${basePath}[${JSON.stringify(k)}]`;
+          if (!(k in a)) out.push({ path: p, kind: 'added', before: undefined, after: b[k] });
+          else if (!(k in b)) out.push({ path: p, kind: 'removed', before: a[k], after: undefined });
+          else computeStructuralDiff(a[k], b[k], p, out);
+        }
+      }
+
+      function fmtDiffVal(val) {
+        if (val === undefined) return '—';
+        try {
+          const s = JSON.stringify(val);
+          return s.length > 180 ? s.slice(0, 177) + '…' : s;
+        } catch {
+          return String(val);
+        }
+      }
+
+      function parseCapturedHTML(rawHTML) {
+        if (!rawHTML) return null;
+        try { return new DOMParser().parseFromString(rawHTML, 'text/html'); } catch { return null; }
+      }
+
       function filteredSteps() {
         const q = state.searchQuery.trim().toLowerCase();
         return STEPS.filter((s) => {
-          if (state.statusFilter !== 'all' && s.status !== state.statusFilter) return false;
+          if (state.statusFilter === 'api') {
+            if (!(s.networkRequests && s.networkRequests.length > 0)) return false;
+          } else if (state.statusFilter !== 'all' && s.status !== state.statusFilter) {
+            return false;
+          }
           if (!q) return true;
-          return (
-            (s.text || '').toLowerCase().includes(q) ||
-            (s.scenarioTitle || '').toLowerCase().includes(q) ||
-            (s.featureTitle || '').toLowerCase().includes(q) ||
-            (s.targetSelector || '').toLowerCase().includes(q) ||
-            (s.pageURL || '').toLowerCase().includes(q)
-          );
+          if ((s.text || '').toLowerCase().includes(q)) return true;
+          if ((s.scenarioTitle || '').toLowerCase().includes(q)) return true;
+          if ((s.featureTitle || '').toLowerCase().includes(q)) return true;
+          if ((s.targetSelector || '').toLowerCase().includes(q)) return true;
+          if ((s.pageURL || '').toLowerCase().includes(q)) return true;
+          for (const r of (s.networkRequests || [])) {
+            if ((r.method || '').toLowerCase().includes(q)) return true;
+            if ((r.url || '').toLowerCase().includes(q)) return true;
+            if (r.status != null && String(r.status).includes(q)) return true;
+            if ((r.responseBody || '').toLowerCase().includes(q)) return true;
+            if ((r.requestBody || '').toLowerCase().includes(q)) return true;
+          }
+          return false;
         });
       }
 
       function renderTicks() {
         els.ticks.replaceChildren();
         STEPS.forEach((s, idx) => {
+          const isApi = (s.networkRequests || []).length > 0 && !s.beforeShotAssetId && !s.afterShotAssetId;
           const t = el('div', {
-            class: `scrubber-tick ${statusCls(s.status)}${idx === state.activeIndex ? ' active' : ''}`,
+            class: `scrubber-tick ${statusCls(s.status)}${isApi ? ' api-tick' : ''}${idx === state.activeIndex ? ' active' : ''}`,
             title: `#${idx + 1} ${s.text}`,
             onClick: () => selectStep(idx)
           });
@@ -794,7 +1379,7 @@ public enum TimeTravelHTMLReportBuilder {
           const isSelected = step.globalIndex === state.activeIndex;
           const durPct = Math.min(100, Math.max(4, Math.round(((step.durationMs || 0) / maxStepDur) * 100)));
           const errLogs = (step.consoleEntries || []).filter((c) => c.level === 'error' || c.level === 'pageerror').length;
-          const netCount = (step.networkRequests || []).length;
+          const reqs = step.networkRequests || [];
           const hasShot = Boolean(step.beforeShotAssetId || step.afterShotAssetId);
           const hasDom = Boolean(step.domAssetId);
 
@@ -802,7 +1387,23 @@ public enum TimeTravelHTMLReportBuilder {
             el('span', { class: 'mono', text: fmtOffset(step.relativeOffsetMs) }),
             el('div', { class: 'dur-bar' }, [el('div', { class: 'dur-fill', style: `width:${durPct}%` })])
           ]);
-          if (netCount > 0) metaRow.appendChild(el('span', { class: 'mini-tag', text: `NET ${netCount}` }));
+          if (reqs.length > 0) {
+            const first = reqs[0];
+            const st = first.errorText ? 'ERR' : (first.status != null ? String(first.status) : '…');
+            const stCls = first.errorText || (first.status != null && first.status >= 500)
+              ? 'err'
+              : (first.status != null && first.status >= 400 ? 'warn' : 'pass');
+            metaRow.appendChild(el('span', { class: `mini-tag ${stCls}`, text: `${first.method || 'GET'} ${st}` }));
+            if (reqs.length > 1) {
+              metaRow.appendChild(el('span', { class: 'mini-tag cyan', text: `+${reqs.length - 1}` }));
+            }
+          }
+          if (step.assertion) {
+            metaRow.appendChild(el('span', {
+              class: `mini-tag ${step.assertion.passed ? 'violet' : 'err'}`,
+              text: step.assertion.passed ? 'ASSERT ✓' : 'ASSERT ✗'
+            }));
+          }
           if (errLogs > 0) metaRow.appendChild(el('span', { class: 'mini-tag err', text: `ERR ${errLogs}` }));
           if (hasShot) metaRow.appendChild(el('span', { class: 'mini-tag', text: 'IMG' }));
           if (hasDom) metaRow.appendChild(el('span', { class: 'mini-tag', text: 'DOM' }));
@@ -864,6 +1465,529 @@ public enum TimeTravelHTMLReportBuilder {
         }
       }
 
+      // MARK: - API Exchange Inspector (Primary Stage for API Replay)
+
+      function resolveStepExchanges(step) {
+        if (!step) return { exchanges: [], linkedFromAssertion: false };
+        const direct = (step.networkRequests || []).map((req, idx) => ({
+          req,
+          linked: false,
+          label: `#${idx + 1}`
+        }));
+        if (direct.length > 0) return { exchanges: direct, linkedFromAssertion: false };
+        if (step.assertion && step.assertion.relatedRequestId && EXCHANGE_BY_ID.has(step.assertion.relatedRequestId)) {
+          const hit = EXCHANGE_BY_ID.get(step.assertion.relatedRequestId);
+          return { exchanges: [{ req: hit.req, linked: true, linkedStepIndex: hit.stepIndex }], linkedFromAssertion: true };
+        }
+        return { exchanges: [], linkedFromAssertion: false };
+      }
+
+      function renderApiExchange(step) {
+        els.apiContent.replaceChildren();
+        if (!step) return;
+
+        // 1. Assertion Card if this step is an assertion (I.expect*, I.seeResponse*)
+        if (step.assertion) {
+          const a = step.assertion;
+          const aCard = el('div', { class: `assert-card ${a.passed ? 'pass' : 'fail'}` }, [
+            el('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap' }, [
+              el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+                el('span', { class: `status-pill ${a.passed ? 'pass' : 'fail'}`, text: a.passed ? 'ASSERTION PASSED' : 'ASSERTION FAILED' }),
+                el('span', { class: 'mono', style: 'font-weight:600', text: `I.${a.method}(…)` })
+              ]),
+              a.relatedRequestId && EXCHANGE_BY_ID.has(a.relatedRequestId)
+                ? el('button', {
+                    type: 'button',
+                    class: 'tb-btn',
+                    text: `Jump to API Step #${EXCHANGE_BY_ID.get(a.relatedRequestId).stepIndex + 1}`,
+                    onClick: () => selectStep(EXCHANGE_BY_ID.get(a.relatedRequestId).stepIndex)
+                  })
+                : null
+            ])
+          ]);
+          if (a.expected || a.actual) {
+            const cols = el('div', { class: `api-split${a.expected && a.actual ? '' : ' single'}` });
+            if (a.expected) {
+              cols.appendChild(el('div', { class: 'sub-section' }, [
+                el('span', { class: 'sub-title', text: 'Expected' }),
+                el('pre', { class: 'code-box', text: a.expected })
+              ]));
+            }
+            if (a.actual) {
+              cols.appendChild(el('div', { class: 'sub-section' }, [
+                el('span', { class: 'sub-title', text: 'Actual' }),
+                el('pre', { class: 'code-box', text: a.actual })
+              ]));
+            }
+            aCard.appendChild(cols);
+          }
+          if (a.message) {
+            aCard.appendChild(el('div', { class: 'error-banner', text: a.message }));
+          }
+          els.apiContent.appendChild(aCard);
+        }
+
+        const { exchanges, linkedFromAssertion } = resolveStepExchanges(step);
+        if (exchanges.length === 0) {
+          els.apiContent.appendChild(el('div', { class: 'card' }, [
+            el('div', { class: 'card-head' }, [el('span', { class: 'card-title', text: 'API Request & Response Replay' })]),
+            el('div', { class: 'card-body' }, [
+              el('div', {
+                class: 'empty-state',
+                text: 'No HTTP exchange was recorded on this step. Use Prev/Next (←/→) or the Waterfall tab to jump to an API request step.'
+              })
+            ])
+          ]));
+          return;
+        }
+
+        if (!exchanges.some((x) => x.req.id === state.selectedApiExId)) {
+          state.selectedApiExId = exchanges[0].req.id;
+          state.liveReplayResult = null;
+        }
+        const activeWrap = exchanges.find((x) => x.req.id === state.selectedApiExId) || exchanges[0];
+        const req = activeWrap.req;
+
+        // Exchange switcher strip if this step made multiple HTTP calls (e.g. paginated requests)
+        if (exchanges.length > 1) {
+          const strip = el('div', { class: 'exchange-strip', role: 'group', 'aria-label': 'HTTP calls in this step' });
+          exchanges.forEach((wrap, i) => {
+            const r = wrap.req;
+            const st = r.errorText ? 'ERR' : (r.status != null ? String(r.status) : '…');
+            strip.appendChild(el('button', {
+              type: 'button',
+              class: `exchange-pill${r.id === req.id ? ' active' : ''}`,
+              onClick: () => { state.selectedApiExId = r.id; state.liveReplayResult = null; renderApiExchange(step); }
+            }, [
+              el('span', { class: `method-badge ${methodCls(r.method)}`, text: r.method || 'GET' }),
+              el('span', { text: `${i + 1}. ${shortPath(r.url)}` }),
+              el('span', { class: `status-code ${statusBucket(r)}`, text: st }),
+              el('span', { style: 'color:var(--muted)', text: fmtDur(r.durationMs) })
+            ]));
+          });
+          els.apiContent.appendChild(strip);
+        }
+
+        const statusText = req.errorText
+          ? 'NETWORK ERROR'
+          : (req.status != null ? `${req.status}${req.statusText ? ' ' + req.statusText : ''}` : 'PENDING');
+        const reqSize = fmtBytes(req.requestSizeBytes);
+        const resSize = fmtBytes(req.responseSizeBytes);
+        const sizeLabel = [reqSize ? `↑ ${reqSize}` : null, resSize ? `↓ ${resSize}` : null].filter(Boolean).join('  ');
+
+        const viewModes = el('div', { class: 'tb-group', role: 'group', 'aria-label': 'API inspector layout' });
+        for (const [m, lbl] of [['split', 'Side-by-Side'], ['request', 'Request'], ['response', 'Response']]) {
+          viewModes.appendChild(el('button', {
+            type: 'button',
+            class: 'chip',
+            'aria-pressed': state.apiViewMode === m ? 'true' : 'false',
+            onClick: () => { state.apiViewMode = m; renderApiExchange(step); }
+          }, lbl));
+        }
+
+        const actionBtns = el('div', { class: 'tb-group' }, [
+          el('button', { type: 'button', class: 'tb-btn', text: 'Copy cURL', onClick: () => copyText(buildCurlCommand(req), 'cURL command') }),
+          el('button', { type: 'button', class: 'tb-btn', text: 'Copy fetch()', onClick: () => copyText(buildFetchSnippet(req), 'fetch() snippet') }),
+          el('button', { type: 'button', class: 'tb-btn', text: 'CodeceptJS', onClick: () => copyText(buildCodeceptSnippet(req), 'CodeceptJS snippet') }),
+          el('button', {
+            type: 'button',
+            class: 'tb-btn primary',
+            'aria-pressed': state.liveReplayOpen ? 'true' : 'false',
+            text: state.liveReplayOpen ? 'Hide Live Replay' : 'Replay Live ▸',
+            onClick: () => { state.liveReplayOpen = !state.liveReplayOpen; renderApiExchange(step); }
+          })
+        ]);
+
+        const card = el('div', { class: 'card' });
+        const heroBar = el('div', { class: 'api-hero-bar' }, [
+          linkedFromAssertion
+            ? el('div', { class: 'mono', style: 'font-size:11px;color:var(--cyan)' }, `Asserted against preceding HTTP exchange (Step #${(activeWrap.linkedStepIndex ?? 0) + 1}):`)
+            : null,
+          el('div', { class: 'api-hero-url-row' }, [
+            el('span', { class: `method-badge ${methodCls(req.method)}`, text: req.method || 'GET' }),
+            el('span', { class: 'api-url-text', text: req.url || '', title: req.url || '' }),
+            el('span', { class: `status-code ${statusBucket(req)}`, text: statusText }),
+            el('span', { class: 'meta-pill mono', text: fmtDur(req.durationMs) }),
+            sizeLabel ? el('span', { class: 'meta-pill mono', text: sizeLabel }) : null,
+            req.source ? el('span', { class: 'mini-tag cyan', text: req.source.toUpperCase() }) : null
+          ]),
+          el('div', { class: 'api-hero-actions' }, [viewModes, actionBtns])
+        ]);
+        card.appendChild(heroBar);
+
+        const timingEl = buildTimingBreakdown(req);
+        if (timingEl) card.appendChild(timingEl);
+
+        const cardBody = el('div', { class: 'card-body' });
+        if (req.errorText) {
+          cardBody.appendChild(el('div', { class: 'error-banner', style: 'margin-bottom:12px', text: req.errorText }));
+        }
+
+        // Live Replay Drawer (optional in-browser fetch replayer)
+        if (state.liveReplayOpen) {
+          cardBody.appendChild(buildLiveReplayDrawer(req, () => renderApiExchange(step)));
+        }
+
+        const splitWrap = el('div', { class: `api-split${state.apiViewMode === 'split' ? '' : ' single'}` });
+
+        if (state.apiViewMode === 'split' || state.apiViewMode === 'request') {
+          const reqPaneBody = el('div', { class: 'api-pane-body' });
+          const qp = buildQueryParamsSection(req.url);
+          if (qp) reqPaneBody.appendChild(qp);
+          const rh = buildHeadersSection('Request Headers', req.requestHeaders);
+          if (rh) reqPaneBody.appendChild(rh);
+          if (req.requestBody) {
+            reqPaneBody.appendChild(buildPayloadViewer(req.requestBody, 'apiReqBodyMode', 'apiReqSearch', 'Request Body', () => renderApiExchange(step)));
+          } else if (!qp && !rh) {
+            reqPaneBody.appendChild(el('div', { class: 'empty-state', text: 'No query params, headers, or request body.' }));
+          } else {
+            reqPaneBody.appendChild(el('div', { class: 'sub-title', style: 'opacity:0.7', text: 'Request Body: (empty)' }));
+          }
+          splitWrap.appendChild(el('div', { class: 'api-pane' }, [
+            el('div', { class: 'api-pane-head' }, [
+              el('span', { class: 'card-title', text: 'Request' }),
+              reqSize ? el('span', { class: 'mono', style: 'font-size:11px;color:var(--muted)', text: reqSize }) : null
+            ]),
+            reqPaneBody
+          ]));
+        }
+
+        if (state.apiViewMode === 'split' || state.apiViewMode === 'response') {
+          const resPaneBody = el('div', { class: 'api-pane-body' });
+          const resh = buildHeadersSection('Response Headers', req.responseHeaders);
+          if (resh) resPaneBody.appendChild(resh);
+          if (req.responseBody) {
+            resPaneBody.appendChild(buildPayloadViewer(req.responseBody, 'apiResBodyMode', 'apiResSearch', 'Response Body', () => renderApiExchange(step)));
+          } else {
+            resPaneBody.appendChild(el('div', { class: 'empty-state', text: req.errorText ? 'No response received due to network error.' : 'Empty response body (e.g. 204 No Content).' }));
+          }
+          splitWrap.appendChild(el('div', { class: 'api-pane' }, [
+            el('div', { class: 'api-pane-head' }, [
+              el('span', { class: 'card-title', text: 'Response' }),
+              el('span', { class: `status-code ${statusBucket(req)}`, text: statusText })
+            ]),
+            resPaneBody
+          ]));
+        }
+
+        cardBody.appendChild(splitWrap);
+        card.appendChild(cardBody);
+        els.apiContent.appendChild(card);
+      }
+
+      function buildLiveReplayDrawer(req, rerenderFn) {
+        const defaultHeaders = {};
+        for (const [k, v] of Object.entries(req.requestHeaders || {})) {
+          const kl = k.toLowerCase();
+          if (['host', 'content-length', 'connection', 'accept-encoding', 'user-agent'].includes(kl)) continue;
+          if (v === '[REDACTED]') continue;
+          defaultHeaders[k] = v;
+        }
+        const urlInput = el('input', { type: 'text', class: 'search-input mono', value: req.url || '' });
+        const methodSelect = el('select', { class: 'select-input mono' }, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'].map((m) =>
+          el('option', { value: m, selected: m === (req.method || 'GET').toUpperCase() ? 'selected' : null, text: m })
+        ));
+        const headersArea = el('textarea', { class: 'replay-textarea', placeholder: '{"Accept": "application/json"}' });
+        headersArea.value = JSON.stringify(defaultHeaders, null, 2);
+        const bodyArea = el('textarea', { class: 'replay-textarea', placeholder: 'Optional request body…' });
+        bodyArea.value = req.requestBody || '';
+
+        const resultHost = el('div');
+        if (state.liveReplayResult) {
+          const res = state.liveReplayResult;
+          if (res.error) {
+            resultHost.appendChild(el('div', { class: 'error-banner', text: `${res.error}\n\nTip: Browsers enforce CORS when replaying cross-origin APIs from a local HTML file. Use "Copy cURL" above to replay directly in your terminal with full TLS/auth support.` }));
+          } else {
+            const parsed = tryParseJSON(res.body);
+            resultHost.appendChild(el('div', { class: 'sub-section' }, [
+              el('div', { class: 'sub-head' }, [
+                el('span', { class: 'sub-title', text: 'Live Replay Result' }),
+                el('div', { class: 'tb-group' }, [
+                  el('span', { class: `status-code ${res.status >= 500 ? 's5' : res.status >= 400 ? 's4' : res.status >= 300 ? 's3' : 's2'}`, text: `${res.status} ${res.statusText || ''}` }),
+                  el('span', { class: 'meta-pill mono', text: fmtDur(res.durationMs) })
+                ])
+              ]),
+              el('pre', { class: 'code-box', text: parsed.ok ? prettyBody(res.body) : (res.body || '(empty body)') })
+            ]));
+          }
+        }
+
+        const sendBtn = el('button', {
+          type: 'button',
+          class: 'tb-btn primary',
+          text: state.liveReplayBusy ? 'Sending…' : 'Send Live Request',
+          onClick: async () => {
+            if (state.liveReplayBusy) return;
+            state.liveReplayBusy = true;
+            state.liveReplayResult = null;
+            rerenderFn();
+            const t0 = performance.now();
+            try {
+              let parsedHeaders = {};
+              const rawH = headersArea.value.trim();
+              if (rawH) parsedHeaders = JSON.parse(rawH);
+              const method = methodSelect.value;
+              const init = { method, headers: parsedHeaders };
+              if (method !== 'GET' && method !== 'HEAD' && bodyArea.value.length > 0) {
+                init.body = bodyArea.value;
+              }
+              const resp = await fetch(urlInput.value.trim(), init);
+              const txt = await resp.text();
+              state.liveReplayResult = {
+                status: resp.status,
+                statusText: resp.statusText,
+                durationMs: Math.round(performance.now() - t0),
+                body: txt
+              };
+            } catch (err) {
+              state.liveReplayResult = { error: err && err.message ? err.message : String(err) };
+            }
+            state.liveReplayBusy = false;
+            rerenderFn();
+          }
+        });
+
+        return el('div', { class: 'replay-drawer' }, [
+          el('div', { class: 'sub-head' }, [
+            el('span', { class: 'card-title', style: 'color:var(--cyan)', text: 'Live Replay Request (Browser Fetch)' }),
+            sendBtn
+          ]),
+          el('div', { style: 'display:flex;gap:8px' }, [methodSelect, urlInput]),
+          el('div', { class: 'api-split' }, [
+            el('div', { class: 'sub-section' }, [el('span', { class: 'sub-title', text: 'Headers (JSON — redacted auth omitted)' }), headersArea]),
+            el('div', { class: 'sub-section' }, [el('span', { class: 'sub-title', text: 'Body' }), bodyArea])
+          ]),
+          resultHost
+        ]);
+      }
+
+      // MARK: - Waterfall Timeline & Structural JSON Diff
+
+      function renderWaterfallAndDiff(step) {
+        els.waterfallContent.replaceChildren();
+        if (!step) return;
+
+        // 1. Waterfall Card
+        const scopeExchanges = state.wfScope === 'scenario'
+          ? ALL_EXCHANGES.filter((x) => x.scenarioIndex === step.scenarioIndex)
+          : ALL_EXCHANGES;
+
+        const filteredExchanges = scopeExchanges.filter((x) => {
+          const r = x.req;
+          if (state.wfFilter === 'ok') return !r.errorText && r.status != null && r.status >= 200 && r.status < 300;
+          if (state.wfFilter === 'err') return Boolean(r.errorText) || (r.status != null && r.status >= 400);
+          if (state.wfFilter === 'slow') return (r.durationMs || 0) >= 300;
+          return true;
+        });
+
+        const wfControls = el('div', { class: 'tb-group' });
+        for (const [sc, lbl] of [['scenario', 'Current Scenario'], ['run', `Entire Run (${ALL_EXCHANGES.length})`]]) {
+          wfControls.appendChild(el('button', {
+            type: 'button',
+            class: 'chip',
+            'aria-pressed': state.wfScope === sc ? 'true' : 'false',
+            onClick: () => { state.wfScope = sc; renderWaterfallAndDiff(step); }
+          }, lbl));
+        }
+        wfControls.appendChild(el('span', { class: 'tb-sep' }));
+        for (const [fk, lbl] of [['all', 'All'], ['ok', '2xx'], ['err', '4xx/5xx'], ['slow', '>300ms']]) {
+          wfControls.appendChild(el('button', {
+            type: 'button',
+            class: 'chip',
+            'aria-pressed': state.wfFilter === fk ? 'true' : 'false',
+            onClick: () => { state.wfFilter = fk; renderWaterfallAndDiff(step); }
+          }, lbl));
+        }
+
+        const wfBody = el('div', { class: 'card-body' });
+        if (filteredExchanges.length === 0) {
+          wfBody.appendChild(el('div', { class: 'empty-state', text: 'No HTTP requests match this waterfall scope/filter.' }));
+        } else {
+          const times = filteredExchanges.map((x) => {
+            const t = x.req.startedAt ? Date.parse(x.req.startedAt) : NaN;
+            return Number.isNaN(t) ? x.stepOffsetMs : t;
+          });
+          const minStart = Math.min(...times);
+          const maxEnd = Math.max(...filteredExchanges.map((x, i) => times[i] + Math.max(1, x.req.durationMs || 1)));
+          const totalSpan = Math.max(1, maxEnd - minStart);
+
+          const wfList = el('div', { class: 'wf-list' });
+          filteredExchanges.forEach((item, i) => {
+            const r = item.req;
+            const start = times[i];
+            const dur = Math.max(1, r.durationMs || 1);
+            const leftPct = Math.max(0, Math.min(96, ((start - minStart) / totalSpan) * 100));
+            const widthPct = Math.max(2, Math.min(100 - leftPct, (dur / totalSpan) * 100));
+            const isActiveStep = item.stepIndex === step.globalIndex;
+            const stLabel = r.errorText ? 'ERR' : (r.status != null ? String(r.status) : '…');
+
+            const bar = el('div', { class: 'wf-bar', style: `left:${leftPct}%;width:${widthPct}%` });
+            const tm = r.timings;
+            if (tm && tm.totalMs > 0) {
+              const segs = [
+                [tm.dnsMs, 't-dns'],
+                [tm.connectMs, 't-tcp'],
+                [tm.tlsMs, 't-tls'],
+                [tm.ttfbMs, 't-ttfb'],
+                [tm.downloadMs, 't-dl']
+              ].filter((s) => typeof s[0] === 'number' && s[0] > 0);
+              const sum = Math.max(1, segs.reduce((a, s) => a + s[0], 0));
+              if (segs.length > 0) {
+                for (const [ms, cls] of segs) {
+                  bar.appendChild(el('div', { class: `t-seg ${cls}`, style: `width:${(ms / sum) * 100}%` }));
+                }
+              } else {
+                bar.appendChild(el('div', { class: 't-seg t-ttfb', style: 'width:100%' }));
+              }
+            } else {
+              bar.appendChild(el('div', { class: `t-seg ${r.errorText || (r.status || 0) >= 400 ? 't-tls' : 't-dl'}`, style: 'width:100%' }));
+            }
+
+            wfList.appendChild(el('div', {
+              class: `wf-row${isActiveStep ? ' active' : ''}`,
+              title: `${r.method} ${r.url} (${stLabel}, ${fmtDur(r.durationMs)}) — click to jump to Step #${item.stepIndex + 1}`,
+              onClick: () => {
+                selectStep(item.stepIndex);
+                state.selectedApiExId = r.id;
+              }
+            }, [
+              el('span', { class: `method-badge ${methodCls(r.method)}`, text: r.method || 'GET' }),
+              el('span', { class: `status-code ${statusBucket(r)}`, text: stLabel }),
+              el('span', { class: 'wf-path', text: shortPath(r.url) }),
+              el('div', { class: 'wf-track' }, [bar]),
+              el('span', { class: 'mono', style: 'text-align:right;font-size:11px;color:var(--text-2)', text: fmtDur(r.durationMs) })
+            ]));
+          });
+          wfBody.appendChild(wfList);
+        }
+
+        els.waterfallContent.appendChild(el('div', { class: 'card' }, [
+          el('div', { class: 'card-head' }, [
+            el('span', { class: 'card-title', text: 'HTTP Request Waterfall' }),
+            wfControls
+          ]),
+          wfBody
+        ]));
+
+        // 2. Structural JSON Response Diff Card
+        const diffBody = el('div', { class: 'card-body' });
+        if (ALL_EXCHANGES.length < 2) {
+          diffBody.appendChild(el('div', { class: 'empty-state', text: 'Capture at least 2 API exchanges in a run to compare responses side-by-side.' }));
+        } else {
+          // Pick sensible defaults if unset
+          const activeEx = ALL_EXCHANGES.find((x) => x.stepIndex === step.globalIndex) || ALL_EXCHANGES[ALL_EXCHANGES.length - 1];
+          if (!state.diffTargetId || !EXCHANGE_BY_ID.has(state.diffTargetId)) {
+            state.diffTargetId = activeEx.req.id;
+          }
+          if (!state.diffBaseId || !EXCHANGE_BY_ID.has(state.diffBaseId)) {
+            const targetIdx = ALL_EXCHANGES.findIndex((x) => x.req.id === state.diffTargetId);
+            const targetPath = shortPath(ALL_EXCHANGES[Math.max(0, targetIdx)].req.url).split('?')[0];
+            let prevSame = null;
+            for (let i = targetIdx - 1; i >= 0; i--) {
+              if (shortPath(ALL_EXCHANGES[i].req.url).split('?')[0] === targetPath) {
+                prevSame = ALL_EXCHANGES[i];
+                break;
+              }
+            }
+            const fallback = targetIdx > 0 ? ALL_EXCHANGES[targetIdx - 1] : ALL_EXCHANGES[0];
+            state.diffBaseId = (prevSame || fallback).req.id;
+          }
+
+          const makeOptionLabel = (x) => `#${x.ordinal} (Step ${x.stepIndex + 1}) ${x.req.method} ${shortPath(x.req.url)} [${x.req.status ?? 'ERR'}]`;
+          const baseSel = el('select', {
+            class: 'select-input mono',
+            'aria-label': 'Baseline API exchange',
+            onChange: (e) => { state.diffBaseId = e.target.value; renderWaterfallAndDiff(step); }
+          }, ALL_EXCHANGES.map((x) => el('option', { value: x.req.id, selected: x.req.id === state.diffBaseId ? 'selected' : null, text: `Base: ${makeOptionLabel(x)}` })));
+
+          const targetSel = el('select', {
+            class: 'select-input mono',
+            'aria-label': 'Target API exchange',
+            onChange: (e) => { state.diffTargetId = e.target.value; renderWaterfallAndDiff(step); }
+          }, ALL_EXCHANGES.map((x) => el('option', { value: x.req.id, selected: x.req.id === state.diffTargetId ? 'selected' : null, text: `Target: ${makeOptionLabel(x)}` })));
+
+          const swapBtn = el('button', {
+            type: 'button',
+            class: 'tb-btn',
+            text: '⇄ Swap',
+            onClick: () => {
+              const tmp = state.diffBaseId;
+              state.diffBaseId = state.diffTargetId;
+              state.diffTargetId = tmp;
+              renderWaterfallAndDiff(step);
+            }
+          });
+
+          diffBody.appendChild(el('div', { class: 'diff-controls' }, [baseSel, targetSel, swapBtn]));
+
+          const baseItem = EXCHANGE_BY_ID.get(state.diffBaseId);
+          const targetItem = EXCHANGE_BY_ID.get(state.diffTargetId);
+          if (baseItem && targetItem) {
+            const pA = tryParseJSON(baseItem.req.responseBody || '');
+            const pB = tryParseJSON(targetItem.req.responseBody || '');
+            if (pA.ok && pB.ok) {
+              const diffs = [];
+              computeStructuralDiff(pA.value, pB.value, '$', diffs);
+              if (diffs.length === 0) {
+                diffBody.appendChild(el('div', { class: 'empty-state', text: 'Identical JSON response payloads (0 differences).' }));
+              } else {
+                const added = diffs.filter((d) => d.kind === 'added').length;
+                const removed = diffs.filter((d) => d.kind === 'removed').length;
+                const changed = diffs.filter((d) => d.kind === 'changed').length;
+                diffBody.appendChild(el('div', { class: 'hero-chips', style: 'margin-bottom:8px' }, [
+                  el('span', { class: 'mini-tag pass', text: `+${added} added` }),
+                  el('span', { class: 'mini-tag err', text: `-${removed} removed` }),
+                  el('span', { class: 'mini-tag warn', text: `~${changed} changed` })
+                ]));
+
+                const tbody = el('tbody');
+                for (const d of diffs.slice(0, 200)) {
+                  const badgeCls = d.kind === 'added' ? 'pass' : (d.kind === 'removed' ? 'err' : 'warn');
+                  const sym = d.kind === 'added' ? '+' : (d.kind === 'removed' ? '-' : '~');
+                  tbody.appendChild(el('tr', { class: `diff-row ${d.kind}` }, [
+                    el('td', null, el('span', { class: `mini-tag ${badgeCls}`, text: sym })),
+                    el('td', { style: 'color:#93c5fd', text: d.path }),
+                    el('td', { style: 'color:var(--text-2)', text: fmtDiffVal(d.before) }),
+                    el('td', { style: 'color:var(--text)', text: fmtDiffVal(d.after) })
+                  ]));
+                }
+                diffBody.appendChild(el('div', { class: 'net-table-wrap' }, [
+                  el('table', { class: 'diff-table' }, [
+                    el('thead', null, el('tr', null, [
+                      el('th', { text: '' }),
+                      el('th', { text: 'JSONPath' }),
+                      el('th', { text: `Base (#${baseItem.ordinal})` }),
+                      el('th', { text: `Target (#${targetItem.ordinal})` })
+                    ])),
+                    tbody
+                  ])
+                ]));
+              }
+            } else {
+              diffBody.appendChild(el('div', { class: 'api-split' }, [
+                el('div', { class: 'sub-section' }, [
+                  el('span', { class: 'sub-title', text: `Base (#${baseItem.ordinal})` }),
+                  el('pre', { class: 'code-box', text: baseItem.req.responseBody || '(empty)' })
+                ]),
+                el('div', { class: 'sub-section' }, [
+                  el('span', { class: 'sub-title', text: `Target (#${targetItem.ordinal})` }),
+                  el('pre', { class: 'code-box', text: targetItem.req.responseBody || '(empty)' })
+                ])
+              ]));
+            }
+          }
+        }
+
+        els.waterfallContent.appendChild(el('div', { class: 'card' }, [
+          el('div', { class: 'card-head' }, [
+            el('span', { class: 'card-title', text: 'Response Diff & Comparison' })
+          ]),
+          diffBody
+        ]));
+      }
+
+      // MARK: - Web Visual, DOM & Network Inspectors
+
       function buildShotStage(uri, label, box) {
         const stage = el('div', {
           class: 'shot-stage',
@@ -897,91 +2021,87 @@ public enum TimeTravelHTMLReportBuilder {
         const afterURI = step.afterShotAssetId ? ASSETS[step.afterShotAssetId] : null;
         const hasBoth = Boolean(beforeURI && afterURI);
 
-        // 1. Visual Diff Card
-        const modeGroup = el('div', { class: 'tb-group', role: 'group', 'aria-label': 'Screenshot view mode' });
-        const modes = [
-          ['side', 'Side-by-Side'],
-          ['before', 'Before'],
-          ['after', 'After'],
-          ['curtain', 'Curtain Diff']
-        ];
-        for (const [m, lbl] of modes) {
-          modeGroup.appendChild(el('button', {
-            type: 'button',
-            class: 'chip',
-            'aria-pressed': state.visualMode === m ? 'true' : 'false',
-            onClick: () => { state.visualMode = m; renderVisualAndConsole(step); }
-          }, lbl));
-        }
-        if (step.targetBoundingBox) {
-          modeGroup.appendChild(el('button', {
-            type: 'button',
-            class: 'chip',
-            'aria-pressed': state.showReticle ? 'true' : 'false',
-            onClick: () => { state.showReticle = !state.showReticle; renderVisualAndConsole(step); }
-          }, 'Target Overlay'));
-        }
+        // 1. Visual Diff Card (omitted on pure API runs to keep Console & Raw clean)
+        if (REPORT_MODE !== 'api' || beforeURI || afterURI) {
+          const modeGroup = el('div', { class: 'tb-group', role: 'group', 'aria-label': 'Screenshot view mode' });
+          for (const [m, lbl] of [['side', 'Side-by-Side'], ['before', 'Before'], ['after', 'After'], ['curtain', 'Curtain Diff']]) {
+            modeGroup.appendChild(el('button', {
+              type: 'button',
+              class: 'chip',
+              'aria-pressed': state.visualMode === m ? 'true' : 'false',
+              onClick: () => { state.visualMode = m; renderVisualAndConsole(step); }
+            }, lbl));
+          }
+          if (step.targetBoundingBox) {
+            modeGroup.appendChild(el('button', {
+              type: 'button',
+              class: 'chip',
+              'aria-pressed': state.showReticle ? 'true' : 'false',
+              onClick: () => { state.showReticle = !state.showReticle; renderVisualAndConsole(step); }
+            }, 'Target Overlay'));
+          }
 
-        const shotBody = el('div', { class: 'card-body' });
-        if (!beforeURI && !afterURI) {
-          shotBody.appendChild(el('div', {
-            class: 'empty-state',
-            text: 'No screenshots were captured for this step. Run browser-backed web tests with Time-Travel Trace enabled to capture before/after frames.'
-          }));
-        } else if (state.visualMode === 'curtain' && hasBoth) {
-          const topLayer = el('div', { class: 'curtain-top', style: `clip-path: inset(0 ${100 - state.curtainPct}% 0 0)` }, [
-            el('img', { src: beforeURI, alt: 'Before step screenshot' })
-          ]);
-          const divider = el('div', { class: 'curtain-line', style: `left:${state.curtainPct}%` });
-          const slider = el('input', {
-            type: 'range',
-            min: '0',
-            max: '100',
-            value: String(state.curtainPct),
-            'aria-label': 'Before and after comparison slider',
-            onInput: (e) => {
-              state.curtainPct = Number(e.target.value);
-              topLayer.style.clipPath = `inset(0 ${100 - state.curtainPct}% 0 0)`;
-              divider.style.left = `${state.curtainPct}%`;
+          const shotBody = el('div', { class: 'card-body' });
+          if (!beforeURI && !afterURI) {
+            shotBody.appendChild(el('div', {
+              class: 'empty-state',
+              text: 'No screenshots were captured for this step. Run browser-backed web tests with Time-Travel Trace enabled to capture before/after frames.'
+            }));
+          } else if (state.visualMode === 'curtain' && hasBoth) {
+            const topLayer = el('div', { class: 'curtain-top', style: `clip-path: inset(0 ${100 - state.curtainPct}% 0 0)` }, [
+              el('img', { src: beforeURI, alt: 'Before step screenshot' })
+            ]);
+            const divider = el('div', { class: 'curtain-line', style: `left:${state.curtainPct}%` });
+            const slider = el('input', {
+              type: 'range',
+              min: '0',
+              max: '100',
+              value: String(state.curtainPct),
+              'aria-label': 'Before and after comparison slider',
+              onInput: (e) => {
+                state.curtainPct = Number(e.target.value);
+                topLayer.style.clipPath = `inset(0 ${100 - state.curtainPct}% 0 0)`;
+                divider.style.left = `${state.curtainPct}%`;
+              }
+            });
+            shotBody.appendChild(el('div', { class: 'curtain-wrap' }, [
+              el('img', { class: 'curtain-base', src: afterURI, alt: 'After step screenshot' }),
+              topLayer,
+              divider,
+              el('div', { class: 'curtain-controls' }, [
+                el('span', { text: 'Before' }),
+                slider,
+                el('span', { text: 'After' })
+              ])
+            ]));
+          } else {
+            const grid = el('div', { class: 'visual-grid' });
+            if ((state.visualMode === 'side' || state.visualMode === 'before' || (state.visualMode === 'curtain' && !hasBoth)) && beforeURI) {
+              grid.appendChild(el('div', { class: 'shot-frame' }, [
+                el('div', { class: 'shot-label' }, [el('span', { text: 'Before Action' }), el('span', { class: 'mono', text: 'Click to zoom' })]),
+                buildShotStage(beforeURI, `Step #${step.globalIndex + 1} — Before`, step.targetBoundingBox)
+              ]));
             }
-          });
-          shotBody.appendChild(el('div', { class: 'curtain-wrap' }, [
-            el('img', { class: 'curtain-base', src: afterURI, alt: 'After step screenshot' }),
-            topLayer,
-            divider,
-            el('div', { class: 'curtain-controls' }, [
-              el('span', { text: 'Before' }),
-              slider,
-              el('span', { text: 'After' })
-            ])
-          ]));
-        } else {
-          const grid = el('div', { class: 'visual-grid' });
-          if ((state.visualMode === 'side' || state.visualMode === 'before' || (state.visualMode === 'curtain' && !hasBoth)) && beforeURI) {
-            grid.appendChild(el('div', { class: 'shot-frame' }, [
-              el('div', { class: 'shot-label' }, [el('span', { text: 'Before Action' }), el('span', { class: 'mono', text: 'Click to zoom' })]),
-              buildShotStage(beforeURI, `Step #${step.globalIndex + 1} — Before`, step.targetBoundingBox)
-            ]));
+            if ((state.visualMode === 'side' || state.visualMode === 'after' || (state.visualMode === 'curtain' && !hasBoth)) && afterURI) {
+              grid.appendChild(el('div', { class: 'shot-frame' }, [
+                el('div', { class: 'shot-label' }, [el('span', { text: 'After Action' }), el('span', { class: 'mono', text: 'Click to zoom' })]),
+                buildShotStage(afterURI, `Step #${step.globalIndex + 1} — After`, step.targetBoundingBox)
+              ]));
+            }
+            if (!grid.childNodes.length) {
+              grid.appendChild(el('div', { class: 'empty-state', text: 'Requested frame was not captured for this step.' }));
+            }
+            shotBody.appendChild(grid);
           }
-          if ((state.visualMode === 'side' || state.visualMode === 'after' || (state.visualMode === 'curtain' && !hasBoth)) && afterURI) {
-            grid.appendChild(el('div', { class: 'shot-frame' }, [
-              el('div', { class: 'shot-label' }, [el('span', { text: 'After Action' }), el('span', { class: 'mono', text: 'Click to zoom' })]),
-              buildShotStage(afterURI, `Step #${step.globalIndex + 1} — After`, step.targetBoundingBox)
-            ]));
-          }
-          if (!grid.childNodes.length) {
-            grid.appendChild(el('div', { class: 'empty-state', text: 'Requested frame was not captured for this step.' }));
-          }
-          shotBody.appendChild(grid);
-        }
 
-        els.visualContent.appendChild(el('div', { class: 'card' }, [
-          el('div', { class: 'card-head' }, [
-            el('span', { class: 'card-title', text: 'Before / After Visual State' }),
-            modeGroup
-          ]),
-          shotBody
-        ]));
+          els.visualContent.appendChild(el('div', { class: 'card' }, [
+            el('div', { class: 'card-head' }, [
+              el('span', { class: 'card-title', text: 'Before / After Visual State' }),
+              modeGroup
+            ]),
+            shotBody
+          ]));
+        }
 
         // 2. Browser Console & Uncaught Errors Card
         const entries = step.consoleEntries || [];
@@ -992,7 +2112,7 @@ public enum TimeTravelHTMLReportBuilder {
           logs: entries.filter((c) => c.level === 'log' || c.level === 'info' || c.level === 'debug').length
         };
 
-        const consoleFilters = el('div', { class: 'tb-group', role: 'group', 'aria-label': 'Filter browser console' });
+        const consoleFilters = el('div', { class: 'tb-group', role: 'group', 'aria-label': 'Filter console logs' });
         for (const [key, lbl] of [['all', `All (${counts.all})`], ['errors', `Errors (${counts.errors})`], ['warnings', `Warnings (${counts.warnings})`], ['logs', `Logs (${counts.logs})`]]) {
           consoleFilters.appendChild(el('button', {
             type: 'button',
@@ -1032,6 +2152,19 @@ public enum TimeTravelHTMLReportBuilder {
           ]),
           consoleBody
         ]));
+
+        // 3. On API runs, also surface the raw CLI run output cleanly here
+        if (REPORT_MODE === 'api' && META.rawOutput) {
+          els.visualContent.appendChild(el('div', { class: 'card' }, [
+            el('div', { class: 'card-head' }, [
+              el('span', { class: 'card-title', text: 'Raw Runner Output' }),
+              el('button', { type: 'button', class: 'tb-btn', text: 'Copy Output', onClick: () => copyText(META.rawOutput, 'Raw output') })
+            ]),
+            el('div', { class: 'card-body' }, [
+              el('pre', { class: 'code-box', style: 'max-height:420px', text: META.rawOutput })
+            ])
+          ]));
+        }
       }
 
       function buildDomTreeElement(node, depth, query, targetNodes, isRoot) {
@@ -1143,6 +2276,7 @@ public enum TimeTravelHTMLReportBuilder {
           }
 
           if (state.domMode === 'tree') {
+            const treeHost = el('div', { class: 'dom-tree' });
             const searchBar = el('div', { style: 'display:flex;gap:8px;margin-bottom:10px' }, [
               el('input', {
                 type: 'search',
@@ -1167,7 +2301,6 @@ public enum TimeTravelHTMLReportBuilder {
                 }
               })
             ]);
-            const treeHost = el('div', { class: 'dom-tree' });
             renderDOMTreeOnly(treeHost, rawHTML, step);
             body.appendChild(searchBar);
             body.appendChild(treeHost);
@@ -1232,26 +2365,13 @@ public enum TimeTravelHTMLReportBuilder {
         else treeHost.appendChild(el('div', { class: 'empty-state', text: 'No DOM nodes match your search.' }));
       }
 
-      function prettyBody(raw) {
-        if (!raw) return '';
-        try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
-      }
-
-      function statusBucket(req) {
-        if (req.errorText || req.status == null) return 'serr';
-        if (req.status >= 500) return 's5';
-        if (req.status >= 400) return 's4';
-        if (req.status >= 300) return 's3';
-        return 's2';
-      }
-
       function renderNetwork(step) {
         els.networkContent.replaceChildren();
         if (!step) return;
 
         const allReqs = step.networkRequests || [];
         const filters = el('div', { class: 'tb-group', role: 'group', 'aria-label': 'Filter network requests' });
-        for (const [k, lbl] of [['all', `All (${allReqs.length})`], ['xhr', 'XHR / Fetch'], ['errors', 'Errors (4xx/5xx)']]) {
+        for (const [k, lbl] of [['all', `All (${allReqs.length})`], ['xhr', 'API / XHR / Fetch'], ['errors', 'Errors (4xx/5xx)']]) {
           filters.appendChild(el('button', {
             type: 'button',
             class: 'chip',
@@ -1261,7 +2381,7 @@ public enum TimeTravelHTMLReportBuilder {
         }
 
         const filtered = allReqs.filter((r) => {
-          if (state.netFilter === 'xhr' && r.resourceType !== 'fetch' && r.resourceType !== 'xhr') return false;
+          if (state.netFilter === 'xhr' && r.resourceType !== 'fetch' && r.resourceType !== 'xhr' && r.resourceType !== 'api') return false;
           if (state.netFilter === 'errors' && !r.errorText && (r.status == null || r.status < 400)) return false;
           const q = state.netSearch.trim().toLowerCase();
           if (q && !(r.url || '').toLowerCase().includes(q) && !(r.method || '').toLowerCase().includes(q)) return false;
@@ -1296,10 +2416,10 @@ public enum TimeTravelHTMLReportBuilder {
                 class: `net-row${sel ? ' selected' : ''}`,
                 onClick: () => { state.selectedNetId = req.id; renderNetwork(step); }
               }, [
-                el('td', null, el('span', { class: 'method-badge', text: req.method || 'GET' })),
+                el('td', null, el('span', { class: `method-badge ${methodCls(req.method)}`, text: req.method || 'GET' })),
                 el('td', null, el('span', { class: `status-code ${statusBucket(req)}`, text: statusLabel })),
                 el('td', { class: 'net-url', text: req.url, title: req.url }),
-                el('td', { class: 'mono', text: req.resourceType || '—' }),
+                el('td', { class: 'mono', text: req.source || req.resourceType || '—' }),
                 el('td', { class: 'mono', text: fmtDur(req.durationMs) })
               ]));
             }
@@ -1322,47 +2442,27 @@ public enum TimeTravelHTMLReportBuilder {
               const detail = el('div', { class: 'net-detail' });
               detail.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap' }, [
                 el('span', { class: 'mono', style: 'font-weight:600;word-break:break-all', text: `${chosen.method} ${chosen.url}` }),
-                el('button', {
-                  type: 'button',
-                  class: 'tb-btn',
-                  text: 'Copy URL',
-                  onClick: () => copyText(chosen.url, 'Request URL')
-                })
+                el('div', { class: 'tb-group' }, [
+                  el('button', { type: 'button', class: 'tb-btn', text: 'Copy cURL', onClick: () => copyText(buildCurlCommand(chosen), 'cURL command') }),
+                  el('button', { type: 'button', class: 'tb-btn', text: 'Copy URL', onClick: () => copyText(chosen.url, 'Request URL') })
+                ])
               ]));
+              const tb = buildTimingBreakdown(chosen);
+              if (tb) detail.appendChild(tb);
               if (chosen.errorText) {
                 detail.appendChild(el('div', { class: 'error-banner', text: chosen.errorText }));
               }
-              const renderHeaders = (title, hdrs) => {
-                const keys = Object.keys(hdrs || {}).sort();
-                if (!keys.length) return null;
-                const grid = el('div', { class: 'kv-grid' });
-                for (const k of keys) {
-                  grid.appendChild(el('span', { class: 'kv-k', text: k }));
-                  grid.appendChild(el('span', { class: 'kv-v', text: hdrs[k] }));
-                }
-                return el('div', null, [
-                  el('div', { class: 'card-title', style: 'margin-bottom:6px', text: `${title} (${keys.length})` }),
-                  grid
-                ]);
-              };
-              const reqH = renderHeaders('Request Headers', chosen.requestHeaders);
-              const resH = renderHeaders('Response Headers', chosen.responseHeaders);
+              const qp = buildQueryParamsSection(chosen.url);
+              const reqH = buildHeadersSection('Request Headers', chosen.requestHeaders);
+              const resH = buildHeadersSection('Response Headers', chosen.responseHeaders);
+              if (qp) detail.appendChild(qp);
               if (reqH) detail.appendChild(reqH);
               if (resH) detail.appendChild(resH);
               if (chosen.requestBody) {
-                detail.appendChild(el('div', null, [
-                  el('div', { class: 'card-title', style: 'margin-bottom:6px', text: 'Request Payload' }),
-                  el('pre', { class: 'code-box', text: prettyBody(chosen.requestBody) })
-                ]));
+                detail.appendChild(buildPayloadViewer(chosen.requestBody, 'apiReqBodyMode', 'apiReqSearch', 'Request Payload', () => renderNetwork(step)));
               }
               if (chosen.responseBody) {
-                detail.appendChild(el('div', null, [
-                  el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px' }, [
-                    el('span', { class: 'card-title', text: 'Response Payload' }),
-                    el('button', { type: 'button', class: 'tb-btn', text: 'Copy Response', onClick: () => copyText(chosen.responseBody, 'Response payload') })
-                  ]),
-                  el('pre', { class: 'code-box', text: prettyBody(chosen.responseBody) })
-                ]));
+                detail.appendChild(buildPayloadViewer(chosen.responseBody, 'apiResBodyMode', 'apiResSearch', 'Response Payload', () => renderNetwork(step)));
               }
               body.appendChild(detail);
             }
@@ -1393,9 +2493,12 @@ public enum TimeTravelHTMLReportBuilder {
       }
 
       function selectTab(tabKey) {
+        const map = { api: 'tab-api', waterfall: 'tab-waterfall', visual: 'tab-visual', dom: 'tab-dom', network: 'tab-network' };
+        const panelMap = { api: 'panel-api', waterfall: 'panel-waterfall', visual: 'panel-visual', dom: 'panel-dom', network: 'panel-network' };
+        const targetTab = document.getElementById(map[tabKey]);
+        if (!targetTab || targetTab.hidden) return;
         state.activeTab = tabKey;
-        const map = { visual: 'tab-visual', dom: 'tab-dom', network: 'tab-network' };
-        const panelMap = { visual: 'panel-visual', dom: 'panel-dom', network: 'panel-network' };
+
         for (const tab of els.tabs) {
           const active = tab.id === map[tabKey];
           tab.setAttribute('aria-selected', active ? 'true' : 'false');
@@ -1426,11 +2529,17 @@ public enum TimeTravelHTMLReportBuilder {
         const clamped = Math.max(0, Math.min(STEPS.length - 1, index));
         state.activeIndex = clamped;
         state.selectedNetId = null;
+        state.selectedApiExId = null;
+        state.liveReplayResult = null;
         const step = STEPS[clamped];
 
         renderTicks();
         renderTimeline();
         renderHero(step);
+        if (HAS_ANY_API) {
+          renderApiExchange(step);
+          renderWaterfallAndDiff(step);
+        }
         renderVisualAndConsole(step);
         renderDOM(step);
         renderNetwork(step);
@@ -1438,6 +2547,9 @@ public enum TimeTravelHTMLReportBuilder {
 
         const consoleCount = (step.consoleEntries || []).length;
         const netCount = (step.networkRequests || []).length;
+        const { exchanges } = resolveStepExchanges(step);
+        if (els.badgeApi) els.badgeApi.textContent = exchanges.length > 0 ? String(exchanges.length) : (step.assertion ? '✓' : '');
+        if (els.badgeWaterfall) els.badgeWaterfall.textContent = ALL_EXCHANGES.length > 0 ? String(ALL_EXCHANGES.length) : '';
         els.badgeVisual.textContent = consoleCount > 0 ? String(consoleCount) : '';
         els.badgeDom.textContent = step.domAssetId ? (step.matchedCount ? `${step.matchedCount}` : '1') : '';
         els.badgeNetwork.textContent = netCount > 0 ? String(netCount) : '';
@@ -1487,7 +2599,6 @@ public enum TimeTravelHTMLReportBuilder {
         announce(`Jumped to failed step ${target + 1}`);
       }
 
-      // Wire playback controls (respecting aria-disabled="true")
       const guard = (btn, fn) => btn.addEventListener('click', () => {
         if (btn.getAttribute('aria-disabled') === 'true') return;
         fn();
@@ -1514,7 +2625,6 @@ public enum TimeTravelHTMLReportBuilder {
         });
       }
 
-      // Filter chips & search
       document.querySelectorAll('.timeline-pane [data-filter]').forEach((chip) => {
         chip.addEventListener('click', () => {
           state.statusFilter = chip.getAttribute('data-filter') || 'all';
@@ -1531,9 +2641,20 @@ public enum TimeTravelHTMLReportBuilder {
         });
       }
 
-      // Tabs + beforematch find-in-page reveal
-      const tabKeys = { 'tab-visual': 'visual', 'tab-dom': 'dom', 'tab-network': 'network' };
-      const panelKeys = { 'panel-visual': 'visual', 'panel-dom': 'dom', 'panel-network': 'network' };
+      const tabKeys = {
+        'tab-api': 'api',
+        'tab-waterfall': 'waterfall',
+        'tab-visual': 'visual',
+        'tab-dom': 'dom',
+        'tab-network': 'network'
+      };
+      const panelKeys = {
+        'panel-api': 'api',
+        'panel-waterfall': 'waterfall',
+        'panel-visual': 'visual',
+        'panel-dom': 'dom',
+        'panel-network': 'network'
+      };
       els.tabs.forEach((tab) => {
         tab.addEventListener('click', () => selectTab(tabKeys[tab.id]));
         tab.addEventListener('focus', () => selectTab(tabKeys[tab.id]));
@@ -1542,11 +2663,10 @@ public enum TimeTravelHTMLReportBuilder {
         panel.addEventListener('beforematch', () => selectTab(panelKeys[panel.id]));
       });
 
-      // Fallback roving tabindex for toolbar & tablist ONLY when native focusgroup is unsupported
       if (!('focusGroup' in HTMLElement.prototype)) {
         const wireRoving = (container, selector, wrap) => {
           if (!container) return;
-          const items = Array.from(container.querySelectorAll(selector));
+          const items = Array.from(container.querySelectorAll(selector)).filter((b) => !b.hidden);
           if (!items.length) return;
           items.forEach((b, i) => { b.tabIndex = i === 0 ? 0 : -1; });
           container.addEventListener('focusin', ({ target }) => {
@@ -1575,7 +2695,6 @@ public enum TimeTravelHTMLReportBuilder {
         wireRoving(document.querySelector('[role="tablist"]'), '[role="tab"]', true);
       }
 
-      // Global time-travel keyboard navigation (ignored when typing or inside composite toolbar/tablist)
       document.addEventListener('keydown', (e) => {
         const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
         if (tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable)) return;
@@ -1606,12 +2725,10 @@ public enum TimeTravelHTMLReportBuilder {
         } else if (e.key === ' ' && !inToolbarOrTabs && tag !== 'button') {
           e.preventDefault();
           togglePlayback();
-        } else if (e.key === '1') {
-          selectTab('visual');
-        } else if (e.key === '2') {
-          selectTab('dom');
-        } else if (e.key === '3') {
-          selectTab('network');
+        } else if (['1', '2', '3', '4', '5'].includes(e.key)) {
+          const visibleTabs = els.tabs.filter((t) => !t.hidden);
+          const pick = visibleTabs[Number(e.key) - 1];
+          if (pick) selectTab(tabKeys[pick.id]);
         }
       });
 
@@ -1622,8 +2739,8 @@ public enum TimeTravelHTMLReportBuilder {
         });
       }
 
-      // Initial render: focus first failed step if present, else step 0
-      selectTab('visual');
+      // Initial render: API runs open directly on API Exchange; Web runs open on Visual & Console
+      selectTab(REPORT_MODE === 'api' ? 'api' : 'visual');
       selectStep(failureIndices.length > 0 ? failureIndices[0] : 0, false);
     })();
     """#

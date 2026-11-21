@@ -189,13 +189,13 @@ struct ReportsDashboardView: View {
                     Button {
                         appState.openSelectedTimeTravelReport()
                     } label: {
-                        Label("Time-Travel Report", systemImage: "clock.arrow.circlepath")
+                        Label("Replay HTML", systemImage: "clock.arrow.circlepath")
                             .font(.system(size: 11, weight: .semibold))
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(CeptraTheme.accent)
                     .controlSize(.small)
-                    .help("Open interactive self-contained HTML time-travel report in your browser")
+                    .help("Open interactive Web & API Replay HTML report in your browser")
 
                     Button {
                         appState.exportSelectedReport(asHTML: false)
@@ -610,6 +610,16 @@ private struct ScenarioResultRow: View {
                                     Text(step.text)
                                         .font(.system(size: 11, design: .monospaced))
                                         .foregroundStyle(step.status == .failed ? CeptraTheme.failure : CeptraTheme.textSecondary)
+                                    if let firstReq = step.diagnostics?.networkRequests.first {
+                                        let statusNum = firstReq.status ?? 0
+                                        let pillColor: Color = (firstReq.errorText != nil || statusNum >= 500)
+                                            ? CeptraTheme.failure
+                                            : (statusNum >= 400 ? CeptraTheme.warning : CeptraTheme.cyan)
+                                        let badgeText = firstReq.errorText != nil
+                                            ? "\(firstReq.method) ERR"
+                                            : (firstReq.status != nil ? "\(firstReq.method) \(firstReq.status!)" : firstReq.method)
+                                        CeptraBadge(text: badgeText, color: pillColor)
+                                    }
                                     Spacer()
                                     if let ms = step.durationMs {
                                         Text("\(ms)ms")
