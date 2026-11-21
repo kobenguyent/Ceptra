@@ -63,6 +63,29 @@ struct ReplayInspectorView: View {
         activeSteps.firstIndex(where: { $0.status == .failed || $0.errorMessage != nil })
     }
 
+    private var isApiOnlyRun: Bool {
+        let allSteps = scenarios.flatMap(\.steps)
+        let hasVisuals = allSteps.contains { $0.diagnostics?.hasWebVisuals == true }
+        let hasApi = allSteps.contains { $0.diagnostics?.hasApiTraffic == true }
+        return hasApi && !hasVisuals
+    }
+
+    private func preferredInitialStepIndex(in steps: [ExecutedStepRecord]) -> Int {
+        if let failIdx = steps.firstIndex(where: { $0.status == .failed || $0.errorMessage != nil }) {
+            return failIdx
+        }
+        if isApiOnlyRun, let apiIdx = steps.firstIndex(where: { $0.diagnostics?.networkRequests.isEmpty == false }) {
+            return apiIdx
+        }
+        return 0
+    }
+
+    private func syncDetailTabForCurrentRun() {
+        if isApiOnlyRun && (detailTab == .visual || detailTab == .dom) {
+            detailTab = .network
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if scenarios.isEmpty && !appState.isRunning {
@@ -91,11 +114,22 @@ struct ReplayInspectorView: View {
                 }
             }
         }
+        .onAppear {
+            syncDetailTabForCurrentRun()
+            if !activeSteps.isEmpty && selectedStepIndex == 0 {
+                selectedStepIndex = preferredInitialStepIndex(in: activeSteps)
+            }
+        }
         .onChange(of: appState.selectedReportID) { _, _ in
             stopPlayback()
             appState.refreshSelectedReplayTrace()
             selectedScenarioIndex = 0
-            selectedStepIndex = firstFailingStepIndex ?? 0
+            selectedStepIndex = preferredInitialStepIndex(in: activeSteps)
+            syncDetailTabForCurrentRun()
+        }
+        .onChange(of: appState.activeReplayTraceBundle?.reportID) { _, _ in
+            selectedStepIndex = preferredInitialStepIndex(in: activeSteps)
+            syncDetailTabForCurrentRun()
         }
         .onChange(of: appState.liveReplaySteps.count) { _, newCount in
             if appState.isRunning && newCount > 0 {
@@ -266,6 +300,19 @@ struct ReplayInspectorView: View {
                                 .foregroundStyle(isSelected ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
+
+                            if let firstReq = step.diagnostics?.networkRequests.first {
+                                let code = firstReq.status ?? 0
+                                let reqErr = firstReq.errorText != nil || code >= 500
+                                let reqWarn = !reqErr && code >= 400
+                                let tint: Color = reqErr ? CeptraTheme.failure : (reqWarn ? CeptraTheme.warning : CeptraTheme.cyan)
+                                Text(firstReq.errorText != nil ? "\(firstReq.method) ERR" : (code > 0 ? "\(firstReq.method) \(code)" : firstReq.method))
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(tint)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            }
 
                             Spacer(minLength: 6)
 
@@ -467,20 +514,70 @@ struct ReplayInspectorView: View {
         }
     }
 
+    private func resolvedNetworkRequests(for step: ExecutedStepRecord) -> (requests: [TimeTravelNetworkEntry], linkedFromAssertion: Bool) {
+        let direct = step.diagnostics?.networkRequests ?? []
+        if !direct.isEmpty {
+            return (direct, false)
+        }
+        if let relatedId = step.diagnostics?.assertion?.relatedRequestId {
+            for candidate in activeSteps {
+                if let match = candidate.diagnostics?.networkRequests.first(where: { $0.id == relatedId }) {
+                    return ([match], true)
+                }
+            }
+        }
+        return ([], false)
+    }
+
+    private func prettyJSONString(_ raw: String) -> String {
+        guard let data = raw.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let prettyData = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
+              let pretty = String(data: prettyData, encoding: .utf8) else {
+            return raw
+        }
+        return pretty
+    }
+
     @ViewBuilder
     private func networkTabBody(for step: ExecutedStepRecord) -> some View {
-        let requests = step.diagnostics?.networkRequests ?? []
-        if requests.isEmpty {
-            Text("No network requests captured in this step.")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(CeptraTheme.textMuted)
-                .padding(10)
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
+        let resolved = resolvedNetworkRequests(for: step)
+        let requests = resolved.requests
+        VStack(alignment: .leading, spacing: 8) {
+            if let assertion = step.diagnostics?.assertion {
+                HStack(spacing: 6) {
+                    Image(systemName: assertion.passed ? "checkmark.seal.fill" : "xmark.seal.fill")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(assertion.passed ? CeptraTheme.success : CeptraTheme.failure)
+                    Text("I.\(assertion.method)(…)")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(CeptraTheme.textPrimary)
+                    Spacer()
+                    Text(assertion.passed ? "PASSED" : "FAILED")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(assertion.passed ? CeptraTheme.success : CeptraTheme.failure)
+                }
+                .padding(7)
+                .background(
+                    (assertion.passed ? CeptraTheme.success : CeptraTheme.failure).opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
+            }
+
+            if requests.isEmpty {
+                Text("No network requests captured in this step.")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(CeptraTheme.textMuted)
+            } else {
+                if resolved.linkedFromAssertion {
+                    Text("Asserted against preceding HTTP exchange:")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(CeptraTheme.cyan)
+                }
                 ForEach(requests) { req in
                     let code = req.status ?? 0
                     let isErr = code >= 400 || req.errorText != nil
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 6) {
                             Text(code > 0 ? "\(code)" : "ERR")
                                 .font(.system(size: 10.5, weight: .bold, design: .monospaced))
@@ -501,10 +598,19 @@ struct ReplayInspectorView: View {
                                     .foregroundStyle(CeptraTheme.textMuted)
                             }
                         }
-                        if let body = req.responseBody ?? req.errorText, !body.isEmpty {
-                            Text(String(body.prefix(240)))
+                        if let reqBody = req.requestBody, !reqBody.isEmpty {
+                            Text("REQ: \(String(prettyJSONString(reqBody).prefix(320)))")
                                 .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(isErr ? CeptraTheme.failure : CeptraTheme.textMuted)
+                                .foregroundStyle(CeptraTheme.textSecondary)
+                                .padding(6)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(CeptraTheme.sidebarBG, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                .textSelection(.enabled)
+                        }
+                        if let body = req.responseBody ?? req.errorText, !body.isEmpty {
+                            Text(String(prettyJSONString(body).prefix(640)))
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(isErr ? CeptraTheme.failure : CeptraTheme.textSecondary)
                                 .padding(6)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(CeptraTheme.elevatedBG, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
@@ -513,8 +619,8 @@ struct ReplayInspectorView: View {
                     }
                 }
             }
-            .padding(10)
         }
+        .padding(10)
     }
 
     @ViewBuilder

@@ -130,6 +130,18 @@ public enum TimeTravelRecorderLoader {
       return /(?:image\/|audio\/|video\/|font\/|application\/octet-stream|application\/pdf|application\/zip|application\/gzip|multipart\/form-data)/i.test(lower);
     }
 
+    function hasBinaryBytes(buf) {
+      const sampleLen = Math.min(buf.length, 512);
+      let nulCount = 0;
+      let ctrlCount = 0;
+      for (let i = 0; i < sampleLen; i++) {
+        const b = buf[i];
+        if (b === 0) nulCount++;
+        else if (b < 9 || (b > 13 && b < 32)) ctrlCount++;
+      }
+      return nulCount > 0 || (sampleLen >= 16 && ctrlCount / sampleLen > 0.15);
+    }
+
     function decodeBufferToBody(buf, contentType, contentEncoding, totalBytes) {
       if (!buf || buf.length === 0) return null;
       if (isLikelyBinaryContentType(contentType)) {
@@ -137,30 +149,44 @@ public enum TimeTravelRecorderLoader {
       }
       let decoded = buf;
       const enc = String(contentEncoding || '').toLowerCase().trim();
-      if (enc) {
+      const isGzipMagic = buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b;
+      const tryDecompress = (kind) => {
+        if (kind === 'gzip') return zlib.gunzipSync(buf);
+        if (kind === 'br' && typeof zlib.brotliDecompressSync === 'function') return zlib.brotliDecompressSync(buf);
+        if (kind === 'deflate') return zlib.inflateSync(buf);
+        return null;
+      };
+
+      if (enc || isGzipMagic) {
         try {
-          if (enc.includes('gzip')) {
-            decoded = zlib.gunzipSync(buf);
-          } else if (enc.includes('br') && typeof zlib.brotliDecompressSync === 'function') {
-            decoded = zlib.brotliDecompressSync(buf);
+          if (enc.includes('gzip') || isGzipMagic) {
+            decoded = tryDecompress('gzip') || buf;
+          } else if (enc.includes('br')) {
+            decoded = tryDecompress('br') || buf;
           } else if (enc.includes('deflate')) {
-            decoded = zlib.inflateSync(buf);
+            decoded = tryDecompress('deflate') || buf;
           }
         } catch {
-          // If body was truncated before decompression completed or malformed, fall back gracefully
           if (buf.length >= MAX_CAPTURE_BYTES) {
-            return `[compressed ${enc} body > ${formatBytes(MAX_CAPTURE_BYTES)}; total ${formatBytes(totalBytes || buf.length)}]`;
+            return `[compressed ${enc || 'gzip'} body > ${formatBytes(MAX_CAPTURE_BYTES)}; total ${formatBytes(totalBytes || buf.length)}]`;
           }
           decoded = buf;
         }
+      } else if (TEXT_CONTENT_RE.test(String(contentType || '')) && hasBinaryBytes(buf)) {
+        // Some HTTP clients (e.g. axios) strip `res.headers['content-encoding']` before downstream listeners run.
+        // Probe brotli/gzip/deflate transparently when a text/JSON response arrives compressed.
+        for (const kind of ['br', 'gzip', 'deflate']) {
+          try {
+            const candidate = tryDecompress(kind);
+            if (candidate && candidate.length > 0 && !hasBinaryBytes(candidate)) {
+              decoded = candidate;
+              break;
+            }
+          } catch {}
+        }
       }
-      // Check for null bytes indicating binary payload without an explicit binary content-type
-      const sampleLen = Math.min(decoded.length, 512);
-      let nulCount = 0;
-      for (let i = 0; i < sampleLen; i++) {
-        if (decoded[i] === 0) nulCount++;
-      }
-      if (nulCount > 4) {
+
+      if (hasBinaryBytes(decoded)) {
         return `[binary payload: ${formatBytes(totalBytes || decoded.length)}]`;
       }
       return truncate(decoded.toString('utf8'), MAX_BODY_CHARS);
@@ -650,12 +676,20 @@ public enum TimeTravelRecorderLoader {
               });
             });
 
-            req.on('response', (res) => {
+            // Prepend our response listener so we capture `content-encoding` BEFORE libraries like axios delete it in-place.
+            const attachResponse = typeof req.prependListener === 'function'
+              ? req.prependListener.bind(req)
+              : req.on.bind(req);
+
+            attachResponse('response', (res) => {
               const firstByteAt = Date.now();
               ttfbMs = Math.max(0, firstByteAt - startMs);
               entry.status = typeof res.statusCode === 'number' ? res.statusCode : null;
               entry.statusText = res.statusMessage ? String(res.statusMessage) : null;
               entry.responseHeaders = redactHeaders(res.headers || {});
+              const capturedContentEncoding = String(
+                (res.headers && (res.headers['content-encoding'] || res.headers['Content-Encoding'])) || ''
+              );
 
               const resChunks = [];
               let resCapturedBytes = 0;
@@ -694,7 +728,7 @@ public enum TimeTravelRecorderLoader {
                 };
                 if (resTotalBytes > 0) {
                   const ct = entry.responseHeaders['content-type'] || '';
-                  const ce = entry.responseHeaders['content-encoding'] || '';
+                  const ce = capturedContentEncoding || entry.responseHeaders['content-encoding'] || '';
                   entry.responseBody = decodeBufferToBody(Buffer.concat(resChunks), ct, ce, resTotalBytes);
                 }
                 if (rec && typeof rec.onComplete === 'function') {
@@ -1112,8 +1146,11 @@ public enum TimeTravelRecorderLoader {
         scenarios.push(currentScenario);
       });
 
-      dispatcher.on(event.step.before, (step) => {
+      function beginStepExecution(step) {
         if (!currentScenario) return;
+        // Skip MetaStep container wrappers so child helper steps hold the real execution & HTTP trace
+        if (step && step.constructor && step.constructor.name === 'MetaStep') return;
+
         const active = getActivePage(container);
         if (active && active.page) attachPageListeners(active.page);
 
@@ -1170,22 +1207,10 @@ public enum TimeTravelRecorderLoader {
             })
           );
         }
-      });
+      }
 
-      dispatcher.on(event.step.failed, (step, err) => {
-        const targetStep = currentStep || lastStepRecord;
-        if (!targetStep) return;
-        targetStep.status = 'failed';
-        if (err) {
-          targetStep.errorMessage = err.message ? String(err.message) : String(err);
-        }
-        if (targetStep.diagnostics.assertion) {
-          targetStep.diagnostics.assertion.passed = false;
-          targetStep.diagnostics.assertion.message = targetStep.errorMessage;
-        }
-      });
-
-      dispatcher.on(event.step.after, (step) => {
+      function endStepExecution(step) {
+        if (step && step.constructor && step.constructor.name === 'MetaStep') return;
         const stepRecord = currentStep;
         if (!stepRecord) return;
         stepRecord.finishedAt = new Date().toISOString();
@@ -1216,6 +1241,29 @@ public enum TimeTravelRecorderLoader {
         }
         // Clear currentStep so subsequent direct axios/flex-rest/fetch calls get their own API step
         currentStep = null;
+      }
+
+      // In CodeceptJS 4.x `recordStep()`, `step.before` and `step.after` fire synchronously at ENQUEUE time,
+      // while `step.started` and `step.finished` bracket the actual async execution of `step.run()`.
+      if (event.step && event.step.started && event.step.finished) {
+        dispatcher.on(event.step.started, beginStepExecution);
+        dispatcher.on(event.step.finished, endStepExecution);
+      } else {
+        dispatcher.on(event.step.before, beginStepExecution);
+        dispatcher.on(event.step.after, endStepExecution);
+      }
+
+      dispatcher.on(event.step.failed, (step, err) => {
+        const targetStep = currentStep || lastStepRecord;
+        if (!targetStep) return;
+        targetStep.status = 'failed';
+        if (err) {
+          targetStep.errorMessage = err.message ? String(err.message) : String(err);
+        }
+        if (targetStep.diagnostics.assertion) {
+          targetStep.diagnostics.assertion.passed = false;
+          targetStep.diagnostics.assertion.message = targetStep.errorMessage;
+        }
       });
 
       dispatcher.on(event.test.passed, () => {

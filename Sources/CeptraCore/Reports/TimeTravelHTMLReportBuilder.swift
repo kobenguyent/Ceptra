@@ -2739,9 +2739,14 @@ public enum TimeTravelHTMLReportBuilder {
         });
       }
 
-      // Initial render: API runs open directly on API Exchange; Web runs open on Visual & Console
+      // Initial render: API runs open directly on API Exchange (focusing first failure or first API step);
+      // Web runs open on Visual & Console.
       selectTab(REPORT_MODE === 'api' ? 'api' : 'visual');
-      selectStep(failureIndices.length > 0 ? failureIndices[0] : 0, false);
+      const firstApiStepIdx = ALL_EXCHANGES.length > 0 ? ALL_EXCHANGES[0].stepIndex : 0;
+      const initialIdx = failureIndices.length > 0
+        ? failureIndices[0]
+        : (REPORT_MODE === 'api' ? firstApiStepIdx : 0);
+      selectStep(initialIdx, false);
     })();
     """#
 }

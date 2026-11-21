@@ -46,7 +46,7 @@ public enum NodeCompatLoader {
       'public', 'await', '__esModule', 'constructor', 'toString', 'valueOf', '__proto__'
     ]);
     const FN_BUILTINS = new Set(['length', 'name', 'prototype', 'arguments', 'caller']);
-    const SKIP_PACKAGES = /\\/node_modules\\/(?:codeceptjs|mocha|playwright|playwright-core|@playwright|puppeteer|puppeteer-core|webdriverio|appium|tsx|esbuild|typescript|@esbuild)\\//;
+    const SKIP_PACKAGES = /\\/node_modules\\/(?:codeceptjs|@codeceptjs|@cucumber|allure-js-commons|tslib|axios|follow-redirects|zod|chai|mocha|playwright|playwright-core|@playwright|puppeteer|puppeteer-core|webdriverio|appium|tsx|esbuild|typescript|@esbuild)\\//;
     const PROBE_EXTS = ['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs'];
     const NODE_MODULES_PROBE_EXTS = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.tsx'];
     const TS_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx']);

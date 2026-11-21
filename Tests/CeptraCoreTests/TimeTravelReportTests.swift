@@ -607,7 +607,7 @@ final class TimeTravelReportTests: XCTestCase {
             dispatcher,
             suite: { before: 'suite.before', after: 'suite.after' },
             test: { before: 'test.before', passed: 'test.passed', failed: 'test.failed', skipped: 'test.skipped', after: 'test.after' },
-            step: { before: 'step.before', passed: 'step.passed', failed: 'step.failed', after: 'step.after' },
+            step: { before: 'step.before', started: 'step.started', passed: 'step.passed', failed: 'step.failed', after: 'step.after', finished: 'step.finished' },
             all: { result: 'all.result' }
           },
           container: {
@@ -625,9 +625,12 @@ final class TimeTravelReportTests: XCTestCase {
         const registerPlugin = require(\(String(reflecting: pluginURL.path)));
         registerPlugin({ enabled: true });
 
-        function httpCall(url, opts, body) {
+        function httpCall(url, opts, body, stripEncodingLikeAxios = false) {
           return new Promise((resolve, reject) => {
             const req = http.request(url, opts, (res) => {
+              if (stripEncodingLikeAxios) {
+                delete res.headers['content-encoding'];
+              }
               const chunks = [];
               res.on('data', (c) => chunks.push(c));
               res.on('end', () => resolve({ status: res.statusCode, raw: Buffer.concat(chunks) }));
@@ -648,9 +651,9 @@ final class TimeTravelReportTests: XCTestCase {
                 res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': 'session=secret' });
                 res.end(JSON.stringify({ access_token: 'tok-123' }));
               } else if (req.url.startsWith('/admin/accounts')) {
-                const gz = zlib.gzipSync(Buffer.from(JSON.stringify({ items: [{ id: 1, name: 'Acme' }] })));
-                res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' });
-                res.end(gz);
+                const br = zlib.brotliCompressSync(Buffer.from(JSON.stringify({ items: [{ id: 1, name: 'Acme' }] })));
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'br' });
+                res.end(br);
               } else if (req.url === '/admin/users' && req.method === 'POST') {
                 res.writeHead(201, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ created: true, echo: JSON.parse(Buffer.concat(chunks).toString('utf8')) }));
@@ -682,22 +685,26 @@ final class TimeTravelReportTests: XCTestCase {
           };
           event.dispatcher.emit(event.test.before, test);
 
-          // Direct http.request outside any I.* step (gzipped response!)
+          // Direct http.request outside any I.* step (brotli-compressed response where client strips content-encoding like axios!)
           await httpCall(`${base}/admin/accounts?page=1&size=10`, {
             method: 'GET',
             headers: { 'Authorization': 'Bearer super-secret', 'Accept': 'application/json' }
-          });
+          }, null, true);
 
-          // Fetch inside an active I.sendPostRequest step
+          // Simulate real CodeceptJS recordStep(): step.before + step.after fire at ENQUEUE time,
+          // while step.started + step.finished bracket the actual async HTTP execution!
           const postStep = { name: 'sendPostRequest', args: ['/admin/users'], toString: () => 'I sendPostRequest "/admin/users"' };
           event.dispatcher.emit(event.step.before, postStep);
+          event.dispatcher.emit(event.step.after, postStep);
+          event.dispatcher.emit(event.step.started, postStep);
           const fRes = await fetch(`${base}/admin/users`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-api-key': 'secret-key' },
             body: JSON.stringify({ email: 'qa@example.test' })
           });
           await fRes.json();
-          event.dispatcher.emit(event.step.after, postStep);
+          event.dispatcher.emit(event.step.passed, postStep);
+          event.dispatcher.emit(event.step.finished, postStep);
 
           // Assertion step linked to the preceding API exchange
           const assertStep = {
@@ -707,6 +714,9 @@ final class TimeTravelReportTests: XCTestCase {
           };
           event.dispatcher.emit(event.step.before, assertStep);
           event.dispatcher.emit(event.step.after, assertStep);
+          event.dispatcher.emit(event.step.started, assertStep);
+          event.dispatcher.emit(event.step.passed, assertStep);
+          event.dispatcher.emit(event.step.finished, assertStep);
 
           event.dispatcher.emit(event.test.passed, test);
           event.dispatcher.emit(event.test.after, test);
