@@ -48,6 +48,7 @@ public enum NodeCompatLoader {
     const FN_BUILTINS = new Set(['length', 'name', 'prototype', 'arguments', 'caller']);
     const SKIP_PACKAGES = /\\/node_modules\\/(?:codeceptjs|mocha|playwright|playwright-core|@playwright|puppeteer|puppeteer-core|webdriverio|appium|tsx|esbuild|typescript|@esbuild)\\//;
     const PROBE_EXTS = ['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs'];
+    const NODE_MODULES_PROBE_EXTS = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.tsx'];
     const TS_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx']);
     const baseRequire = createRequire(import.meta.url);
     const tsConfigCache = new Map();
@@ -84,22 +85,23 @@ public enum NodeCompatLoader {
       } catch {}
     }
 
-    function findExistingFile(basePath) {
+    function findExistingFile(basePath, preferJs = false) {
       const lower = basePath.toLowerCase();
-      // Map ESM `.js`/`.mjs`/`.cjs` specifiers to sibling `.ts` sources when compiled JS isn't emitted
-      if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) {
+      // Map ESM `.js`/`.mjs`/`.cjs` specifiers to sibling `.ts` sources when compiled JS isn't emitted (project files)
+      if (!preferJs && (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs'))) {
         const stem = basePath.slice(0, -path.extname(basePath).length);
         for (const tsExt of ['.ts', '.mts', '.cts', '.tsx']) {
           if (isRegularFile(stem + tsExt)) return stem + tsExt;
         }
       }
-      // Probe file extensions before directory index (handles both `foo` -> `foo.ts` and dotted stems `foo.api` -> `foo.api.ts`)
-      for (const ext of PROBE_EXTS) {
+      const exts = preferJs ? NODE_MODULES_PROBE_EXTS : PROBE_EXTS;
+      // Probe file extensions before directory index (handles both `foo` -> `foo.ts`/`.js` and dotted stems `foo.api` -> `foo.api.ts`)
+      for (const ext of exts) {
         if (isRegularFile(basePath + ext)) return basePath + ext;
       }
-      // Directory index fallback (`./dir` -> `./dir/index.ts`)
+      // Directory index fallback (`./dir` -> `./dir/index.ts`/`.js`)
       if (isDirectoryPath(basePath)) {
-        for (const ext of PROBE_EXTS) {
+        for (const ext of exts) {
           const idx = path.join(basePath, 'index' + ext);
           if (isRegularFile(idx)) return idx;
         }
@@ -193,12 +195,14 @@ public enum NodeCompatLoader {
     }
 
     function resolveFallbackPath(specifier, parentURL) {
-      if (!parentURL || !parentURL.startsWith('file://') || parentURL.includes('/node_modules/')) {
+      if (!parentURL || !parentURL.startsWith('file://')) {
         return null;
       }
       if (!specifier || specifier.startsWith('node:') || specifier.startsWith('data:')) {
         return null;
       }
+
+      const fromNodeModules = parentURL.includes('/node_modules/');
 
       let cleanSpec = specifier;
       const qIdx = cleanSpec.search(/[?#]/);
@@ -208,7 +212,7 @@ public enum NodeCompatLoader {
       if (cleanSpec.startsWith('file:')) {
         try {
           const p = fileURLToPath(cleanSpec);
-          const found = isRegularFile(p) ? p : findExistingFile(p);
+          const found = isRegularFile(p) ? p : findExistingFile(p, fromNodeModules);
           return found ? { filePath: found, suffix } : null;
         } catch {
           return null;
@@ -224,15 +228,20 @@ public enum NodeCompatLoader {
 
       if (cleanSpec.startsWith('./') || cleanSpec.startsWith('../') || cleanSpec.startsWith('/')) {
         const basePath = cleanSpec.startsWith('/') ? cleanSpec : path.resolve(parentDir, cleanSpec);
-        const found = findExistingFile(basePath);
+        const found = findExistingFile(basePath, fromNodeModules);
         if (found) return { filePath: found, suffix };
         try {
           const realParent = fs.realpathSync(parentDir);
           if (realParent !== parentDir) {
-            const realFound = findExistingFile(path.resolve(realParent, cleanSpec));
+            const realFound = findExistingFile(path.resolve(realParent, cleanSpec), fromNodeModules);
             if (realFound) return { filePath: realFound, suffix };
           }
         } catch {}
+        return null;
+      }
+
+      // Never resolve bare specifiers inside node_modules against project tsconfig.json paths
+      if (fromNodeModules) {
         return null;
       }
 

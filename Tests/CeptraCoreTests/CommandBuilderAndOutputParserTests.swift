@@ -286,6 +286,17 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
             )
         }
 
+        // Also verify ESM packages inside node_modules with extensionless relative imports (e.g. `flex-rest`)
+        try fm.createDirectory(at: sandbox.appendingPathComponent("node_modules/flex-rest-mock/dist/core"), withIntermediateDirectories: true)
+        try #"{"name":"flex-rest-mock","version":"1.0.0","type":"module","main":"dist/index.js","exports":{".":"./dist/index.js"}}"#
+            .write(to: sandbox.appendingPathComponent("node_modules/flex-rest-mock/package.json"), atomically: true, encoding: .utf8)
+        try "export const helperTag = 'flex-ok';\n"
+            .write(to: sandbox.appendingPathComponent("node_modules/flex-rest-mock/dist/core/logger.js"), atomically: true, encoding: .utf8)
+        try "import { helperTag } from './logger';\nexport default class BaseApi { tag() { return helperTag; } }\n"
+            .write(to: sandbox.appendingPathComponent("node_modules/flex-rest-mock/dist/core/BaseApi.js"), atomically: true, encoding: .utf8)
+        try "export { default, default as BaseApi } from './core/BaseApi';\n"
+            .write(to: sandbox.appendingPathComponent("node_modules/flex-rest-mock/dist/index.js"), atomically: true, encoding: .utf8)
+
         let specFile = sandbox.appendingPathComponent("tests/admin/accounts.spec.ts")
         let specSource: String
         if hasLocalTS {
@@ -293,15 +304,17 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
             import KeycloakApi from '../../services/keycloak.api';
             import { token } from '@auth/index';
             import envData from '../../utils';
+            import BaseApi from 'flex-rest-mock';
             const api: KeycloakApi = new KeycloakApi();
-            export const combined = api.ping() + ':' + token + ':' + envData.url;
+            export const combined = api.ping() + ':' + token + ':' + envData.url + ':' + new BaseApi().tag();
             """
         } else {
             specSource = """
             import KeycloakApi from '../../services/keycloak.api';
             import { token } from '@auth/index';
+            import BaseApi from 'flex-rest-mock';
             const api: KeycloakApi = new KeycloakApi();
-            export const combined = api.ping() + ':' + token;
+            export const combined = api.ping() + ':' + token + ':' + new BaseApi().tag();
             """
         }
         try specSource.write(to: specFile, atomically: true, encoding: .utf8)
@@ -355,9 +368,9 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
         let output = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         XCTAssertEqual(proc.terminationStatus, 0, "Expected exit 0, got output: \(output)")
         if hasLocalTS {
-            XCTAssertTrue(output.contains(#""combined":"kc-ok:alias-token-ok:https://test.example.com/api""#), "Unexpected output: \(output)")
+            XCTAssertTrue(output.contains(#""combined":"kc-ok:alias-token-ok:https://test.example.com/api:flex-ok""#), "Unexpected output: \(output)")
         } else {
-            XCTAssertTrue(output.contains(#""combined":"kc-ok:alias-token-ok""#), "Unexpected output: \(output)")
+            XCTAssertTrue(output.contains(#""combined":"kc-ok:alias-token-ok:flex-ok""#), "Unexpected output: \(output)")
         }
         XCTAssertTrue(output.contains(#""stackWritable":true"#), "Error.stack must remain writable in workers: \(output)")
     }
