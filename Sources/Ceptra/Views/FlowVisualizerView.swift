@@ -17,7 +17,7 @@ struct FlowVisualizerView: View {
                     ProjectArchitectureView(workspace: workspace)
                 }
             }
-            .padding(18)
+            .padding(14)
         }
         .background(CeptraTheme.canvasBG)
     }
@@ -35,74 +35,91 @@ private struct FeatureFlowCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Feature Header
-            HStack(alignment: .top, spacing: 10) {
-                Button {
-                    appState.pendingJumpToLine = feature.lineNumber
-                } label: {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: file?.category == .gherkinFeature ? "doc.text.magnifyingglass" : "sparkles")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(CeptraTheme.accent)
-                            .frame(width: 30, height: 30)
-                            .background(CeptraTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Feature Header: Icon + Metadata + Run Feature on top row; Title + Tags span full width below
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 10) {
+                    Button {
+                        appState.pendingJumpToLine = feature.lineNumber
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: file?.category == .gherkinFeature ? "doc.text.magnifyingglass" : "sparkles")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(CeptraTheme.accent)
+                                .frame(width: 28, height: 28)
+                                .background(CeptraTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                        VStack(alignment: .leading, spacing: 4) {
                             Text("FEATURE")
                                 .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                                 .foregroundStyle(CeptraTheme.textMuted)
-                            Text(feature.title)
-                                .font(.system(size: 16, weight: .bold))
-                                .foregroundStyle(CeptraTheme.textPrimary)
+                                .lineLimit(1)
+                        }
+                        .padding(4)
+                        .background(
+                            isHeaderHovered ? CeptraTheme.glassHoverOverlay : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.99))
+                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHeaderHovered)
+                    .onHover { hovering in
+                        isHeaderHovered = hovering
+                    }
 
-                            if !feature.tags.isEmpty {
-                                HStack(spacing: 6) {
-                                    ForEach(feature.tags, id: \.self) { tag in
-                                        CeptraBadge(text: tag, color: CeptraTheme.violet)
-                                    }
+                    Spacer(minLength: 8)
+
+                    if let file, file.isExecutableTestFile {
+                        Button {
+                            appState.run(mode: .runFile(relativePath: file.relativePath))
+                        } label: {
+                            Label("Run Feature", systemImage: "play.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .lineLimit(1)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(
+                                    CeptraTheme.success.opacity(isRunFeatureHovered ? 1.0 : 0.88),
+                                    in: Capsule()
+                                )
+                                .overlay(
+                                    Capsule().strokeBorder(Color.white.opacity(isRunFeatureHovered ? 0.28 : 0.14), lineWidth: 0.75)
+                                )
+                        }
+                        .buttonStyle(CeptraTactilePressStyle())
+                        .fixedSize()
+                        .disabled(appState.isRunning)
+                        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isRunFeatureHovered)
+                        .onHover { hovering in
+                            isRunFeatureHovered = hovering
+                        }
+                    }
+                }
+
+                Button {
+                    appState.pendingJumpToLine = feature.lineNumber
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(feature.title)
+                            .font(.system(size: 15.5, weight: .bold))
+                            .foregroundStyle(CeptraTheme.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+
+                        if !feature.tags.isEmpty {
+                            HStack(spacing: 6) {
+                                ForEach(feature.tags, id: \.self) { tag in
+                                    CeptraBadge(text: tag, color: CeptraTheme.violet)
                                 }
                             }
                         }
-
-                        Spacer(minLength: 0)
                     }
-                    .padding(6)
-                    .background(
-                        isHeaderHovered ? CeptraTheme.glassHoverOverlay : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
-                .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.99))
-                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHeaderHovered)
-                .onHover { hovering in
-                    isHeaderHovered = hovering
-                }
-
-                if let file, file.isExecutableTestFile {
-                    Button {
-                        appState.run(mode: .runFile(relativePath: file.relativePath))
-                    } label: {
-                        Label("Run Feature", systemImage: "play.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(
-                                CeptraTheme.success.opacity(isRunFeatureHovered ? 1.0 : 0.88),
-                                in: Capsule()
-                            )
-                            .overlay(
-                                Capsule().strokeBorder(Color.white.opacity(isRunFeatureHovered ? 0.28 : 0.14), lineWidth: 0.75)
-                            )
-                    }
-                    .buttonStyle(CeptraTactilePressStyle())
-                    .disabled(appState.isRunning)
-                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isRunFeatureHovered)
-                    .onHover { hovering in
-                        isRunFeatureHovered = hovering
-                    }
-                }
+                .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.995))
             }
 
             // Lifecycle Hooks strip
@@ -151,7 +168,7 @@ private struct FeatureFlowCard: View {
                 }
             }
         }
-        .padding(16)
+        .padding(14)
         .ceptraGlassSurface(
             cornerRadius: 11,
             tint: CeptraTheme.panelBG,
@@ -181,32 +198,40 @@ private struct ScenarioFlowCard: View {
             : (status == .passed ? CeptraTheme.success : nil)
 
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
                 Button {
                     appState.pendingJumpToLine = scenario.lineNumber
                 } label: {
-                    HStack(spacing: 8) {
+                    HStack(alignment: .top, spacing: 8) {
                         StatusDotView(status: status, size: 10)
+                            .padding(.top, 3)
 
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
                                 Text(scenario.cleanTitle)
                                     .font(.system(size: 13.5, weight: .semibold))
                                     .foregroundStyle(scenario.modifier == .skip ? CeptraTheme.textMuted : CeptraTheme.textPrimary)
                                     .strikethrough(scenario.modifier == .skip)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .multilineTextAlignment(.leading)
 
                                 if scenario.modifier != .standard {
                                     CeptraBadge(text: scenario.modifier.rawValue.uppercased(), color: CeptraTheme.warning)
                                 }
                             }
-                            HStack(spacing: 8) {
+                            HStack(spacing: 6) {
                                 Text("L\(scenario.lineNumber)–\(scenario.endLineNumber) · \(scenario.steps.count) steps")
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundStyle(CeptraTheme.textMuted)
+                                    .lineLimit(1)
+                                if let durationMs {
+                                    CeptraBadge(text: ReportExporter.formatDuration(ms: durationMs), color: CeptraTheme.color(for: status))
+                                }
                                 ForEach(scenario.tags, id: \.self) { tag in
                                     Text(tag)
                                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                                         .foregroundStyle(CeptraTheme.violet)
+                                        .lineLimit(1)
                                 }
                             }
                         }
@@ -227,76 +252,75 @@ private struct ScenarioFlowCard: View {
                     isHeaderHovered = hovering
                 }
 
-                if let durationMs {
-                    CeptraBadge(text: ReportExporter.formatDuration(ms: durationMs), color: CeptraTheme.color(for: status))
-                }
-
-                Button {
-                    appState.pendingJumpToLine = scenario.lineNumber
-                } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 10))
-                        .foregroundStyle(isJumpHovered ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
-                        .frame(width: 22, height: 22)
-                        .background(
-                            isJumpHovered ? CeptraTheme.glassHoverOverlay : Color.clear,
-                            in: Circle()
-                        )
-                }
-                .buttonStyle(CeptraTactilePressStyle())
-                .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isJumpHovered)
-                .onHover { hovering in
-                    isJumpHovered = hovering
-                }
-                .help("Jump to Line \(scenario.lineNumber)")
-
-                if file?.isExecutableTestFile == true {
+                HStack(spacing: 6) {
                     Button {
-                        appState.debug(mode: .runScenario(relativePath: file?.relativePath, scenarioTitle: scenario.cleanTitle))
+                        appState.pendingJumpToLine = scenario.lineNumber
                     } label: {
-                        Image(systemName: "ladybug")
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
                             .font(.system(size: 10))
-                            .foregroundStyle(CeptraTheme.accentWarm)
-                            .frame(width: 24, height: 24)
+                            .foregroundStyle(isJumpHovered ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
+                            .frame(width: 22, height: 22)
                             .background(
-                                CeptraTheme.accentWarm.opacity(isDebugHovered ? 0.28 : 0.14),
+                                isJumpHovered ? CeptraTheme.glassHoverOverlay : Color.clear,
                                 in: Circle()
-                            )
-                            .overlay(
-                                Circle().strokeBorder(CeptraTheme.accentWarm.opacity(isDebugHovered ? 0.55 : 0.22), lineWidth: 0.75)
                             )
                     }
                     .buttonStyle(CeptraTactilePressStyle())
-                    .disabled(appState.isRunning)
-                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isDebugHovered)
+                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isJumpHovered)
                     .onHover { hovering in
-                        isDebugHovered = hovering
+                        isJumpHovered = hovering
                     }
-                    .help("Debug Scenario")
+                    .help("Jump to Line \(scenario.lineNumber)")
 
-                    Button {
-                        appState.run(mode: .runScenario(relativePath: file?.relativePath, scenarioTitle: scenario.cleanTitle))
-                    } label: {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 10))
-                            .foregroundStyle(CeptraTheme.success)
-                            .frame(width: 24, height: 24)
-                            .background(
-                                CeptraTheme.success.opacity(isPlayHovered ? 0.28 : 0.14),
-                                in: Circle()
-                            )
-                            .overlay(
-                                Circle().strokeBorder(CeptraTheme.success.opacity(isPlayHovered ? 0.55 : 0.22), lineWidth: 0.75)
-                            )
+                    if file?.isExecutableTestFile == true {
+                        Button {
+                            appState.debug(mode: .runScenario(relativePath: file?.relativePath, scenarioTitle: scenario.cleanTitle))
+                        } label: {
+                            Image(systemName: "ladybug")
+                                .font(.system(size: 10))
+                                .foregroundStyle(CeptraTheme.accentWarm)
+                                .frame(width: 24, height: 24)
+                                .background(
+                                    CeptraTheme.accentWarm.opacity(isDebugHovered ? 0.28 : 0.14),
+                                    in: Circle()
+                                )
+                                .overlay(
+                                    Circle().strokeBorder(CeptraTheme.accentWarm.opacity(isDebugHovered ? 0.55 : 0.22), lineWidth: 0.75)
+                                )
+                        }
+                        .buttonStyle(CeptraTactilePressStyle())
+                        .disabled(appState.isRunning)
+                        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isDebugHovered)
+                        .onHover { hovering in
+                            isDebugHovered = hovering
+                        }
+                        .help("Debug Scenario")
+
+                        Button {
+                            appState.run(mode: .runScenario(relativePath: file?.relativePath, scenarioTitle: scenario.cleanTitle))
+                        } label: {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(CeptraTheme.success)
+                                .frame(width: 24, height: 24)
+                                .background(
+                                    CeptraTheme.success.opacity(isPlayHovered ? 0.28 : 0.14),
+                                    in: Circle()
+                                )
+                                .overlay(
+                                    Circle().strokeBorder(CeptraTheme.success.opacity(isPlayHovered ? 0.55 : 0.22), lineWidth: 0.75)
+                                )
+                        }
+                        .buttonStyle(CeptraTactilePressStyle())
+                        .disabled(appState.isRunning)
+                        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isPlayHovered)
+                        .onHover { hovering in
+                            isPlayHovered = hovering
+                        }
+                        .help("Run only this scenario")
                     }
-                    .buttonStyle(CeptraTactilePressStyle())
-                    .disabled(appState.isRunning)
-                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isPlayHovered)
-                    .onHover { hovering in
-                        isPlayHovered = hovering
-                    }
-                    .help("Run only this scenario")
                 }
+                .fixedSize()
             }
 
             if !scenario.steps.isEmpty {

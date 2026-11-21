@@ -69,10 +69,14 @@ struct MainStudioView: View {
 
     private var workspaceContent: some View {
         GeometryReader { rootGeo in
-            let maxSidebarWidth = min(380, max(230, rootGeo.size.width * 0.36))
-            let effectiveSidebarWidth = min(max(sidebarWidth, 230), maxSidebarWidth)
+            let handleThickness = CeptraSplitResizeHandle.hitThickness
+            let sidebarHandleW: CGFloat = appState.isSidebarVisible ? handleThickness : 0
+            let availableRootW = max(0, rootGeo.size.width - sidebarHandleW)
+            let minSidebarWidth: CGFloat = 235
+            let maxSidebarWidth: CGFloat = max(minSidebarWidth, min(380, availableRootW * 0.36))
+            let effectiveSidebarWidth = min(max(sidebarWidth, minSidebarWidth), maxSidebarWidth)
             let sidebarCursor: CeptraSplitResizeHandle.CursorDirection =
-                effectiveSidebarWidth <= 230.5
+                effectiveSidebarWidth <= minSidebarWidth + 0.5
                     ? .onlyTrailingOrDown
                     : (effectiveSidebarWidth >= maxSidebarWidth - 0.5 ? .onlyLeadingOrUp : .both)
 
@@ -95,7 +99,7 @@ struct MainStudioView: View {
                             sidebarDragStartWidth = effectiveSidebarWidth
                         },
                         onDragChanged: { delta in
-                            sidebarWidth = min(max(sidebarDragStartWidth + delta, 230), maxSidebarWidth)
+                            sidebarWidth = min(max(sidebarDragStartWidth + delta, minSidebarWidth), maxSidebarWidth)
                         },
                         onDragEnd: {
                             isResizingSidebar = false
@@ -109,17 +113,28 @@ struct MainStudioView: View {
                 }
 
                 GeometryReader { columnGeo in
-                    let maxConsoleBody = max(130, min(460, columnGeo.size.height - 200))
-                    let effectiveConsoleBody = min(max(consoleBodyHeight, 130), maxConsoleBody)
+                    let consoleHandleH: CGFloat = appState.isConsoleVisible ? handleThickness : 0
+                    let minConsoleBody: CGFloat = 135
+                    let maxConsoleBody = max(
+                        minConsoleBody,
+                        min(440, columnGeo.size.height - ConsoleDrawerView.headerHeight - consoleHandleH - 220)
+                    )
+                    let effectiveConsoleBody = min(max(consoleBodyHeight, minConsoleBody), maxConsoleBody)
                     let consoleCursor: CeptraSplitResizeHandle.CursorDirection =
-                        effectiveConsoleBody <= 130.5
+                        effectiveConsoleBody <= minConsoleBody + 0.5
                             ? .onlyLeadingOrUp
                             : (effectiveConsoleBody >= maxConsoleBody - 0.5 ? .onlyTrailingOrDown : .both)
 
-                    let maxInspectorWidth = min(420, max(280, columnGeo.size.width * 0.42))
-                    let effectiveInspectorWidth = min(max(debugInspectorWidth, 280), maxInspectorWidth)
+                    let inspectorHandleW: CGFloat = appState.isDebugInspectorVisible ? handleThickness : 0
+                    let availableMainW = max(0, columnGeo.size.width - inspectorHandleW)
+                    let minInspectorWidth: CGFloat = 270
+                    let maxInspectorWidth: CGFloat = max(
+                        minInspectorWidth,
+                        min(420, min(availableMainW * 0.42, availableMainW - 360))
+                    )
+                    let effectiveInspectorWidth = min(max(debugInspectorWidth, minInspectorWidth), maxInspectorWidth)
                     let inspectorCursor: CeptraSplitResizeHandle.CursorDirection =
-                        effectiveInspectorWidth <= 280.5
+                        effectiveInspectorWidth <= minInspectorWidth + 0.5
                             ? .onlyLeadingOrUp
                             : (effectiveInspectorWidth >= maxInspectorWidth - 0.5 ? .onlyTrailingOrDown : .both)
 
@@ -142,7 +157,7 @@ struct MainStudioView: View {
 
                         HStack(spacing: 0) {
                             centerPane
-                                .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
 
                             if appState.isDebugInspectorVisible {
                                 CeptraSplitResizeHandle(
@@ -153,7 +168,7 @@ struct MainStudioView: View {
                                         inspectorDragStartWidth = effectiveInspectorWidth
                                     },
                                     onDragChanged: { delta in
-                                        debugInspectorWidth = min(max(inspectorDragStartWidth - delta, 280), maxInspectorWidth)
+                                        debugInspectorWidth = min(max(inspectorDragStartWidth - delta, minInspectorWidth), maxInspectorWidth)
                                     },
                                     onDragEnd: {
                                         isResizingInspector = false
@@ -190,7 +205,7 @@ struct MainStudioView: View {
                                     consoleDragStartHeight = effectiveConsoleBody
                                 },
                                 onDragChanged: { delta in
-                                    consoleBodyHeight = min(max(consoleDragStartHeight - delta, 130), maxConsoleBody)
+                                    consoleBodyHeight = min(max(consoleDragStartHeight - delta, minConsoleBody), maxConsoleBody)
                                 },
                                 onDragEnd: {
                                     isResizingConsole = false
@@ -246,17 +261,32 @@ struct MainStudioView: View {
                             )
                         case .split:
                             GeometryReader { splitGeo in
-                                let minVisual: CGFloat = 280
-                                let maxVisual = max(minVisual, splitGeo.size.width - 340)
+                                let availableSplit = max(0, splitGeo.size.width - CeptraSplitResizeHandle.hitThickness)
+                                let preferredMinEditor: CGFloat = 340
+                                let preferredMinVisual: CGFloat = 320
+                                let splitBounds: (minVisual: CGFloat, maxVisual: CGFloat) = {
+                                    if availableSplit >= preferredMinEditor + preferredMinVisual {
+                                        let cappedMax = min(availableSplit - preferredMinEditor, availableSplit * 0.62)
+                                        return (preferredMinVisual, max(preferredMinVisual, cappedMax))
+                                    }
+                                    // Balanced fallback when sidebar + debug inspector narrow the split area
+                                    let safeVisualFloor = min(preferredMinVisual, max(240, availableSplit * 0.44))
+                                    let safeEditorFloor = min(preferredMinEditor, max(240, availableSplit * 0.44))
+                                    return (safeVisualFloor, max(safeVisualFloor, availableSplit - safeEditorFloor))
+                                }()
+                                let minVisual = splitBounds.minVisual
+                                let maxVisual = splitBounds.maxVisual
                                 let effectiveVisualWidth = min(max(splitVisualizerWidth, minVisual), maxVisual)
-                                let splitCursor: CeptraSplitResizeHandle.CursorDirection =
-                                    effectiveVisualWidth <= minVisual + 0.5
-                                        ? .onlyLeadingOrUp
-                                        : (effectiveVisualWidth >= maxVisual - 0.5 ? .onlyTrailingOrDown : .both)
+                                let splitCursor: CeptraSplitResizeHandle.CursorDirection = {
+                                    if maxVisual - minVisual <= 0.5 { return .both }
+                                    if effectiveVisualWidth <= minVisual + 0.5 { return .onlyLeadingOrUp }
+                                    if effectiveVisualWidth >= maxVisual - 0.5 { return .onlyTrailingOrDown }
+                                    return .both
+                                }()
 
                                 HStack(spacing: 0) {
                                     editorSurface(for: activeTab)
-                                        .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
 
                                     CeptraSplitResizeHandle(
                                         axis: .horizontal,
@@ -357,12 +387,10 @@ private struct TopStudioBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isRunMenuHovered = false
+    @State private var leadingTrafficLightReserve: CGFloat = 76
 
     var body: some View {
-        HStack(spacing: 10) {
-            // Left traffic-light spacing + Sidebar toggle + Project menu
-            Color.clear.frame(width: 66, height: 1)
-
+        HStack(spacing: 8) {
             if appState.workspace != nil {
                 Button {
                     withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
@@ -390,6 +418,7 @@ private struct TopStudioBar: View {
                 CeptraMenuPillLabel(
                     title: appState.workspace?.config.projectName ?? "Ceptra",
                     subtitle: appState.workspace?.config.packageCodeceptVersion,
+                    maxTitleWidth: 155,
                     isOpen: isOpen
                 ) {
                     Circle()
@@ -460,7 +489,7 @@ private struct TopStudioBar: View {
                         title: activeLabel,
                         titleFont: .system(size: 11, design: .monospaced),
                         titleColor: ws.config.configFilePath == nil ? CeptraTheme.warning : CeptraTheme.textSecondary,
-                        maxTitleWidth: 190,
+                        maxTitleWidth: 155,
                         accentBorder: ws.config.isCustomConfigOverride ? CeptraTheme.accentWarm : nil,
                         horizontalPadding: 9,
                         verticalPadding: 5,
@@ -877,9 +906,16 @@ private struct TopStudioBar: View {
             )
             .help("Check for Updates via GitHub Releases")
         }
+        .padding(.leading, leadingTrafficLightReserve)
         .padding(.trailing, 14)
         .frame(height: 44)
-        .background(CeptraWindowTitlebarDragArea())
+        .background(
+            CeptraWindowTitlebarDragArea { newReserve in
+                withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
+                    leadingTrafficLightReserve = newReserve
+                }
+            }
+        )
         .ceptraGlassBar(tint: CeptraTheme.sidebarBG, tintOpacity: 0.72, bottomHairline: true)
     }
 
@@ -1591,6 +1627,7 @@ private struct RunOptionsPopover: View {
                 Toggle("Enable AI Assistant (--ai)", isOn: $appState.runOptions.aiEnabled)
                 Toggle("Bail on First Failure (--bail)", isOn: $appState.runOptions.bailOnFail)
                 Toggle("Disable Timeouts (--no-timeouts)", isOn: $appState.runOptions.noTimeouts)
+                Toggle("Capture Time-Travel Trace (DOM, Network, Shots)", isOn: $appState.runOptions.timeTravelTrace)
                 Toggle("ESM/CJS Named-Export Compat (uuid, etc.)", isOn: $appState.runOptions.esmCjsCompat)
             }
             .toggleStyle(.checkbox)

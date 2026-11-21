@@ -187,6 +187,17 @@ struct ReportsDashboardView: View {
 
                 HStack(spacing: 8) {
                     Button {
+                        appState.openSelectedTimeTravelReport()
+                    } label: {
+                        Label("Time-Travel Report", systemImage: "clock.arrow.circlepath")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(CeptraTheme.accent)
+                    .controlSize(.small)
+                    .help("Open interactive self-contained HTML time-travel report in your browser")
+
+                    Button {
                         appState.exportSelectedReport(asHTML: false)
                     } label: {
                         Label("Export MD", systemImage: "doc.plaintext")

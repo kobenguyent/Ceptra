@@ -29,7 +29,8 @@ public enum CommandBuilder {
         workspaceRoot: URL,
         configFilePath: String? = nil,
         toolchain: ResolvedToolchain,
-        debugOptions: DebugLaunchOptions? = nil
+        debugOptions: DebugLaunchOptions? = nil,
+        traceOutputDirectory: URL? = nil
     ) -> BuiltCommand {
         var args: [String] = toolchain.prefixArguments
 
@@ -188,6 +189,14 @@ public enum CommandBuilder {
             }
         }
 
+        if let traceOutputDirectory,
+           options.timeTravelTrace,
+           supportsTimeTravelTrace(mode),
+           let pluginURL = TimeTravelRecorderLoader.ensurePluginFileURL() {
+            env["CEPTRA_TIME_TRAVEL_DIR"] = traceOutputDirectory.path
+            args.append(contentsOf: ["-o", TimeTravelRecorderLoader.overrideJSONArgument(pluginFileURL: pluginURL)])
+        }
+
         let displayParts = [URL(fileURLWithPath: toolchain.codeceptExecutable).lastPathComponent] + args.map { displayQuote($0) }
 
         return BuiltCommand(
@@ -270,6 +279,15 @@ public enum CommandBuilder {
             out.append(c)
         }
         return out
+    }
+
+    private static func supportsTimeTravelTrace(_ mode: CodeceptRunMode) -> Bool {
+        switch mode {
+        case .runAll, .runFile, .runScenario, .runTag, .runLastFailed, .runWorkers, .runMultiple:
+            return true
+        case .dryRun, .checkEnvironment, .generateDefinitions, .listActions:
+            return false
+        }
     }
 
     private static func displayQuote(_ arg: String) -> String {

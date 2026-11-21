@@ -97,7 +97,9 @@ struct CeptraBadge: View {
             }
             Text(text)
                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                .lineLimit(1)
         }
+        .fixedSize(horizontal: true, vertical: false)
         .foregroundStyle(color)
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
@@ -220,12 +222,14 @@ enum CeptraMotion {
     }
 }
 
-/// Pure-SwiftUI resize divider handle for custom animated split panes.
-/// Uses a dedicated 5pt sibling seam (zero overlap with adjacent `NSView` gutters and zero
-/// `NSViewRepresentable` layer-compositing conflicts with `.ultraThinMaterial`), native macOS 15+
-/// `.pointerStyle` directional resize cursors (with macOS 14 `NSCursor` fallback), a subtle
-/// hover/drag accent hairline + centered pill grip, and double-click to reset to default size.
+/// Resize divider handle for custom animated split panes.
+/// Pairs pure SwiftUI Liquid Glass visuals with a zero-constraint, layer-free AppKit tracking overlay
+/// (`mouseDown` + `NSWindow.trackEvents` + native `NSCursor` rects) for 100% reliable 120Hz dragging,
+/// instant double-click reset, boundary-aware directional resize cursors, and zero conflict with adjacent
+/// `NSTextView` / `ScrollView` controls.
 struct CeptraSplitResizeHandle: View {
+    static let hitThickness: CGFloat = 7
+
     enum Axis {
         case horizontal // Vertical divider line, drags left/right
         case vertical   // Horizontal divider line, drags up/down
@@ -293,97 +297,217 @@ struct CeptraSplitResizeHandle: View {
                 .opacity(isActive ? 1.0 : 0.0)
         }
         .frame(
-            width: axis == .horizontal ? 5 : nil,
-            height: axis == .vertical ? 5 : nil
+            width: axis == .horizontal ? Self.hitThickness : nil,
+            height: axis == .vertical ? Self.hitThickness : nil
         )
         .frame(
             maxWidth: axis == .vertical ? .infinity : nil,
             maxHeight: axis == .horizontal ? .infinity : nil
         )
         .contentShape(Rectangle())
-        .modifier(CeptraResizePointerModifier(axis: axis, direction: cursorDirection, isActive: isActive))
+        .overlay {
+            CeptraSplitHandleTrackingRepresentable(
+                axis: axis,
+                cursorDirection: cursorDirection,
+                onHoverChanged: { hovering in
+                    isHovering = hovering
+                },
+                onDraggingChanged: { dragging in
+                    isDragging = dragging
+                },
+                onDragStart: onDragStart,
+                onDragChanged: onDragChanged,
+                onDragEnd: onDragEnd,
+                onDoubleClick: onDoubleClick
+            )
+        }
         .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovering)
         .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isDragging)
-        .onHover { hovering in
-            isHovering = hovering
-        }
-        .onTapGesture(count: 2) {
-            onDoubleClick?()
-        }
-        .gesture(
-            DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                .onChanged { value in
-                    if !isDragging {
-                        isDragging = true
-                        onDragStart()
-                    }
-                    let delta = axis == .horizontal ? value.translation.width : value.translation.height
-                    onDragChanged(delta)
-                }
-                .onEnded { _ in
-                    isDragging = false
-                    onDragEnd()
-                }
-        )
     }
 }
 
-private struct CeptraResizePointerModifier: ViewModifier {
+private struct CeptraSplitHandleTrackingRepresentable: NSViewRepresentable {
     let axis: CeptraSplitResizeHandle.Axis
-    let direction: CeptraSplitResizeHandle.CursorDirection
-    let isActive: Bool
+    let cursorDirection: CeptraSplitResizeHandle.CursorDirection
+    let onHoverChanged: (Bool) -> Void
+    let onDraggingChanged: (Bool) -> Void
+    let onDragStart: () -> Void
+    let onDragChanged: (CGFloat) -> Void
+    let onDragEnd: () -> Void
+    let onDoubleClick: (() -> Void)?
 
-    @State private var isLegacyCursorPushed = false
+    func makeNSView(context: Context) -> SplitHandleTrackingNSView {
+        SplitHandleTrackingNSView(
+            axis: axis,
+            cursorDirection: cursorDirection,
+            onHoverChanged: onHoverChanged,
+            onDraggingChanged: onDraggingChanged,
+            onDragStart: onDragStart,
+            onDragChanged: onDragChanged,
+            onDragEnd: onDragEnd,
+            onDoubleClick: onDoubleClick
+        )
+    }
 
-    func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
-            content.pointerStyle(nativePointerStyle)
-        } else {
-            content
-                .onChange(of: isActive) { _, active in
-                    syncLegacyCursor(active: active)
-                }
-                .onDisappear {
-                    syncLegacyCursor(active: false)
-                }
+    func updateNSView(_ nsView: SplitHandleTrackingNSView, context: Context) {
+        let needsCursorInvalidation = nsView.axis != axis || nsView.cursorDirection != cursorDirection
+        nsView.axis = axis
+        nsView.cursorDirection = cursorDirection
+        nsView.onHoverChanged = onHoverChanged
+        nsView.onDraggingChanged = onDraggingChanged
+        nsView.onDragStart = onDragStart
+        nsView.onDragChanged = onDragChanged
+        nsView.onDragEnd = onDragEnd
+        nsView.onDoubleClick = onDoubleClick
+        if needsCursorInvalidation {
+            if nsView.isDragging {
+                nsView.activeCursor.set()
+            } else {
+                nsView.window?.invalidateCursorRects(for: nsView)
+            }
         }
     }
 
-    @available(macOS 15.0, *)
-    private var nativePointerStyle: PointerStyle {
-        switch (axis, direction) {
-        case (.horizontal, .both):
-            return .columnResize(directions: .all)
-        case (.horizontal, .onlyLeadingOrUp):
-            return .columnResize(directions: .leading)
-        case (.horizontal, .onlyTrailingOrDown):
-            return .columnResize(directions: .trailing)
-        case (.vertical, .both):
-            return .rowResize(directions: .all)
-        case (.vertical, .onlyLeadingOrUp):
-            return .rowResize(directions: .up)
-        case (.vertical, .onlyTrailingOrDown):
-            return .rowResize(directions: .down)
-        }
-    }
+    final class SplitHandleTrackingNSView: NSView {
+        var axis: CeptraSplitResizeHandle.Axis
+        var cursorDirection: CeptraSplitResizeHandle.CursorDirection
+        var onHoverChanged: (Bool) -> Void
+        var onDraggingChanged: (Bool) -> Void
+        var onDragStart: () -> Void
+        var onDragChanged: (CGFloat) -> Void
+        var onDragEnd: () -> Void
+        var onDoubleClick: (() -> Void)?
+        private(set) var isDragging = false
 
-    private func syncLegacyCursor(active: Bool) {
-        if active && !isLegacyCursorPushed {
-            let cursor: NSCursor = {
-                switch (axis, direction) {
-                case (.horizontal, .both): return .resizeLeftRight
-                case (.horizontal, .onlyLeadingOrUp): return .resizeLeft
-                case (.horizontal, .onlyTrailingOrDown): return .resizeRight
-                case (.vertical, .both): return .resizeUpDown
-                case (.vertical, .onlyLeadingOrUp): return .resizeUp
-                case (.vertical, .onlyTrailingOrDown): return .resizeDown
+        init(
+            axis: CeptraSplitResizeHandle.Axis,
+            cursorDirection: CeptraSplitResizeHandle.CursorDirection,
+            onHoverChanged: @escaping (Bool) -> Void,
+            onDraggingChanged: @escaping (Bool) -> Void,
+            onDragStart: @escaping () -> Void,
+            onDragChanged: @escaping (CGFloat) -> Void,
+            onDragEnd: @escaping () -> Void,
+            onDoubleClick: (() -> Void)?
+        ) {
+            self.axis = axis
+            self.cursorDirection = cursorDirection
+            self.onHoverChanged = onHoverChanged
+            self.onDraggingChanged = onDraggingChanged
+            self.onDragStart = onDragStart
+            self.onDragChanged = onDragChanged
+            self.onDragEnd = onDragEnd
+            self.onDoubleClick = onDoubleClick
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) not supported")
+        }
+
+        // Layer-free, transparent overlay managed directly by SwiftUI bounds
+        override var isOpaque: Bool { false }
+        override var mouseDownCanMoveWindow: Bool { false }
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            true
+        }
+
+        var activeCursor: NSCursor {
+            if #available(macOS 15.0, *) {
+                switch (axis, cursorDirection) {
+                case (.horizontal, .both): return .columnResize(directions: .all)
+                case (.horizontal, .onlyLeadingOrUp): return .columnResize(directions: .left)
+                case (.horizontal, .onlyTrailingOrDown): return .columnResize(directions: .right)
+                case (.vertical, .both): return .rowResize(directions: .all)
+                case (.vertical, .onlyLeadingOrUp): return .rowResize(directions: .up)
+                case (.vertical, .onlyTrailingOrDown): return .rowResize(directions: .down)
                 }
-            }()
-            cursor.push()
-            isLegacyCursorPushed = true
-        } else if !active && isLegacyCursorPushed {
-            NSCursor.pop()
-            isLegacyCursorPushed = false
+            }
+            switch (axis, cursorDirection) {
+            case (.horizontal, .both): return .resizeLeftRight
+            case (.horizontal, .onlyLeadingOrUp): return .resizeLeft
+            case (.horizontal, .onlyTrailingOrDown): return .resizeRight
+            case (.vertical, .both): return .resizeUpDown
+            case (.vertical, .onlyLeadingOrUp): return .resizeUp
+            case (.vertical, .onlyTrailingOrDown): return .resizeDown
+            }
+        }
+
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            addCursorRect(bounds, cursor: activeCursor)
+        }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for area in trackingAreas where area.owner === self {
+                removeTrackingArea(area)
+            }
+            addTrackingArea(
+                NSTrackingArea(
+                    rect: bounds,
+                    options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                    owner: self,
+                    userInfo: nil
+                )
+            )
+        }
+
+        override func mouseEntered(with event: NSEvent) {
+            onHoverChanged(true)
+        }
+
+        override func mouseExited(with event: NSEvent) {
+            if !isDragging {
+                onHoverChanged(false)
+            }
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 {
+                onDoubleClick?()
+                return
+            }
+            guard let window else { return }
+
+            let startMouse = NSEvent.mouseLocation
+            isDragging = true
+            onDraggingChanged(true)
+            onHoverChanged(true)
+            onDragStart()
+            activeCursor.push()
+
+            defer {
+                NSCursor.pop()
+                isDragging = false
+                onDraggingChanged(false)
+                let pt = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+                onHoverChanged(bounds.contains(pt))
+                onDragEnd()
+                window.invalidateCursorRects(for: self)
+            }
+
+            window.trackEvents(
+                matching: [.leftMouseDragged, .leftMouseUp],
+                timeout: NSEvent.foreverDuration,
+                mode: .eventTracking
+            ) { [weak self] trackedEvent, stop in
+                guard let self, let trackedEvent else {
+                    stop.pointee = true
+                    return
+                }
+                if trackedEvent.type == .leftMouseUp {
+                    stop.pointee = true
+                    return
+                }
+                self.activeCursor.set()
+                let now = NSEvent.mouseLocation
+                // AppKit screen Y increases upward; invert so downward drags yield positive deltas.
+                let delta = self.axis == .horizontal
+                    ? (now.x - startMouse.x)
+                    : (startMouse.y - now.y)
+                self.onDragChanged(delta)
+            }
         }
     }
 }
@@ -789,16 +913,28 @@ struct CeptraDropdownDivider: View {
 
 /// Native AppKit titlebar interaction layer for `.windowStyle(.hiddenTitleBar)` toolbars.
 /// Restores standard macOS titlebar window dragging and double-click-to-zoom/fill
-/// (respecting `AppleActionOnDoubleClick`) on empty toolbar space without intercepting buttons.
+/// (respecting `AppleActionOnDoubleClick`) on empty toolbar space without intercepting buttons,
+/// and dynamically reports the exact leading traffic-light reserve (collapsing cleanly in Full Screen).
 struct CeptraWindowTitlebarDragArea: NSViewRepresentable {
+    var onLeadingReserveChanged: ((CGFloat) -> Void)? = nil
+
     func makeNSView(context: Context) -> NSView {
-        WindowTitlebarDragNSView()
+        let view = WindowTitlebarDragNSView()
+        view.onLeadingReserveChanged = onLeadingReserveChanged
+        return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let dragView = nsView as? WindowTitlebarDragNSView {
+            dragView.onLeadingReserveChanged = onLeadingReserveChanged
+        }
+    }
 
     private final class WindowTitlebarDragNSView: NSView {
+        var onLeadingReserveChanged: ((CGFloat) -> Void)?
         private var didStartDrag = false
+        private var lastReportedReserve: CGFloat = -1
+        private var windowObservers: [NSObjectProtocol] = []
 
         override var mouseDownCanMoveWindow: Bool { true }
 
@@ -806,6 +942,63 @@ struct CeptraWindowTitlebarDragArea: NSViewRepresentable {
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
             true
+        }
+
+        deinit {
+            for observer in windowObservers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            for observer in windowObservers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            windowObservers.removeAll()
+
+            guard let window else { return }
+            let center = NotificationCenter.default
+            for name in [
+                NSWindow.didEnterFullScreenNotification,
+                NSWindow.didExitFullScreenNotification,
+                NSWindow.didResizeNotification
+            ] {
+                let token = center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.reportLeadingReserveIfNeeded()
+                    }
+                }
+                windowObservers.append(token)
+            }
+            reportLeadingReserveIfNeeded()
+        }
+
+        override func layout() {
+            super.layout()
+            reportLeadingReserveIfNeeded()
+        }
+
+        private func reportLeadingReserveIfNeeded() {
+            guard let window else { return }
+            let reserve: CGFloat
+            if window.styleMask.contains(.fullScreen) {
+                reserve = 10
+            } else if let zoomBtn = window.standardWindowButton(.zoomButton),
+                      !zoomBtn.isHidden,
+                      let superview = zoomBtn.superview {
+                let rectInSelf = convert(zoomBtn.frame, from: superview)
+                reserve = max(68, ceil(rectInSelf.maxX) + 10)
+            } else {
+                reserve = 74
+            }
+
+            guard abs(lastReportedReserve - reserve) > 0.5 else { return }
+            lastReportedReserve = reserve
+            let callback = onLeadingReserveChanged
+            DispatchQueue.main.async {
+                callback?(reserve)
+            }
         }
 
         override func mouseDown(with event: NSEvent) {

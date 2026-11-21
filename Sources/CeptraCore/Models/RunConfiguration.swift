@@ -100,6 +100,7 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
     public var multipleSelectedSuites: [String]
     public var multipleRunAll: Bool
     public var esmCjsCompat: Bool
+    public var timeTravelTrace: Bool
     public var debugLaunchOptions: DebugLaunchOptions
 
     public init(
@@ -122,6 +123,7 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         multipleSelectedSuites: [String] = [],
         multipleRunAll: Bool = true,
         esmCjsCompat: Bool = true,
+        timeTravelTrace: Bool = true,
         debugLaunchOptions: DebugLaunchOptions = DebugLaunchOptions()
     ) {
         self.showSteps = showSteps
@@ -143,6 +145,7 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         self.multipleSelectedSuites = multipleSelectedSuites
         self.multipleRunAll = multipleRunAll
         self.esmCjsCompat = esmCjsCompat
+        self.timeTravelTrace = timeTravelTrace
         self.debugLaunchOptions = debugLaunchOptions
     }
 
@@ -167,6 +170,7 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         self.multipleSelectedSuites = try c.decodeIfPresent([String].self, forKey: .multipleSelectedSuites) ?? []
         self.multipleRunAll = try c.decodeIfPresent(Bool.self, forKey: .multipleRunAll) ?? true
         self.esmCjsCompat = try c.decodeIfPresent(Bool.self, forKey: .esmCjsCompat) ?? true
+        self.timeTravelTrace = try c.decodeIfPresent(Bool.self, forKey: .timeTravelTrace) ?? true
         self.debugLaunchOptions = try c.decodeIfPresent(DebugLaunchOptions.self, forKey: .debugLaunchOptions) ?? DebugLaunchOptions()
     }
 

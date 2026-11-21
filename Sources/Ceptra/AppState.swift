@@ -156,6 +156,7 @@ final class AppState: ObservableObject {
     // Services
     private let settingsStore = AppSettingsStore()
     private let historyStore = RunHistoryStore()
+    private let traceStore = TimeTravelTraceStore()
     let runnerService = TestRunnerService()
     private let updateService = UpdateService()
     let breakpointStore = BreakpointStore()
@@ -695,13 +696,34 @@ final class AppState: ObservableObject {
 
         saveAllDirtyFiles()
 
+        let outputURL = workspace.config.resolvedOutputURL(rootURL: workspace.rootURL)
+        let projectPath = workspace.rootURL.path
+        let projectName = workspace.config.projectName
+
+        let shouldRecordHistory: Bool
+        switch mode {
+        case .runAll, .runFile, .runScenario, .runTag, .runLastFailed, .runWorkers, .runMultiple:
+            shouldRecordHistory = true
+        case .dryRun, .checkEnvironment, .generateDefinitions, .listActions:
+            shouldRecordHistory = false
+        }
+
+        let reportID = UUID()
+        let runTraceDirectory: URL? = (shouldRecordHistory && runOptions.timeTravelTrace)
+            ? outputURL.appendingPathComponent(".ceptra-traces/\(reportID.uuidString)", isDirectory: true)
+            : nil
+        if let runTraceDirectory {
+            try? FileManager.default.createDirectory(at: runTraceDirectory, withIntermediateDirectories: true)
+        }
+
         let command = CommandBuilder.build(
             mode: mode,
             options: runOptions,
             workspaceRoot: workspace.rootURL,
             configFilePath: workspace.config.configFilePath,
             toolchain: toolchain,
-            debugOptions: isDebugSession ? debugLaunch : nil
+            debugOptions: isDebugSession ? debugLaunch : nil,
+            traceOutputDirectory: runTraceDirectory
         )
 
         isRunning = true
@@ -737,10 +759,6 @@ final class AppState: ObservableObject {
             break
         }
 
-        let outputURL = workspace.config.resolvedOutputURL(rootURL: workspace.rootURL)
-        let projectPath = workspace.rootURL.path
-        let projectName = workspace.config.projectName
-
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -766,21 +784,40 @@ final class AppState: ObservableObject {
                     }
                 }
 
+                // Ingest per-step time-travel telemetry captured by the Ceptra plugin
+                let traceScenarios: [ExecutedScenarioRecord]
+                if let runTraceDirectory {
+                    traceScenarios = TimeTravelTraceMerger.loadWorkerTraces(from: runTraceDirectory)
+                    try? FileManager.default.removeItem(at: runTraceDirectory)
+                } else {
+                    traceScenarios = []
+                }
+
+                finalScenarios = TimeTravelTraceMerger.merge(
+                    primaryScenarios: finalScenarios,
+                    traceScenarios: traceScenarios,
+                    runStartedAt: result.startedAt
+                )
+
                 let passed = result.summaryPassed ?? finalScenarios.filter { $0.status == .passed }.count
                 let failed = result.summaryFailed ?? finalScenarios.filter { $0.status == .failed }.count
                 let skipped = result.summarySkipped ?? finalScenarios.filter { $0.status == .skipped }.count
                 let totalMs = max(1, Int((result.finishedAt.timeIntervalSince(result.startedAt) * 1000.0).rounded()))
 
-                let shouldRecordHistory: Bool
-                switch mode {
-                case .runAll, .runFile, .runScenario, .runTag, .runLastFailed, .runWorkers, .runMultiple:
-                    shouldRecordHistory = true
-                case .dryRun, .checkEnvironment, .generateDefinitions, .listActions:
-                    shouldRecordHistory = false
-                }
-
                 if shouldRecordHistory {
-                    let report = TestRunReport(
+                    let hasRichDiagnostics = finalScenarios.contains { sc in
+                        sc.steps.contains { step in
+                            step.diagnostics?.isEmpty == false
+                        }
+                    }
+                    let bundle: TimeTravelTraceBundle? = hasRichDiagnostics
+                        ? TimeTravelTraceBundle(reportID: reportID, scenarios: finalScenarios)
+                        : nil
+                    let savedTraceURL = bundle.flatMap { self.traceStore.save(bundle: $0) }
+
+                    let autoHTMLURL = outputURL.appendingPathComponent("ceptra-time-travel-report.html")
+                    let provisionalReport = TestRunReport(
+                        id: reportID,
                         projectPath: projectPath,
                         projectName: projectName,
                         label: mode.displayLabel,
@@ -794,9 +831,37 @@ final class AppState: ObservableObject {
                         skippedCount: skipped,
                         durationMs: totalMs,
                         scenarios: finalScenarios,
-                        rawOutput: result.rawOutput
+                        rawOutput: result.rawOutput,
+                        traceBundlePath: savedTraceURL?.path,
+                        htmlReportPath: autoHTMLURL.path
                     )
+
+                    try? FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+                    let interactiveHTML = ReportExporter.toHTML(provisionalReport, traceBundle: bundle)
+                    let wroteHTML = (try? interactiveHTML.write(to: autoHTMLURL, atomically: true, encoding: .utf8)) != nil
+
+                    let report = TestRunReport(
+                        id: reportID,
+                        projectPath: projectPath,
+                        projectName: projectName,
+                        label: mode.displayLabel,
+                        commandLine: command.displayCommand,
+                        startedAt: result.startedAt,
+                        finishedAt: result.finishedAt,
+                        exitCode: result.exitCode,
+                        wasCancelled: result.wasCancelled,
+                        passedCount: passed,
+                        failedCount: failed,
+                        skippedCount: skipped,
+                        durationMs: totalMs,
+                        scenarios: finalScenarios,
+                        rawOutput: result.rawOutput,
+                        traceBundlePath: savedTraceURL?.path,
+                        htmlReportPath: wroteHTML ? autoHTMLURL.path : nil
+                    )
+
                     self.runHistory = self.historyStore.append(report)
+                    self.traceStore.prune(keepingReportIDs: Set(self.runHistory.map(\.id)))
                     self.selectedReportID = report.id
                 }
 
@@ -1030,13 +1095,38 @@ final class AppState: ObservableObject {
 
     // MARK: - Report Export
 
+    private func loadTraceBundle(for report: TestRunReport) -> TimeTravelTraceBundle? {
+        if let path = report.traceBundlePath, let loaded = traceStore.load(path: path) {
+            return loaded
+        }
+        return traceStore.load(reportID: report.id)
+    }
+
+    func openSelectedTimeTravelReport() {
+        guard let report = selectedReport else { return }
+        let bundle = loadTraceBundle(for: report)
+        let html = ReportExporter.toHTML(report, traceBundle: bundle)
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ceptra-reports", isDirectory: true)
+        let targetURL = tempDir.appendingPathComponent("ceptra-time-travel-\(report.id.uuidString).html")
+        do {
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            try html.write(to: targetURL, atomically: true, encoding: .utf8)
+            NSWorkspace.shared.open(targetURL)
+        } catch {
+            showBanner("Could not open Time-Travel report: \(error.localizedDescription)", isError: true)
+        }
+    }
+
     func exportSelectedReport(asHTML: Bool) {
         guard let report = selectedReport else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [asHTML ? .html : .plainText]
         panel.nameFieldStringValue = "ceptra-report-\(report.projectName).\(asHTML ? "html" : "md")"
         if panel.runModal() == .OK, let url = panel.url {
-            let content = asHTML ? ReportExporter.toHTML(report) : ReportExporter.toMarkdown(report)
+            let content = asHTML
+                ? ReportExporter.toHTML(report, traceBundle: loadTraceBundle(for: report))
+                : ReportExporter.toMarkdown(report)
             do {
                 try content.write(to: url, atomically: true, encoding: .utf8)
                 showBanner("Exported report to \(url.lastPathComponent)")

@@ -26,7 +26,7 @@ struct CeptraApp: App {
             MainStudioView()
                 .environmentObject(appState)
                 .preferredColorScheme(.dark)
-                .frame(minWidth: 1080, minHeight: 680)
+                .frame(minWidth: 960, minHeight: 620)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1360, height: 840)
