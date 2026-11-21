@@ -89,11 +89,16 @@ enum AppUpdateState: Equatable {
 final class AppState: ObservableObject {
     // Workspace & Navigation
     @Published var workspace: CodeceptWorkspace?
-    @Published var workspaceMode: WorkspaceViewMode = .split
+    @Published var workspaceMode: WorkspaceViewMode = .code
     @Published var sidebarFilterText: String = ""
     @Published var selectedTagFilter: String? = nil
     @Published var isSidebarVisible: Bool = true
-    @Published var isConsoleVisible: Bool = true
+    @Published var isConsoleVisible: Bool = false
+    @Published var isRightSidebarVisible: Bool = false
+    @Published var activeRightTab: RightInspectorTab = .replay
+    @Published var isStatusBarVisible: Bool = true
+    @Published var cursorLine: Int = 1
+    @Published var cursorColumn: Int = 1
 
     // Editor Tabs, IntelliSense & Import Navigation History
     @Published var openTabs: [OpenDocumentTab] = []
@@ -133,10 +138,14 @@ final class AppState: ObservableObject {
     @Published var isInteractivePauseShellActive: Bool = false
     @Published var lastDebugMode: CodeceptRunMode? = nil
 
-    // Reports & Artifacts
+    // Reports, Replay & CodeceptUI Live Server
     @Published var runHistory: [TestRunReport] = []
     @Published var selectedReportID: UUID? = nil
     @Published var artifacts: [ReportArtifact] = []
+    @Published var activeReplayTraceBundle: TimeTravelTraceBundle? = nil
+    @Published var liveReplaySteps: [ExecutedStepRecord] = []
+    @Published var codeceptUIStatus: CodeceptUIServerStatus = .stopped
+    @Published var codeceptUILogs: [String] = []
 
     // Sheets, Notifications, Settings & Updates
     @Published var settings: AppSettings
@@ -149,8 +158,12 @@ final class AppState: ObservableObject {
     @Published var parallelRunSheetTab: ParallelRunTab = .workers
     @Published var showingUpdateSheet: Bool = false
     @Published var showingRunOptionsPopover: Bool = false
+    @Published var showingToolsPopover: Bool = false
+    @Published var showingCommandPalette: Bool = false
+    @Published var showingReportsSheet: Bool = false
     @Published var bannerMessage: String? = nil
     @Published var bannerIsError: Bool = false
+    @Published var zoomHUDText: String? = nil
     @Published var updateState: AppUpdateState = .idle
 
     // Services
@@ -158,16 +171,23 @@ final class AppState: ObservableObject {
     private let historyStore = RunHistoryStore()
     private let traceStore = TimeTravelTraceStore()
     let runnerService = TestRunnerService()
+    let codeceptUIManager = CodeceptUIServerManager()
     private let updateService = UpdateService()
     let breakpointStore = BreakpointStore()
     var cdpClient: CDPInspectorClient? = nil
     var cdpEventTask: Task<Void, Never>? = nil
     var hasHandledInitialBreakOnStart: Bool = false
+    private var zoomHUDDismissTask: Task<Void, Never>? = nil
 
     init() {
         let loadedSettings = settingsStore.load()
         self.settings = loadedSettings
         self.runOptions = loadedSettings.defaultRunOptions
+        self.isSidebarVisible = loadedSettings.modulePreferences.showLeftSidebar
+        self.isConsoleVisible = loadedSettings.modulePreferences.showTerminal
+        self.isRightSidebarVisible = loadedSettings.modulePreferences.showRightSidebar
+        self.isStatusBarVisible = loadedSettings.modulePreferences.showStatusBar
+        self.activeRightTab = loadedSettings.modulePreferences.activeRightTab
 
         // Restore most recent existing workspace automatically if available
         if let firstPath = loadedSettings.recentProjectPaths.first,
@@ -205,6 +225,53 @@ final class AppState: ObservableObject {
 
     var canNavigateBack: Bool { !navigationBackStack.isEmpty }
     var canNavigateForward: Bool { !navigationForwardStack.isEmpty }
+
+    var editorZoomScale: Double { settings.editorZoomScale }
+    var editorZoomPercentage: Int { settings.editorZoomPercentage }
+    var isDefaultZoom: Bool { abs(settings.editorFontSize - AppSettings.defaultEditorFontSize) < 0.05 }
+    var canZoomIn: Bool { settings.editorFontSize < AppSettings.maxEditorFontSize - 0.05 }
+    var canZoomOut: Bool { settings.editorFontSize > AppSettings.minEditorFontSize + 0.05 }
+
+    func zoomIn(step: Double = 1.0) {
+        setEditorFontSize(settings.editorFontSize + step, showHUD: true)
+    }
+
+    func zoomOut(step: Double = 1.0) {
+        setEditorFontSize(settings.editorFontSize - step, showHUD: true)
+    }
+
+    func resetZoom() {
+        setEditorFontSize(AppSettings.defaultEditorFontSize, showHUD: true)
+    }
+
+    func applyZoomDelta(_ deltaPoints: Double) {
+        guard abs(deltaPoints) >= 0.45 else { return }
+        setEditorFontSize(settings.editorFontSize + deltaPoints, showHUD: true)
+    }
+
+    func setEditorFontSize(_ rawSize: Double, showHUD: Bool = true) {
+        let next = AppSettings.clampedEditorFontSize(rawSize)
+        let changed = abs(settings.editorFontSize - next) > 0.01
+        if changed {
+            settings.editorFontSize = next
+            saveSettings()
+        }
+        if showHUD {
+            let pct = settings.editorZoomPercentage
+            let ptStr = next.truncatingRemainder(dividingBy: 1) == 0
+                ? "\(Int(next))"
+                : String(format: "%.1f", next)
+            zoomHUDText = "\(pct)% · \(ptStr)pt"
+            zoomHUDDismissTask?.cancel()
+            zoomHUDDismissTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_150_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.zoomHUDText = nil
+                }
+            }
+        }
+    }
 
     var activeFeaturesForCurrentTab: [ParsedFeature] {
         guard let activeTabPath else { return [] }
@@ -354,6 +421,7 @@ final class AppState: ObservableObject {
     }
 
     func openWorkspace(at rootURL: URL) {
+        stopCodeceptUIServer()
         let savedConfigPath = settings.customConfigPath(forWorkspaceRoot: rootURL.path)
         let scanned = WorkspaceScanner.scan(rootURL: rootURL, customConfigPath: savedConfigPath)
         workspace = scanned
@@ -365,6 +433,7 @@ final class AppState: ObservableObject {
         liveParsedFeaturesByPath = [:]
         liveScenarioStatuses = [:]
         liveScenarioDurations = [:]
+        liveReplaySteps = []
         selectedTagFilter = nil
 
         settings.recordRecentProject(scanned.rootURL.path)
@@ -372,6 +441,7 @@ final class AppState: ObservableObject {
 
         runHistory = historyStore.loadHistory(forProjectPath: scanned.rootURL.path)
         selectedReportID = runHistory.first?.id
+        refreshSelectedReplayTrace()
         loadDebugStateForWorkspace(rootPath: scanned.rootURL.path)
         refreshArtifacts()
 
@@ -562,14 +632,20 @@ final class AppState: ObservableObject {
         }
         openFileByURL(target.fileURL, jumpToLine: target.lineNumber)
         let symBadge = target.isSymlink ? " (via symlink)" : ""
-        let lineSuffix = target.lineNumber.map { ":\($0)" } ?? ""
-        showBanner("Opened \(target.displayLabel)\(lineSuffix)\(symBadge)")
+        let formattedLabel: String
+        if let line = target.lineNumber, !target.displayLabel.hasSuffix(":\(line)") {
+            formattedLabel = "\(target.displayLabel):\(line)"
+        } else {
+            formattedLabel = target.displayLabel
+        }
+        let prefix = target.kind == .usage ? "Jumped to usage in" : "Opened"
+        showBanner("\(prefix) \(formattedLabel)\(symBadge)")
     }
 
     func navigateBack() {
         guard let entry = navigationBackStack.popLast() else { return }
         if let currentPath = activeTabPath {
-            navigationForwardStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: 1))
+            navigationForwardStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: max(1, cursorLine)))
         }
         openFileByURL(URL(fileURLWithPath: entry.filePath), jumpToLine: entry.lineNumber)
     }
@@ -577,7 +653,7 @@ final class AppState: ObservableObject {
     func navigateForward() {
         guard let entry = navigationForwardStack.popLast() else { return }
         if let currentPath = activeTabPath {
-            navigationBackStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: 1))
+            navigationBackStack.append(NavigationHistoryEntry(filePath: currentPath, lineNumber: max(1, cursorLine)))
         }
         openFileByURL(URL(fileURLWithPath: entry.filePath), jumpToLine: entry.lineNumber)
     }
@@ -866,14 +942,21 @@ final class AppState: ObservableObject {
         isRunning = true
         isConsoleVisible = true
         isInteractivePauseShellActive = false
+        liveReplaySteps = []
         if isDebugSession {
             lastDebugMode = mode
             debugPhase = .launching
             isDebugInspectorVisible = true
+            isRightSidebarVisible = true
+            activeRightTab = .debug
             debugCallFrames = []
             selectedCallFrameID = nil
             debugScopeVariables = [:]
             hasHandledInitialBreakOnStart = false
+        } else if shouldRecordHistory && settings.modulePreferences.autoOpenReplayOnRun {
+            isRightSidebarVisible = true
+            activeRightTab = .replay
+            persistModulePreferences()
         }
         activeRunLabel = isDebugSession ? "Debug: \(mode.displayLabel)" : mode.displayLabel
         lastCommandLine = command.displayCommand
@@ -1000,6 +1083,7 @@ final class AppState: ObservableObject {
                     self.runHistory = self.historyStore.append(report)
                     self.traceStore.prune(keepingReportIDs: Set(self.runHistory.map(\.id)))
                     self.selectedReportID = report.id
+                    self.activeReplayTraceBundle = bundle
                 }
 
                 self.isRunning = false
@@ -1229,8 +1313,18 @@ final class AppState: ObservableObject {
             activeRunningScenarioKey = key
             liveScenarioStatuses[key] = .running
 
-        case .stepLogged:
-            break
+        case .stepLogged(let text, let depth):
+            liveReplaySteps.append(
+                ExecutedStepRecord(
+                    text: text,
+                    depth: depth,
+                    status: .passed,
+                    startedAt: Date()
+                )
+            )
+            if liveReplaySteps.count > 400 {
+                liveReplaySteps.removeFirst(50)
+            }
 
         case .scenarioFinished(let record):
             let key = Self.scenarioStatusKey(feature: record.featureTitle, scenario: record.scenarioTitle)
@@ -1319,11 +1413,171 @@ final class AppState: ObservableObject {
         selectedReportID = nil
     }
 
+    // MARK: - Modular 3-Window Workspace & CodeceptUI Lifecycle
+
+    var activeHelperDisplayName: String {
+        guard let helpers = workspace?.config.helpers, !helpers.isEmpty else {
+            return "CodeceptJS"
+        }
+        return helpers.first?.name ?? "CodeceptJS"
+    }
+
+    var isCodeceptUIInstalled: Bool {
+        guard let root = workspace?.rootURL else { return false }
+        return CodeceptUIServerManager.isInstalled(in: root)
+    }
+
+    func persistModulePreferences() {
+        settings.modulePreferences.showLeftSidebar = isSidebarVisible
+        settings.modulePreferences.showTerminal = isConsoleVisible
+        settings.modulePreferences.showRightSidebar = isRightSidebarVisible
+        settings.modulePreferences.showStatusBar = isStatusBarVisible
+        settings.modulePreferences.activeRightTab = activeRightTab
+        settingsStore.save(settings)
+    }
+
+    func toggleLeftSidebar() {
+        isSidebarVisible.toggle()
+        persistModulePreferences()
+    }
+
+    func toggleTerminal() {
+        isConsoleVisible.toggle()
+        persistModulePreferences()
+    }
+
+    func toggleRightSidebar() {
+        isRightSidebarVisible.toggle()
+        persistModulePreferences()
+    }
+
+    func setStatusBarVisible(_ visible: Bool) {
+        isStatusBarVisible = visible
+        persistModulePreferences()
+    }
+
+    func toggleStatusBar() {
+        isStatusBarVisible.toggle()
+        persistModulePreferences()
+    }
+
+    func setAutoOpenReplayOnRun(_ enabled: Bool) {
+        settings.modulePreferences.autoOpenReplayOnRun = enabled
+        settingsStore.save(settings)
+    }
+
+    func openRightTab(_ tab: RightInspectorTab) {
+        activeRightTab = tab
+        isRightSidebarVisible = true
+        if tab == .debug {
+            isDebugInspectorVisible = true
+        }
+        persistModulePreferences()
+    }
+
+    func toggleRightTab(_ tab: RightInspectorTab) {
+        if isRightSidebarVisible && activeRightTab == tab {
+            isRightSidebarVisible = false
+            if tab == .debug {
+                isDebugInspectorVisible = false
+            }
+        } else {
+            activeRightTab = tab
+            isRightSidebarVisible = true
+            if tab == .debug {
+                isDebugInspectorVisible = true
+            }
+        }
+        persistModulePreferences()
+    }
+
+    func refreshSelectedReplayTrace() {
+        guard let report = selectedReport else {
+            activeReplayTraceBundle = nil
+            return
+        }
+        activeReplayTraceBundle = loadTraceBundle(for: report)
+    }
+
+    func startCodeceptUIServer() {
+        guard let workspace, let toolchain = resolvedToolchain else {
+            showBanner("Open a CodeceptJS workspace first.", isError: true)
+            return
+        }
+        guard !codeceptUIManager.isRunning else { return }
+
+        codeceptUILogs = []
+        do {
+            let started = try codeceptUIManager.start(
+                workspaceRoot: workspace.rootURL,
+                customConfigPath: workspace.config.configFilePath,
+                toolchain: toolchain,
+                onOutput: { [weak self] line in
+                    Task { @MainActor [weak self] in
+                        self?.codeceptUILogs.append(line)
+                        if let count = self?.codeceptUILogs.count, count > 250 {
+                            self?.codeceptUILogs.removeFirst(50)
+                        }
+                    }
+                },
+                onExit: { [weak self] code in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if self.codeceptUIStatus.isActive {
+                            if code == 0 || code == 15 {
+                                self.codeceptUIStatus = .stopped
+                            } else {
+                                self.codeceptUIStatus = .failed(message: "@codeceptjs/ui exited with code \(code).")
+                            }
+                        }
+                    }
+                }
+            )
+
+            codeceptUIStatus = .starting(port: started.port)
+            Task { [weak self] in
+                guard let self else { return }
+                let ready = await self.codeceptUIManager.waitForServerReady(url: started.url, timeoutSeconds: 18.0)
+                if ready {
+                    self.codeceptUIStatus = .running(url: started.url, port: started.port)
+                } else if self.codeceptUIStatus == .starting(port: started.port) {
+                    self.codeceptUIStatus = .failed(message: "Timed out waiting for @codeceptjs/ui on 127.0.0.1:\(started.port).")
+                    self.codeceptUIManager.stop()
+                }
+            }
+        } catch {
+            codeceptUIStatus = .failed(message: error.localizedDescription)
+            showBanner("Could not start @codeceptjs/ui: \(error.localizedDescription)", isError: true)
+        }
+    }
+
+    func stopCodeceptUIServer() {
+        codeceptUIManager.stop()
+        codeceptUIStatus = .stopped
+    }
+
+    func restartCodeceptUIServer() {
+        stopCodeceptUIServer()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.startCodeceptUIServer()
+        }
+    }
+
+    func installCodeceptUIPackage() {
+        guard let workspace, let toolchain = resolvedToolchain else { return }
+        let cmd = CodeceptUIServerManager.buildInstallCommand(
+            packageManager: workspace.packageManager,
+            workspaceRoot: workspace.rootURL,
+            toolchain: toolchain
+        )
+        runDependencyAction(.customShell(command: cmd.displayCommand))
+    }
+
     // MARK: - Settings
 
     func saveSettings() {
         settings.defaultRunOptions = runOptions
-        settingsStore.save(settings)
+        persistModulePreferences()
     }
 
     // MARK: - GitHub Releases Auto-Updater

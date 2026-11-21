@@ -19,7 +19,7 @@ struct FlowVisualizerView: View {
             }
             .padding(14)
         }
-        .background(CeptraTheme.canvasBG)
+        .background(CeptraTheme.sidebarBG)
     }
 }
 
@@ -142,14 +142,16 @@ private struct FeatureFlowCard: View {
                                 StepPipelineView(steps: hook.steps)
                             }
                         }
-                        .padding(10)
-                        .ceptraGlassSurface(
-                            cornerRadius: 11,
-                            tint: CeptraTheme.panelBG,
-                            tintOpacity: 0.56,
-                            isHovered: isHookHovered
+                        .padding(9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(isHookHovered ? CeptraTheme.hoverBG : CeptraTheme.canvasBG)
                         )
-                        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(CeptraTheme.border, lineWidth: 1)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHookHovered)
                         .onHover { hovering in
                             hoveredHookLine = hovering ? hook.lineNumber : (hoveredHookLine == hook.lineNumber ? nil : hoveredHookLine)
@@ -168,12 +170,11 @@ private struct FeatureFlowCard: View {
                 }
             }
         }
-        .padding(14)
-        .ceptraGlassSurface(
-            cornerRadius: 11,
-            tint: CeptraTheme.panelBG,
-            tintOpacity: 0.56,
-            elevatedShadow: true
+        .padding(12)
+        .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(CeptraTheme.border, lineWidth: 1)
         )
     }
 }
@@ -328,13 +329,14 @@ private struct ScenarioFlowCard: View {
                 StepPipelineView(steps: scenario.steps)
             }
         }
-        .padding(12)
-        .ceptraGlassSurface(
-            cornerRadius: 11,
-            tint: CeptraTheme.panelBG,
-            tintOpacity: 0.56,
-            accentBorder: accentBorder,
-            isHovered: isCardHovered
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isCardHovered ? CeptraTheme.hoverBG : CeptraTheme.sidebarBG)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(accentBorder?.opacity(0.6) ?? CeptraTheme.border, lineWidth: 1)
         )
         .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isCardHovered)
         .onHover { hovering in
