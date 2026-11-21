@@ -321,9 +321,9 @@ public enum TimeTravelRecorderLoader {
       try {
         let buf;
         try {
-          buf = await page.screenshot({ type: 'jpeg', quality: 68 });
+          buf = await page.screenshot({ type: 'jpeg', quality: 68, timeout: 2500 });
         } catch {
-          buf = await page.screenshot();
+          buf = await page.screenshot({ timeout: 2500 });
         }
         if (!buf) return null;
         const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf, 'base64');
@@ -1236,6 +1236,7 @@ public enum TimeTravelRecorderLoader {
             ]).then(([shot, dom]) => {
               if (shot) stepRecord.diagnostics.afterScreenshotDataURI = shot;
               if (dom) stepRecord.diagnostics.domSnapshot = dom;
+              flushSync();
             })
           );
         }
@@ -1296,14 +1297,20 @@ public enum TimeTravelRecorderLoader {
         currentStep = null;
         lastStepRecord = null;
         lastApiRequestInScenario = null;
+        flushSync();
         track(Promise.allSettled(Array.from(pendingTasks)).then(() => flushSync()));
       });
 
       dispatcher.on(event.all.result, () => {
+        flushSync();
         track(Promise.allSettled(Array.from(pendingTasks)).then(() => flushSync()));
       });
 
       process.on('beforeExit', () => {
+        flushSync();
+      });
+
+      process.on('exit', () => {
         flushSync();
       });
     };
