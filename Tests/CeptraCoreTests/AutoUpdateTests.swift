@@ -145,6 +145,13 @@ final class AutoUpdateTests: XCTestCase {
             relaunchAfterInstall: false
         )
         let script = try UpdateInstaller.buildInstallScript(plan: plan)
+        // Regression checks: detached against HUP, stages bundle BEFORE waiting on PID, and has bounded TERM fallback
+        XCTAssertTrue(script.contains("trap '' HUP"))
+        XCTAssertTrue(script.contains("kill -TERM \"$APP_PID\""))
+        let stageRange = try XCTUnwrap(script.range(of: "ditto -x -k"))
+        let waitRange = try XCTUnwrap(script.range(of: "for _ in {1..40}"))
+        XCTAssertLessThan(stageRange.lowerBound, waitRange.lowerBound, "Installer should stage the new bundle before waiting on the exiting PID")
+
         let scriptURL = sandbox.appendingPathComponent("run-update.sh")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)

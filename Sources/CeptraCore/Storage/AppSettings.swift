@@ -19,6 +19,7 @@ public enum RightInspectorTab: String, Codable, CaseIterable, Equatable, Hashabl
     case codeceptUI
     case outline
     case debug
+    case ai
 
     public var displayTitle: String {
         switch self {
@@ -26,6 +27,7 @@ public enum RightInspectorTab: String, Codable, CaseIterable, Equatable, Hashabl
         case .codeceptUI: return "CodeceptUI"
         case .outline: return "Outline"
         case .debug: return "Debug"
+        case .ai: return "AI"
         }
     }
 }
@@ -99,6 +101,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var appearance: WorkspaceAppearance
     public var modulePreferences: WorkspaceModulePreferences
     public var codeSnapshotStyle: CodeSnapshotStyle
+    public var aiSettings: AISettings
 
     public init(
         recentProjectPaths: [String] = [],
@@ -116,7 +119,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         defaultRunOptions: RunOptions = RunOptions(),
         appearance: WorkspaceAppearance = .dark,
         modulePreferences: WorkspaceModulePreferences = WorkspaceModulePreferences(),
-        codeSnapshotStyle: CodeSnapshotStyle = CodeSnapshotStyle()
+        codeSnapshotStyle: CodeSnapshotStyle = CodeSnapshotStyle(),
+        aiSettings: AISettings = AISettings()
     ) {
         self.recentProjectPaths = recentProjectPaths
         self.workspaceConfigPaths = workspaceConfigPaths
@@ -134,6 +138,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.appearance = appearance
         self.modulePreferences = modulePreferences
         self.codeSnapshotStyle = codeSnapshotStyle
+        self.aiSettings = aiSettings
     }
 
     public init(from decoder: Decoder) throws {
@@ -154,6 +159,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.appearance = try c.decodeIfPresent(WorkspaceAppearance.self, forKey: .appearance) ?? .dark
         self.modulePreferences = try c.decodeIfPresent(WorkspaceModulePreferences.self, forKey: .modulePreferences) ?? WorkspaceModulePreferences()
         self.codeSnapshotStyle = try c.decodeIfPresent(CodeSnapshotStyle.self, forKey: .codeSnapshotStyle) ?? CodeSnapshotStyle()
+        self.aiSettings = try c.decodeIfPresent(AISettings.self, forKey: .aiSettings) ?? AISettings()
     }
 
     public mutating func recordRecentProject(_ path: String) {
@@ -182,26 +188,46 @@ public struct AppSettings: Codable, Equatable, Sendable {
 }
 
 public final class AppSettingsStore: @unchecked Sendable {
+    public static let sharedSuiteName = "com.kobenguyent.Ceptra"
     private let defaults: UserDefaults
     private let key = "com.kobenguyent.Ceptra.settings.v1"
+    private let aiSettingsKey = "com.kobenguyent.Ceptra.ai-settings.v1"
 
-    public init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+    public init(defaults: UserDefaults? = nil) {
+        if let defaults {
+            self.defaults = defaults
+        } else {
+            // Use the app's canonical bundle domain so both `/Applications/Ceptra.app`
+            // and unbundled `swift run Ceptra` dev launches share the exact same settings.
+            self.defaults = UserDefaults(suiteName: Self.sharedSuiteName) ?? .standard
+        }
     }
 
     public func load() -> AppSettings {
-        guard let data = defaults.data(forKey: key) else {
-            return AppSettings()
+        var loaded: AppSettings
+        if let data = defaults.data(forKey: key),
+           let decoded = try? JSONDecoder().decode(AppSettings.self, from: data) {
+            loaded = decoded
+        } else {
+            loaded = AppSettings()
         }
-        do {
-            return try JSONDecoder().decode(AppSettings.self, from: data)
-        } catch {
-            return AppSettings()
+
+        // Recover AI provider profiles from dedicated key if an older Ceptra build overwrote `settings.v1`
+        if loaded.aiSettings.profiles.isEmpty,
+           let aiData = defaults.data(forKey: aiSettingsKey),
+           let recoveredAI = try? JSONDecoder().decode(AISettings.self, from: aiData),
+           !recoveredAI.profiles.isEmpty {
+            loaded.aiSettings = recoveredAI
         }
+        return loaded
     }
 
     public func save(_ settings: AppSettings) {
-        guard let data = try? JSONEncoder().encode(settings) else { return }
-        defaults.set(data, forKey: key)
+        if let data = try? JSONEncoder().encode(settings) {
+            defaults.set(data, forKey: key)
+        }
+        if let aiData = try? JSONEncoder().encode(settings.aiSettings) {
+            defaults.set(aiData, forKey: aiSettingsKey)
+        }
     }
 }

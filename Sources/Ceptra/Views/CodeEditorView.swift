@@ -30,7 +30,10 @@ struct CodeEditorView: NSViewRepresentable {
     var onRemoveBreakpoint: ((UUID) -> Void)? = nil
     var onRunScenario: ((String) -> Void)? = nil
     var onCursorChanged: ((Int, Int) -> Void)? = nil
-    var onSelectionChanged: ((NSRange) -> Void)? = nil
+    var onSelectionChanged: ((String, NSRange, ClosedRange<Int>?) -> Void)? = nil
+    var onAIQuickAction: ((AIQuickActionKind) -> Void)? = nil
+    var editorMutationTrigger: Int = 0
+    var pendingEditorMutation: AIEditorMutationRequest? = nil
     var onZoomDelta: ((CGFloat) -> Void)? = nil
     var onResetZoom: (() -> Void)? = nil
     var onQuickCopyCodeSnapshot: (() -> Void)? = nil
@@ -53,6 +56,7 @@ struct CodeEditorView: NSViewRepresentable {
         context.coordinator.currentDocumentID = documentID
         context.coordinator.lastGoToDefTrigger = goToDefinitionTrigger
         context.coordinator.lastFoldActionTrigger = foldActionTrigger
+        context.coordinator.lastEditorMutationTrigger = editorMutationTrigger
         context.coordinator.lastPausedLine = pausedLine
         context.coordinator.wireCallbacks(for: container)
         context.coordinator.observe(container: container)
@@ -185,6 +189,13 @@ struct CodeEditorView: NSViewRepresentable {
             }
         }
 
+        if coord.lastEditorMutationTrigger != editorMutationTrigger {
+            coord.lastEditorMutationTrigger = editorMutationTrigger
+            if let mutation = pendingEditorMutation, mutation.filePath == documentID {
+                coord.applyUndoTrackedMutation(mutation)
+            }
+        }
+
         container.setDebugState(
             documentFilePath: documentID,
             breakpointsByLine: breakpointsByLine,
@@ -212,6 +223,7 @@ struct CodeEditorView: NSViewRepresentable {
         var isProgrammaticUpdate = false
         var lastGoToDefTrigger: Int = 0
         var lastFoldActionTrigger: Int = 0
+        var lastEditorMutationTrigger: Int = 0
         var lastPausedLine: Int? = nil
         let completionController = CompletionPopupController()
         let navigationPopupController = NavigationTargetsPopupController()
@@ -333,20 +345,24 @@ struct CodeEditorView: NSViewRepresentable {
 
             tv.onQuickCopyCodeSnapshot = { [weak self] in
                 guard let self, let tv = self.container?.textView else { return }
-                let sel = tv.selectedRange()
                 let pos = tv.currentLineAndColumn()
+                let snap = Self.computeSelectionSnapshot(in: tv)
                 self.parent.onCursorChanged?(pos.line, pos.column)
-                self.parent.onSelectionChanged?(sel)
+                self.parent.onSelectionChanged?(snap.text, snap.range, snap.lineRange)
                 self.parent.onQuickCopyCodeSnapshot?()
             }
 
             tv.onOpenCodeSnapshotStudio = { [weak self] in
                 guard let self, let tv = self.container?.textView else { return }
-                let sel = tv.selectedRange()
                 let pos = tv.currentLineAndColumn()
+                let snap = Self.computeSelectionSnapshot(in: tv)
                 self.parent.onCursorChanged?(pos.line, pos.column)
-                self.parent.onSelectionChanged?(sel)
+                self.parent.onSelectionChanged?(snap.text, snap.range, snap.lineRange)
                 self.parent.onOpenCodeSnapshotStudio?()
+            }
+
+            tv.onAIQuickAction = { [weak self] action in
+                self?.parent.onAIQuickAction?(action)
             }
 
             container.gutterView.onToggleFold = { [weak container] startLine in
@@ -436,24 +452,79 @@ struct CodeEditorView: NSViewRepresentable {
             refreshCompletions(forceShow: false)
         }
 
+        private static func computeSelectionSnapshot(in tv: CeptraCodeTextView) -> (text: String, range: NSRange, lineRange: ClosedRange<Int>?) {
+            let selRange = tv.selectedRange()
+            let ns = tv.string as NSString
+            let safeLoc = min(max(0, selRange.location), ns.length)
+            let safeLen = min(max(0, selRange.length), ns.length - safeLoc)
+            let safeRange = NSRange(location: safeLoc, length: safeLen)
+            let selectedText = safeLen > 0 ? ns.substring(with: safeRange) : ""
+            let lineRange: ClosedRange<Int>?
+            if safeLen > 0 {
+                let startLine = tv.currentLineAndColumn().line
+                let newlineCount = selectedText.reduce(0) { $0 + ($1 == "\n" ? 1 : 0) }
+                lineRange = startLine...(startLine + newlineCount)
+            } else {
+                lineRange = nil
+            }
+            return (selectedText, safeRange, lineRange)
+        }
+
         func textViewDidChangeSelection(_ notification: Notification) {
             container?.gutterView.needsDisplay = true
             container?.textView.needsDisplay = true
             if let tv = container?.textView {
-                let pos = tv.currentLineAndColumn()
-                let sel = tv.selectedRange()
-                let onCursorChanged = parent.onCursorChanged
-                let onSelectionChanged = parent.onSelectionChanged
-                if onCursorChanged != nil || onSelectionChanged != nil {
+                if let onCursorChanged = parent.onCursorChanged {
+                    let pos = tv.currentLineAndColumn()
                     DispatchQueue.main.async {
-                        onCursorChanged?(pos.line, pos.column)
-                        onSelectionChanged?(sel)
+                        onCursorChanged(pos.line, pos.column)
+                    }
+                }
+                if let onSelectionChanged = parent.onSelectionChanged {
+                    let snap = Self.computeSelectionSnapshot(in: tv)
+                    DispatchQueue.main.async {
+                        onSelectionChanged(snap.text, snap.range, snap.lineRange)
                     }
                 }
             }
             if !isProgrammaticUpdate && completionController.isVisible {
                 refreshCompletions(forceShow: false)
             }
+        }
+
+        func applyUndoTrackedMutation(_ mutation: AIEditorMutationRequest) {
+            guard let container, let tv = container.textView as CeptraCodeTextView? else { return }
+            let ns = tv.string as NSString
+            let targetRange: NSRange
+            switch mutation.mode {
+            case .insertAtSelection:
+                let sel = tv.selectedRange()
+                let loc = min(max(0, sel.location), ns.length)
+                let len = min(max(0, sel.length), ns.length - loc)
+                targetRange = NSRange(location: loc, length: len)
+            case .replaceRange(let range):
+                let loc = min(max(0, range.location), ns.length)
+                let len = min(max(0, range.length), ns.length - loc)
+                targetRange = NSRange(location: loc, length: len)
+            case .replaceDocument:
+                targetRange = NSRange(location: 0, length: ns.length)
+            }
+
+            let undo = tv.undoManager
+            undo?.beginUndoGrouping()
+            if tv.shouldChangeText(in: targetRange, replacementString: mutation.text) {
+                tv.replaceCharacters(in: targetRange, with: mutation.text)
+                tv.didChangeText()
+            }
+            undo?.endUndoGrouping()
+            undo?.setActionName("Apply AI Suggestion")
+
+            let insertedLen = (mutation.text as NSString).length
+            let newCaret = min(targetRange.location + insertedLen, (tv.string as NSString).length)
+            tv.setSelectedRange(NSRange(location: newCaret, length: 0))
+            tv.restyleAllText()
+            container.refreshFolds(restoringCollapsedStartLines: container.collapsedStartLines)
+            container.updateGutter()
         }
 
         func triggerGoToDefinitionAtCaret() {
@@ -2053,6 +2124,7 @@ final class CeptraCodeTextView: NSTextView {
     var onResetZoom: (() -> Void)?
     var onQuickCopyCodeSnapshot: (() -> Void)?
     var onOpenCodeSnapshotStudio: (() -> Void)?
+    var onAIQuickAction: ((AIQuickActionKind) -> Void)?
 
     private var hoveredSpan: NavigableSpan?
     private var lastMouseWindowPoint: NSPoint?
@@ -2507,9 +2579,23 @@ final class CeptraCodeTextView: NSTextView {
             }
         }
         let contextMenu = super.menu(for: event) ?? NSMenu(title: "Editor")
+        var insertIdx = 0
+        if onAIQuickAction != nil {
+            let aiSubmenu = NSMenu(title: "AI Assistant")
+            let actions: [AIQuickActionKind] = [.explain, .refactor, .generateScenario, .fixSelection]
+            for action in actions {
+                let item = NSMenuItem(title: action.menuTitle, action: #selector(handleAIContextAction(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = action.rawValue
+                aiSubmenu.addItem(item)
+            }
+            let parentItem = NSMenuItem(title: "AI Assistant", action: nil, keyEquivalent: "")
+            parentItem.submenu = aiSubmenu
+            contextMenu.insertItem(parentItem, at: insertIdx)
+            insertIdx += 1
+        }
         if onQuickCopyCodeSnapshot != nil || onOpenCodeSnapshotStudio != nil {
             let targetNoun = selectedRange().length > 0 ? "Selection" : "Code Block"
-            var insertIdx = 0
             if onQuickCopyCodeSnapshot != nil {
                 let quickItem = NSMenuItem(
                     title: "Quick Copy Screenshot of \(targetNoun)",
@@ -2532,9 +2618,9 @@ final class CeptraCodeTextView: NSTextView {
                 contextMenu.insertItem(studioItem, at: insertIdx)
                 insertIdx += 1
             }
-            if insertIdx > 0 {
-                contextMenu.insertItem(.separator(), at: insertIdx)
-            }
+        }
+        if insertIdx > 0 {
+            contextMenu.insertItem(.separator(), at: insertIdx)
         }
         return contextMenu
     }
@@ -2545,6 +2631,12 @@ final class CeptraCodeTextView: NSTextView {
 
     @objc private func handleOpenCodeSnapshotStudio(_ sender: Any?) {
         onOpenCodeSnapshotStudio?()
+    }
+
+    @objc private func handleAIContextAction(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let action = AIQuickActionKind(rawValue: raw) else { return }
+        onAIQuickAction?(action)
     }
 
     override func mouseDown(with event: NSEvent) {

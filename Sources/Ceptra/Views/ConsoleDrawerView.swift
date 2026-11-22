@@ -89,6 +89,25 @@ struct ConsoleDrawerView: View {
 
                 Spacer()
 
+                if appState.consoleLogs.contains(where: { $0.isError || $0.text.contains("✖") || $0.text.contains("FAIL") }) {
+                    Button {
+                        appState.triggerAIQuickAction(.diagnoseConsoleErrors)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("Ask AI")
+                                .font(.system(size: 10.5, weight: .semibold))
+                        }
+                        .foregroundStyle(CeptraTheme.accent)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3.5)
+                        .background(CeptraTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Diagnose console errors with AI Assistant")
+                }
+
                 // Built-in vs System Console Switcher + Quick Launch
                 CeptraGlassSegmentedControl(
                     options: ConsoleExecutionMode.allCases,

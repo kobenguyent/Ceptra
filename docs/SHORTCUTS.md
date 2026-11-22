@@ -72,3 +72,5 @@ Quick reference for every shortcut in **Ceptra**.
 | `⌘⌥T` | Toggle Replay Inspector |
 | `⌘⌥U` | Toggle CodeceptUI Live |
 | `⌘⌥O` | Toggle Flow Outline |
+| `⌘⌥J` | Toggle Debug & Breakpoints Inspector |
+| `⌘⌥A` | Toggle AI Assistant Inspector |

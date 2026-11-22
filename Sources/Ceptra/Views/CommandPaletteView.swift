@@ -249,6 +249,48 @@ struct CommandPaletteView: View {
                 action: { appState.openRightTab(.debug) }
             ),
             PaletteItem(
+                id: "act-ai-open",
+                title: "Open AI Assistant",
+                subtitle: appState.activeAIProfile.map { "\($0.shortDisplayTitle) · \($0.modelID)" } ?? "Connect Ollama, Claude, OpenAI, Gemini, GitHub Models, or CLI",
+                icon: "sparkles",
+                iconColor: CeptraTheme.accent,
+                badge: "⌘⌥A",
+                action: { appState.openRightTab(.ai) }
+            ),
+            PaletteItem(
+                id: "act-ai-diagnose",
+                title: "Ask AI to Diagnose Last Failure",
+                subtitle: "Analyze console errors & failing Replay DOM/Network trace",
+                icon: "wand.and.stars",
+                iconColor: CeptraTheme.failure,
+                badge: "AI",
+                action: {
+                    if appState.latestFailingReplayStep != nil {
+                        appState.triggerAIQuickAction(.debugReplayFailure)
+                    } else {
+                        appState.triggerAIQuickAction(.diagnoseConsoleErrors)
+                    }
+                }
+            ),
+            PaletteItem(
+                id: "act-ai-generate",
+                title: "Generate CodeceptJS Scenario with AI",
+                subtitle: "Create scenario matching active file & I.* custom steps",
+                icon: "sparkles.rectangle.stack",
+                iconColor: CeptraTheme.violet,
+                badge: "AI",
+                action: { appState.triggerAIQuickAction(.generateScenario) }
+            ),
+            PaletteItem(
+                id: "act-ai-settings",
+                title: "Configure AI Providers…",
+                subtitle: "Manage Ollama, Claude, OpenAI, Gemini, GitHub Models & local CLIs",
+                icon: "key.fill",
+                iconColor: CeptraTheme.cyan,
+                badge: "AI",
+                action: { appState.showingAIProviderSettingsSheet = true }
+            ),
+            PaletteItem(
                 id: "act-terminal",
                 title: appState.isConsoleVisible ? "Hide Terminal & Logs" : "Show Terminal & Logs",
                 subtitle: "Console output, npm scripts & interactive pause() shell",

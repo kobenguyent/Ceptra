@@ -792,7 +792,7 @@ struct CeptraMenuPillLabel<Leading: View>: View {
 
             if showChevron {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8.5, weight: .semibold))
+                    .font(.system(size: 9.5, weight: .semibold))
                     .foregroundStyle(isOpen || isHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
                     .rotationEffect(.degrees(isOpen ? 180 : 0))
                     .offset(y: !isOpen && isHovered && !reduceMotion ? 0.5 : 0)
@@ -839,6 +839,7 @@ struct CeptraGlassDropdown<Trigger: View, MenuContent: View>: View {
     var minWidth: CGFloat = 230
     var maxWidth: CGFloat = 320
     var maxHeight: CGFloat = 380
+    var onOpen: (() -> Void)? = nil
     @ViewBuilder let trigger: (_ isOpen: Bool) -> Trigger
     @ViewBuilder let content: () -> MenuContent
 
@@ -847,8 +848,12 @@ struct CeptraGlassDropdown<Trigger: View, MenuContent: View>: View {
 
     var body: some View {
         Button {
+            let willOpen = !isOpen
             withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
                 isOpen.toggle()
+            }
+            if willOpen {
+                onOpen?()
             }
         } label: {
             trigger(isOpen)
@@ -1229,11 +1234,14 @@ struct CeptraPaneWindowModifier: ViewModifier {
     }
 }
 
-/// Uniform 28×26pt monochrome static titlebar icon button for Ceptra's calm 40pt chrome.
+/// Uniform 30×28pt monochrome static titlebar icon button for Ceptra's calm 42pt chrome.
 struct CeptraTitlebarIconButton: View {
     let systemImage: String
     var isActive: Bool = false
     var showEmeraldIndicator: Bool = false
+    var indicatorColor: Color? = nil
+    var activeIconColor: Color? = nil
+    var showActivityDot: Bool = false
     var helpText: String
     var accessibilityLabelText: String
     let action: () -> Void
@@ -1241,23 +1249,38 @@ struct CeptraTitlebarIconButton: View {
     @State private var isHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var resolvedIndicatorColor: Color? {
+        if let indicatorColor { return indicatorColor }
+        return showEmeraldIndicator ? CeptraTheme.success : nil
+    }
+
     var body: some View {
         Button(action: action) {
             ZStack(alignment: .bottom) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(
-                        isActive || isHovered
-                            ? CeptraTheme.textPrimary
-                            : CeptraTheme.textMuted
+                        isActive
+                            ? (activeIconColor ?? CeptraTheme.textPrimary)
+                            : (isHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
                     )
-                    .frame(width: 28, height: 26)
+                    .frame(width: 30, height: 28)
 
-                if showEmeraldIndicator && isActive {
+                if let dotColor = resolvedIndicatorColor, isActive {
                     Capsule()
-                        .fill(CeptraTheme.success)
-                        .frame(width: 10, height: 1.8)
+                        .fill(dotColor)
+                        .frame(width: 11, height: 2)
                         .padding(.bottom, 2)
+                }
+
+                if showActivityDot {
+                    Circle()
+                        .fill(CeptraTheme.accent)
+                        .frame(width: 5.5, height: 5.5)
+                        .shadow(color: CeptraTheme.accent.opacity(0.6), radius: 3)
+                        .frame(width: 30, height: 28, alignment: .topTrailing)
+                        .padding(.top, 4)
+                        .padding(.trailing, 4)
                 }
             }
             .background(

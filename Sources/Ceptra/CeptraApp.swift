@@ -45,6 +45,7 @@ struct CeptraApp: App {
                     CeptraAppDelegate.onWillTerminate = { [weak appState] in
                         Task { @MainActor in
                             appState?.stopCodeceptUIServer()
+                            appState?.cancelAllAIBackgroundTasks()
                         }
                     }
                 }
@@ -425,6 +426,16 @@ struct CeptraApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .option])
                 .disabled(appState.workspace == nil)
+
+                Button("Open AI Assistant") {
+                    appState.toggleRightTab(.ai)
+                }
+                .keyboardShortcut("a", modifiers: [.command, .option])
+                .disabled(appState.workspace == nil)
+
+                Button("Configure AI Providers…") {
+                    appState.showingAIProviderSettingsSheet = true
+                }
 
                 Divider()
 

@@ -11,6 +11,31 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        TabView {
+            generalAndToolchainTab
+                .tabItem {
+                    Label("Workspace & Runtime", systemImage: "slider.horizontal.3")
+                }
+
+            AIProviderSettingsView()
+                .environmentObject(appState)
+                .tabItem {
+                    Label("AI Providers", systemImage: "sparkles")
+                }
+        }
+        .frame(width: 740, height: 600)
+        .onAppear {
+            customConfigDraft = appState.activeWorkspaceCustomConfigSetting
+        }
+        .onChange(of: appState.workspace?.config.configFilePath) { _, _ in
+            customConfigDraft = appState.activeWorkspaceCustomConfigSetting
+        }
+        .onDisappear {
+            appState.saveSettings()
+        }
+    }
+
+    private var generalAndToolchainTab: some View {
         Form {
             Section("Appearance & Workspace") {
                 Picker("Theme", selection: $appState.settings.appearance) {
@@ -178,16 +203,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 580, height: 640)
         .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: appState.resolvedToolchain?.codeceptExecutable)
-        .onAppear {
-            customConfigDraft = appState.activeWorkspaceCustomConfigSetting
-        }
-        .onChange(of: appState.workspace?.config.configFilePath) { _, _ in
-            customConfigDraft = appState.activeWorkspaceCustomConfigSetting
-        }
-        .onDisappear {
-            appState.saveSettings()
-        }
     }
 }

@@ -75,6 +75,7 @@ public enum UpdateInstaller {
             return """
             #!/bin/zsh
             set -euo pipefail
+            trap '' HUP
             APP_PID=\(plan.processID)
             ASSET=\(quotedAsset)
 
@@ -84,7 +85,7 @@ public enum UpdateInstaller {
             }
             trap cleanup EXIT
 
-            for _ in {1..150}; do
+            for _ in {1..40}; do
               if ! kill -0 "$APP_PID" 2>/dev/null; then
                 break
               fi
@@ -128,7 +129,7 @@ public enum UpdateInstaller {
 
             let relaunchBlock = plan.relaunchAfterInstall
                 ? """
-                sleep 0.25
+                sleep 0.15
                 open -n "$TARGET_APP" || open "$TARGET_APP"
                 """
                 : "# Relaunch disabled for automated verification"
@@ -136,6 +137,7 @@ public enum UpdateInstaller {
             return """
             #!/bin/zsh
             set -euo pipefail
+            trap '' HUP
 
             APP_PID=\(plan.processID)
             ASSET=\(quotedAsset)
@@ -156,18 +158,10 @@ public enum UpdateInstaller {
             }
             trap cleanup EXIT
 
-            # 1. Wait until current Ceptra instance exits cleanly (up to 25s)
-            for _ in {1..250}; do
-              if ! kill -0 "$APP_PID" 2>/dev/null; then
-                break
-              fi
-              sleep 0.1
-            done
-
-            # 2. Extract updated Ceptra.app
+            # 1. Stage & verify updated Ceptra.app FIRST (in parallel while Ceptra shuts down)
             \(extractBlock)
 
-            # Verify staged app contains an executable before replacing the existing installation
+            # Verify staged app contains an executable before touching the existing installation
             if [[ ! -d "$STAGED_APP/Contents/MacOS" ]]; then
               echo "Extracted bundle is missing Contents/MacOS" >&2
               exit 1
@@ -175,6 +169,23 @@ public enum UpdateInstaller {
 
             # Clear extended/quarantine attributes so ad-hoc signed builds launch cleanly
             xattr -cr "$STAGED_APP" 2>/dev/null || true
+
+            # 2. Wait briefly for current Ceptra instance to exit cleanly (up to 4s), then gently terminate if wedged
+            for _ in {1..40}; do
+              if ! kill -0 "$APP_PID" 2>/dev/null; then
+                break
+              fi
+              sleep 0.1
+            done
+            if kill -0 "$APP_PID" 2>/dev/null; then
+              kill -TERM "$APP_PID" 2>/dev/null || true
+              for _ in {1..20}; do
+                if ! kill -0 "$APP_PID" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.1
+              done
+            fi
 
             # 3. Atomically replace TARGET_APP (with rollback protection)
             if [[ -w "$PARENT_DIR" ]] && [[ ! -e "$TARGET_APP" || -w "$TARGET_APP" ]]; then

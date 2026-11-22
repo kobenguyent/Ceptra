@@ -34,7 +34,8 @@ public enum CommandBuilder {
         toolchain: ResolvedToolchain,
         debugOptions: DebugLaunchOptions? = nil,
         traceOutputDirectory: URL? = nil,
-        colorOutput: Bool = false
+        colorOutput: Bool = false,
+        secretEnvironmentOverrides: [String: String] = [:]
     ) -> BuiltCommand {
         var args: [String] = toolchain.prefixArguments
         let allowNoColors = !colorOutput
@@ -182,6 +183,12 @@ public enum CommandBuilder {
             let trimmedKey = key.trimmingCharacters(in: .whitespaces)
             env[trimmedKey] = value
             envOverrides[trimmedKey] = value
+        }
+        // Secret env overrides (e.g., Keychain AI bridge) are injected ONLY into the child Process
+        // `environment` — NEVER into `environmentOverrides` (used by SystemTerminalLauncher) or `displayCommand`.
+        for (key, value) in secretEnvironmentOverrides where !key.trimmingCharacters(in: .whitespaces).isEmpty {
+            let trimmedKey = key.trimmingCharacters(in: .whitespaces)
+            env[trimmedKey] = value
         }
         if toolchain.runtime == .node,
            options.esmCjsCompat,

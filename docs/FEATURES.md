@@ -10,7 +10,7 @@ Ceptra is built from the ground up in **SwiftUI + AppKit** (macOS 14+, zero Elec
 
 - **Left Pane — Smart Workspace Explorer (`⌘B`)**: Hierarchical project tree with CodeceptJS-aware classification (Test Suites, Gherkin `.feature` files, Page/Step Objects, Helpers, Configs), recursive scenario counts, `@tag` filtering, inline Run/Scenario actions, and file/folder creation at any level (`⌘N` / `⌘⇧N`).
 - **Center Pane — Native Code Editor & Terminal Drawer (`⌘J`)**: Explicit TextKit 1 `NSTextView` with per-tab scroll, cursor, fold, and undo isolation, drag-to-reorder tabs, and a resizable streaming console drawer with package scripts (`npm`/`pnpm`/`yarn`/`bun`) and custom shell input (`⌘⇧K`).
-- **Right Pane — Single-Slot Inspector (`⌘⌥B`)**: Switch cleanly between **Replay** (`⌘⌥T`), **CodeceptUI Live** (`⌘⌥U`), **Flow Outline** (`⌘⌥O`), and **Debug & Breakpoints** (`⌘⌥J`) without cluttering the header.
+- **Right Pane — Single-Slot Inspector (`⌘⌥B`)**: Switch cleanly between **Replay** (`⌘⌥T`), **CodeceptUI Live** (`⌘⌥U`), **Flow Outline** (`⌘⌥O`), **Debug & Breakpoints** (`⌘⌥J`), and **AI Assistant** (`⌘⌥A`).
 - **Adaptive Themes**: Switch between **Obsidian Dark**, **Paper Light**, or **Match macOS** in Settings (`⌘,`) or via the Command Palette (`⌘K`).
 
 <p align="center">
@@ -108,7 +108,25 @@ Share crisp, Ray.so-style code snippets in PR descriptions, bug reports, docs, s
 
 ---
 
-## 7. Multi-Config Monorepos, Node/Bun & System Console
+## 7. Native AI Assistant, Universal `/commands` & `SKILL.md` (`⌘⌥A`)
+
+Ceptra includes a built-in AI Assistant designed for CodeceptJS 4.x authoring, locator hardening, and failure diagnosis:
+
+- **Local Ollama, Cloud APIs & CLI Agents**:
+  - **Local Ollama**: Guided 1-click install, local server start, and streaming model pulls without API keys.
+  - **Cloud APIs**: Anthropic Claude, OpenAI, Google Gemini, GitHub Models, and OpenAI-Compatible endpoints (LM Studio, vLLM, OpenRouter, Groq, DeepSeek).
+  - **Local CLI Agents**: Uses existing local CLI sessions for Claude Code (`claude`), OpenAI Codex (`codex`), Gemini CLI (`gemini`), and GitHub Copilot (`gh copilot`).
+- **Universal `/commands` & Portable `SKILL.md`**:
+  - 9 built-in CodeceptJS commands work identically across Local Ollama, Cloud APIs, and CLI Agents: `/scenario`, `/fix`, `/page-object`, `/debug`, `/explain`, `/review`, `/api-test`, `/gherkin`, and `/skills`.
+  - Discovers custom `SKILL.md` and command markdown files from `.ceptra/skills`, `.ceptra/commands`, `.agents/skills`, `.claude/skills`, `.codex/skills`, and `~/.ceptra/skills` (`Workspace > Built-in > Global`), with 1-click skill scaffolding.
+- **Multimodal Context**: Paste (`⌘V`) or drag-and-drop screenshots, code/log files, PDFs, and `.mp4`/`.mov` test videos alongside toggleable workspace context pills (`File`, `Selection`, `Console Errors`, `Replay Trace`, `I.* API`).
+- **3-Tier Permission Modes & Host Isolation**:
+  - Switch between **Read-Only** (`Read`), **Ask to Proceed** (`Ask`, unified diff preview before applying), and **Full Permissions** (`Full`, 1-click undoable Apply scoped strictly to the open workspace).
+  - API keys are stored exclusively in macOS Keychain; sensitive files (`.env`, private keys, `~/.ssh`, `~/.aws`, credentials) are blocked from attachment and scrubbed via automatic secret redaction.
+
+---
+
+## 8. Multi-Config Monorepos, Node/Bun & System Console
 
 See the dedicated [Monorepo & Runtimes Guide](MONOREPO-AND-RUNTIMES.md) for full details on:
 - Automatic per-file `-c` config resolution across monorepo suites (`tests/api/` + `tests/web/`).

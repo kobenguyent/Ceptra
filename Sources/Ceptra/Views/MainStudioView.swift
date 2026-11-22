@@ -6,12 +6,12 @@ struct MainStudioView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var sidebarWidth: CGFloat = 252
-    @State private var sidebarDragStartWidth: CGFloat = 252
+    @State private var sidebarWidth: CGFloat = 264
+    @State private var sidebarDragStartWidth: CGFloat = 264
     @State private var isResizingSidebar = false
 
-    @State private var rightInspectorWidth: CGFloat = 336
-    @State private var inspectorDragStartWidth: CGFloat = 336
+    @State private var rightInspectorWidth: CGFloat = 348
+    @State private var inspectorDragStartWidth: CGFloat = 348
     @State private var isResizingInspector = false
 
     @State private var consoleBodyHeight: CGFloat = 190
@@ -76,6 +76,14 @@ struct MainStudioView: View {
             CodeSnapshotSheetView()
                 .environmentObject(appState)
         }
+        .sheet(isPresented: $appState.showingAIProviderSettingsSheet) {
+            AIProviderSettingsSheetView()
+                .environmentObject(appState)
+        }
+        .sheet(item: $appState.pendingAIDiffPreview) { preview in
+            AIDiffPreviewSheetView(preview: preview)
+                .environmentObject(appState)
+        }
         .sheet(isPresented: $appState.showingReportsSheet) {
             VStack(spacing: 0) {
                 HStack {
@@ -110,16 +118,19 @@ struct MainStudioView: View {
             let gapW: CGFloat = 8
             let usableW = max(0, rootGeo.size.width - outerPadding * 2)
 
-            let minLeftW: CGFloat = 216
-            let maxLeftW: CGFloat = max(minLeftW, min(360, usableW * 0.32))
+            let minLeftW: CGFloat = 228
+            let maxLeftW: CGFloat = max(minLeftW, min(380, usableW * 0.32))
             let effectiveLeftW = min(max(sidebarWidth, minLeftW), maxLeftW)
             let leftCursor: CeptraSplitResizeHandle.CursorDirection =
                 effectiveLeftW <= minLeftW + 0.5
                     ? .onlyTrailingOrDown
                     : (effectiveLeftW >= maxLeftW - 0.5 ? .onlyLeadingOrUp : .both)
 
-            let minRightW: CGFloat = 280
-            let maxRightW: CGFloat = max(minRightW, min(480, usableW * 0.40))
+            let minRightW: CGFloat = 296
+            let leftReserve: CGFloat = appState.isSidebarVisible ? (effectiveLeftW + gapW) : 0
+            let centerMinReserve: CGFloat = 300 + gapW
+            let availableForRight = max(minRightW, usableW - leftReserve - centerMinReserve)
+            let maxRightW: CGFloat = max(minRightW, min(760, min(usableW * 0.56, availableForRight)))
             let effectiveRightW = min(max(rightInspectorWidth, minRightW), maxRightW)
             let rightCursor: CeptraSplitResizeHandle.CursorDirection =
                 effectiveRightW <= minRightW + 0.5
@@ -127,13 +138,19 @@ struct MainStudioView: View {
                     : (effectiveRightW >= maxRightW - 0.5 ? .onlyTrailingOrDown : .both)
 
             HStack(spacing: 0) {
-                // WINDOW 1 (LEFT): Soft-Edged Smart Explorer
+                // WINDOW 1 (LEFT): Soft-Edged Smart Explorer (strictly locked to effectiveLeftW)
                 SidebarExplorerView()
                     .ceptraPaneWindow(subtle: true)
-                    .frame(width: effectiveLeftW)
+                    .frame(minWidth: effectiveLeftW, idealWidth: effectiveLeftW, maxWidth: effectiveLeftW)
+                    .clipped()
                     .opacity(appState.isSidebarVisible ? 1 : 0)
                     .offset(x: appState.isSidebarVisible || reduceMotion ? 0 : -10)
-                    .frame(width: appState.isSidebarVisible ? effectiveLeftW : 0, alignment: .trailing)
+                    .frame(
+                        minWidth: appState.isSidebarVisible ? effectiveLeftW : 0,
+                        idealWidth: appState.isSidebarVisible ? effectiveLeftW : 0,
+                        maxWidth: appState.isSidebarVisible ? effectiveLeftW : 0,
+                        alignment: .trailing
+                    )
                     .clipped()
                     .allowsHitTesting(appState.isSidebarVisible)
                     .accessibilityHidden(!appState.isSidebarVisible)
@@ -155,7 +172,7 @@ struct MainStudioView: View {
                         },
                         onDoubleClick: {
                             withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                                sidebarWidth = 252
+                                sidebarWidth = 264
                             }
                         }
                     )
@@ -164,7 +181,8 @@ struct MainStudioView: View {
 
                 // WINDOW 2 (CENTER): Soft-Edged In-Window Tabs + Code Editor + Terminal Drawer
                 centerSoftWindow
-                    .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
+                    .layoutPriority(1)
 
                 if appState.isRightSidebarVisible {
                     CeptraSplitResizeHandle(
@@ -183,19 +201,25 @@ struct MainStudioView: View {
                         },
                         onDoubleClick: {
                             withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                                rightInspectorWidth = 336
+                                rightInspectorWidth = 348
                             }
                         }
                     )
                     .frame(width: gapW)
                 }
 
-                // WINDOW 3 (RIGHT): Soft-Edged Single-Slot Inspector (Replay · CodeceptUI · Outline · Debug)
+                // WINDOW 3 (RIGHT): Soft-Edged Single-Slot Inspector (strictly locked to effectiveRightW)
                 RightInspectorWindowView()
-                    .frame(width: effectiveRightW)
+                    .frame(minWidth: effectiveRightW, idealWidth: effectiveRightW, maxWidth: effectiveRightW)
+                    .clipped()
                     .opacity(appState.isRightSidebarVisible ? 1 : 0)
                     .offset(x: appState.isRightSidebarVisible || reduceMotion ? 0 : 10)
-                    .frame(width: appState.isRightSidebarVisible ? effectiveRightW : 0, alignment: .leading)
+                    .frame(
+                        minWidth: appState.isRightSidebarVisible ? effectiveRightW : 0,
+                        idealWidth: appState.isRightSidebarVisible ? effectiveRightW : 0,
+                        maxWidth: appState.isRightSidebarVisible ? effectiveRightW : 0,
+                        alignment: .leading
+                    )
                     .clipped()
                     .allowsHitTesting(appState.isRightSidebarVisible)
                     .accessibilityHidden(!appState.isRightSidebarVisible)
@@ -203,6 +227,7 @@ struct MainStudioView: View {
             .padding(.horizontal, outerPadding)
             .padding(.top, 2)
             .padding(.bottom, appState.isStatusBarVisible ? 6 : 8)
+            .frame(width: rootGeo.size.width, height: rootGeo.size.height, alignment: .leading)
             .animation(
                 isResizingSidebar ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
                 value: appState.isSidebarVisible
@@ -368,11 +393,14 @@ struct MainStudioView: View {
                     appState.cursorColumn = col
                 }
             },
-            onSelectionChanged: { range in
-                if appState.editorSelectedRange != range {
-                    appState.editorSelectedRange = range
-                }
+            onSelectionChanged: { selectedText, selectedRange, lineRange in
+                appState.updateEditorSelection(text: selectedText, range: selectedRange, lineRange: lineRange)
             },
+            onAIQuickAction: { action in
+                appState.triggerAIQuickAction(action)
+            },
+            editorMutationTrigger: appState.editorMutationTrigger,
+            pendingEditorMutation: appState.pendingEditorMutation,
             onZoomDelta: { delta in
                 appState.applyZoomDelta(Double(delta))
             },
@@ -442,7 +470,7 @@ private struct TopStudioBar: View {
             HStack(spacing: 6) {
                 CeptraGlassDropdown(minWidth: 255, maxWidth: 320) { _ in
                     Text(appState.workspace?.config.projectName ?? "Ceptra")
-                        .font(.system(size: 12.5, weight: .semibold))
+                        .font(.system(size: 13.5, weight: .semibold))
                         .foregroundStyle(CeptraTheme.textPrimary)
                         .lineLimit(1)
                         .padding(.horizontal, 4)
@@ -511,14 +539,14 @@ private struct TopStudioBar: View {
 
                 if let activeTab = appState.activeTab {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(CeptraTheme.textMuted)
 
                     Button {
                         appState.showingCommandPalette = true
                     } label: {
                         Text(activeTab.name)
-                            .font(.system(size: 12, weight: .regular))
+                            .font(.system(size: 13, weight: .regular))
                             .foregroundStyle(CeptraTheme.textSecondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -556,7 +584,23 @@ private struct TopStudioBar: View {
                         }
                     }
 
-                    // 2. Right Sidebar Toggle
+                    // 2. AI Assistant Toggle
+                    let isAIOpen = appState.isRightSidebarVisible && appState.activeRightTab == .ai
+                    CeptraTitlebarIconButton(
+                        systemImage: "sparkles",
+                        isActive: isAIOpen,
+                        indicatorColor: CeptraTheme.accent,
+                        activeIconColor: CeptraTheme.accent,
+                        showActivityDot: appState.isAIStreaming && !isAIOpen,
+                        helpText: "Toggle AI Assistant (⌘⌥A)",
+                        accessibilityLabelText: "Toggle AI Assistant"
+                    ) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleRightTab(.ai)
+                        }
+                    }
+
+                    // 3. Right Sidebar Toggle
                     CeptraTitlebarIconButton(
                         systemImage: "sidebar.trailing",
                         isActive: appState.isRightSidebarVisible,
@@ -568,7 +612,7 @@ private struct TopStudioBar: View {
                         }
                     }
 
-                    // 3. Tools & Modules Popover (Never spawns extra header icons!)
+                    // 4. Tools & Modules Popover
                     CeptraTitlebarIconButton(
                         systemImage: "square.grid.2x2",
                         isActive: appState.showingToolsPopover,
@@ -586,7 +630,7 @@ private struct TopStudioBar: View {
         }
         .padding(.leading, leadingTrafficLightReserve)
         .padding(.trailing, 12)
-        .frame(height: 40)
+        .frame(height: 42)
         .background(
             CeptraWindowTitlebarDragArea { newReserve in
                 withAnimation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion)) {
@@ -615,21 +659,21 @@ private struct TopStudioBar: View {
                     appState.run(mode: .runAll)
                 }
             } label: {
-                HStack(spacing: 5) {
+                HStack(spacing: 5.5) {
                     if isRunning {
                         Image(systemName: "stop.fill")
-                            .font(.system(size: 8.5, weight: .bold))
+                            .font(.system(size: 10, weight: .bold))
                     } else {
                         Image(systemName: "play.fill")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 10.5, weight: .bold))
                     }
                     Text(isRunning ? "Stop" : "Run")
-                        .font(.system(size: 11.5, weight: .semibold))
+                        .font(.system(size: 12.5, weight: .semibold))
                 }
                 .foregroundStyle(fg)
-                .padding(.leading, 10)
-                .padding(.trailing, 8)
-                .frame(height: 26)
+                .padding(.leading, 11)
+                .padding(.trailing, 9)
+                .frame(height: 28)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -637,15 +681,15 @@ private struct TopStudioBar: View {
 
             Rectangle()
                 .fill(Color.black.opacity(0.18))
-                .frame(width: 1, height: 15)
+                .frame(width: 1, height: 16)
 
             Button {
                 showingRunMenu.toggle()
             } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8.5, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(fg)
-                    .frame(width: 22, height: 26)
+                    .frame(width: 24, height: 28)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -897,6 +941,10 @@ private struct ToolsControlPopover: View {
                         get: { appState.isRightSidebarVisible && appState.activeRightTab == .debug },
                         set: { _ in appState.toggleRightTab(.debug) }
                     ))
+                    moduleSwitchRow("AI Assistant", subtitle: "Ollama, Claude, OpenAI, Gemini & CLI", shortcut: "⌘⌥A", isOn: Binding(
+                        get: { appState.isRightSidebarVisible && appState.activeRightTab == .ai },
+                        set: { _ in appState.toggleRightTab(.ai) }
+                    ))
                 }
 
                 Divider().overlay(CeptraTheme.border)
@@ -1145,7 +1193,7 @@ private struct BottomModuleStatusStrip: View {
 
     var body: some View {
         GeometryReader { geo in
-            let isCompact = geo.size.width < 1040
+            let isCompact = geo.size.width < 1100
 
             HStack(spacing: 10) {
                 // Left: 1-Click ON/OFF Module Pills
@@ -1182,6 +1230,11 @@ private struct BottomModuleStatusStrip: View {
                             }
                         }
                     }
+                    dockPill("AI", isOn: appState.isAIStreaming || (appState.isRightSidebarVisible && appState.activeRightTab == .ai)) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleRightTab(.ai)
+                        }
+                    }
                 }
 
                 Spacer(minLength: 8)
@@ -1193,9 +1246,9 @@ private struct BottomModuleStatusStrip: View {
                             HStack(spacing: 5) {
                                 Circle()
                                     .fill(CeptraTheme.success)
-                                    .frame(width: 6, height: 6)
+                                    .frame(width: 6.5, height: 6.5)
                                 Text(appState.activeHelperDisplayName)
-                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                                     .foregroundStyle(CeptraTheme.success)
                             }
                             .padding(.horizontal, 6)
@@ -1245,24 +1298,24 @@ private struct BottomModuleStatusStrip: View {
 
                     Rectangle()
                         .fill(CeptraTheme.borderStrong)
-                        .frame(width: 1, height: 11)
+                        .frame(width: 1, height: 12)
 
                     Text("Ln \(appState.cursorLine), Col \(appState.cursorColumn)")
-                        .font(.system(size: 10.5, design: .monospaced))
+                        .font(.system(size: 11.5, design: .monospaced))
                         .monospacedDigit()
-                        .foregroundStyle(CeptraTheme.textMuted)
+                        .foregroundStyle(CeptraTheme.textSecondary)
 
                     if !appState.isDefaultZoom {
                         Button {
                             appState.resetZoom()
                         } label: {
                             Text("\(appState.editorZoomPercentage)%")
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
                                 .monospacedDigit()
                                 .contentTransition(.numericText())
                                 .foregroundStyle(CeptraTheme.accent)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
+                                .padding(.horizontal, 5.5)
+                                .padding(.vertical, 2)
                                 .background(CeptraTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
                         }
                         .buttonStyle(.plain)
@@ -1272,7 +1325,7 @@ private struct BottomModuleStatusStrip: View {
 
                     if !isCompact {
                         Text(appState.settings.modulePreferences.autoOpenReplayOnRun ? "Replay ON" : "Replay OFF")
-                            .font(.system(size: 10.5, design: .monospaced))
+                            .font(.system(size: 11.5, design: .monospaced))
                             .foregroundStyle(appState.settings.modulePreferences.autoOpenReplayOnRun ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
                     }
 
@@ -1282,15 +1335,15 @@ private struct BottomModuleStatusStrip: View {
                             Task { await appState.checkForUpdates(userInitiated: true) }
                         }
                     } label: {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 4.5) {
                             if appState.updateState.hasActionableUpdate {
                                 Circle()
                                     .fill(CeptraTheme.accentWarm)
-                                    .frame(width: 6, height: 6)
+                                    .frame(width: 6.5, height: 6.5)
                             }
                             Text(appState.updateState.hasActionableUpdate ? "Update" : "v\(AppMetadata.currentVersionString)")
-                                .font(.system(size: 10.5, weight: appState.updateState.hasActionableUpdate ? .semibold : .regular, design: .monospaced))
-                                .foregroundStyle(appState.updateState.hasActionableUpdate ? CeptraTheme.accentWarm : CeptraTheme.textMuted)
+                                .font(.system(size: 11.5, weight: appState.updateState.hasActionableUpdate ? .semibold : .regular, design: .monospaced))
+                                .foregroundStyle(appState.updateState.hasActionableUpdate ? CeptraTheme.accentWarm : CeptraTheme.textSecondary)
                         }
                     }
                     .buttonStyle(.plain)
@@ -1300,7 +1353,7 @@ private struct BottomModuleStatusStrip: View {
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(height: 28)
+        .frame(height: 30)
         .overlay(alignment: .top) {
             Rectangle().fill(CeptraTheme.border).frame(height: 1)
         }
@@ -1308,22 +1361,22 @@ private struct BottomModuleStatusStrip: View {
 
     private func dockPill(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 5) {
+            HStack(spacing: 5.5) {
                 Circle()
-                    .fill(isOn ? CeptraTheme.success : CeptraTheme.textMuted.opacity(0.6))
-                    .frame(width: 6, height: 6)
+                    .fill(isOn ? CeptraTheme.success : CeptraTheme.textMuted.opacity(0.65))
+                    .frame(width: 6.5, height: 6.5)
                 Text(title)
-                    .font(.system(size: 10.5, weight: isOn ? .medium : .regular))
-                    .foregroundStyle(isOn ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
+                    .font(.system(size: 11.5, weight: isOn ? .semibold : .medium))
+                    .foregroundStyle(isOn ? CeptraTheme.textPrimary : CeptraTheme.textSecondary.opacity(0.85))
                     .lineLimit(1)
             }
-            .padding(.horizontal, 7)
-            .frame(height: 20)
+            .padding(.horizontal, 8)
+            .frame(height: 22)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                RoundedRectangle(cornerRadius: 5.5, style: .continuous)
                     .fill(isOn ? CeptraTheme.hoverBG : Color.clear)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 5.5, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -1438,9 +1491,9 @@ private struct EditorTabBar: View {
                         appState.navigateBack()
                     } label: {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(appState.canNavigateBack ? CeptraTheme.textSecondary : CeptraTheme.textMuted.opacity(0.4))
-                            .frame(width: 22, height: 24)
+                            .frame(width: 24, height: 26)
                     }
                     .buttonStyle(.plain)
                     .disabled(!appState.canNavigateBack)
@@ -1450,9 +1503,9 @@ private struct EditorTabBar: View {
                         appState.navigateForward()
                     } label: {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(appState.canNavigateForward ? CeptraTheme.textSecondary : CeptraTheme.textMuted.opacity(0.4))
-                            .frame(width: 22, height: 24)
+                            .frame(width: 24, height: 26)
                     }
                     .buttonStyle(.plain)
                     .disabled(!appState.canNavigateForward)
@@ -1470,7 +1523,7 @@ private struct EditorTabBar: View {
                         if let slot = dropSlotIndicatorRect {
                             Rectangle()
                                 .fill(CeptraTheme.accent.opacity(0.08))
-                                .frame(width: slot.width, height: 36)
+                                .frame(width: slot.width, height: 38)
                                 .offset(x: slot.minX)
                                 .allowsHitTesting(false)
                                 .zIndex(0)
@@ -1516,17 +1569,17 @@ private struct EditorTabBar: View {
                         Button("Save") {
                             appState.saveActiveFile()
                         }
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(CeptraTheme.accentWarm)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
+                        .padding(.horizontal, 8.5)
+                        .padding(.vertical, 3.5)
                         .background(CeptraTheme.accentWarm.opacity(0.14), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                         .buttonStyle(.plain)
                         .help("Save \(tab.name) (⌘S)")
                     }
 
                     Text(tab.relativePath)
-                        .font(.system(size: 10.5, design: .monospaced))
+                        .font(.system(size: 11.5, design: .monospaced))
                         .foregroundStyle(CeptraTheme.textMuted)
                         .lineLimit(1)
                         .truncationMode(.head)
@@ -1550,7 +1603,7 @@ private struct EditorTabBar: View {
                 .padding(.trailing, 10)
             }
         }
-        .frame(height: 36)
+        .frame(height: 38)
         .background(CeptraTheme.sidebarBG)
         .overlay(alignment: .bottom) {
             Rectangle().fill(CeptraTheme.border).frame(height: 1)
@@ -1602,27 +1655,27 @@ private struct EditorTabBar: View {
         let tagInfo = shortTag(for: tab)
 
         HStack(spacing: 6) {
-            HStack(spacing: 6) {
+            HStack(spacing: 6.5) {
                 Text(tagInfo.label)
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundStyle(tagInfo.color)
                 Text(tab.name)
-                    .font(.system(size: 11.5, weight: (isActive || isDragged) ? .medium : .regular))
+                    .font(.system(size: 12.5, weight: (isActive || isDragged) ? .semibold : .medium))
                     .foregroundStyle(
                         (isActive || isDragged)
                             ? CeptraTheme.textPrimary
-                            : (isHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                            : (isHovered ? CeptraTheme.textPrimary.opacity(0.9) : CeptraTheme.textSecondary.opacity(0.85))
                     )
                     .lineLimit(1)
                 if tab.isDirty {
                     Circle()
                         .fill(CeptraTheme.accentWarm)
-                        .frame(width: 5.5, height: 5.5)
+                        .frame(width: 6, height: 6)
                 }
             }
             .padding(.leading, 12)
             .padding(.trailing, 2)
-            .frame(height: 36)
+            .frame(height: 38)
             .contentShape(Rectangle())
             .help(appState.openTabs.count > 1 ? "\(tab.relativePath) — Drag to reorder" : tab.relativePath)
             .gesture(tabDragGesture(for: tab, index: index))
@@ -1633,11 +1686,11 @@ private struct EditorTabBar: View {
                 }
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(isCloseHovered ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
-                    .opacity(isActive || isHovered || isCloseHovered ? 1.0 : 0.45)
-                    .frame(width: 18, height: 18)
-                    .background(isCloseHovered ? CeptraTheme.hoverBG : Color.clear, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isCloseHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
+                    .opacity(isActive || isHovered || isCloseHovered ? 1.0 : 0.55)
+                    .frame(width: 20, height: 20)
+                    .background(isCloseHovered ? CeptraTheme.hoverBG : Color.clear, in: RoundedRectangle(cornerRadius: 4.5, style: .continuous))
             }
             .buttonStyle(.plain)
             .padding(.trailing, 8)

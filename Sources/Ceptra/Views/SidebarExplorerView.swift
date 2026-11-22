@@ -12,6 +12,7 @@ struct SidebarExplorerView: View {
     @State private var lastInitializedRootPath: String = ""
     @State private var hoveredTag: String?
     @State private var isSearchHovered = false
+    @State private var isPlusHovered = false
 
     enum ExplorerMode: String, CaseIterable, Identifiable {
         case suites = "Suites"
@@ -22,7 +23,7 @@ struct SidebarExplorerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Plain-text 36pt Suites · Files · Pages header + (+) New Menu
+            // Plain-text 38pt Suites · Files · Pages header + (+) New Menu
             HStack(spacing: 12) {
                 HStack(spacing: 14) {
                     ForEach(ExplorerMode.allCases) { mode in
@@ -33,10 +34,11 @@ struct SidebarExplorerView: View {
                             }
                         } label: {
                             Text(mode.rawValue)
-                                .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
-                                .foregroundStyle(isSelected ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
+                                .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                                .foregroundStyle(isSelected ? CeptraTheme.textPrimary : CeptraTheme.textSecondary.opacity(0.85))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
+                                .padding(.vertical, 5)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -58,30 +60,39 @@ struct SidebarExplorerView: View {
                     }
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(CeptraTheme.textSecondary)
-                        .frame(width: 22, height: 22)
-                        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(isPlusHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
+                        .frame(width: 26, height: 26)
+                        .background(
+                            isPlusHovered ? CeptraTheme.hoverBG : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(isPlusHovered ? CeptraTheme.border : Color.clear, lineWidth: 0.75)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .frame(width: 22, height: 22)
+                .frame(width: 26, height: 26)
+                .onHover { isPlusHovered = $0 }
                 .help("New File, New Folder, or Rescan")
             }
             .padding(.horizontal, 14)
-            .frame(height: 36)
+            .frame(height: 38)
             .overlay(alignment: .bottom) {
                 Rectangle().fill(CeptraTheme.border).frame(height: 1)
             }
 
             // Compact Filter… ⌘P bar
-            HStack(spacing: 6) {
+            HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(isSearchHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(isSearchHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
                 TextField("Filter…", text: $appState.sidebarFilterText)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 11.5))
+                    .font(.system(size: 12.5))
                     .foregroundStyle(CeptraTheme.textPrimary)
                 if !appState.sidebarFilterText.isEmpty {
                     Button {
@@ -90,8 +101,8 @@ struct SidebarExplorerView: View {
                         }
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(CeptraTheme.textMuted)
+                            .font(.system(size: 12))
+                            .foregroundStyle(CeptraTheme.textSecondary)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Clear filter")
@@ -100,18 +111,18 @@ struct SidebarExplorerView: View {
                         appState.showingCommandPalette = true
                     } label: {
                         Text("⌘P")
-                            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                            .foregroundStyle(CeptraTheme.textMuted)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(CeptraTheme.textSecondary)
                     }
                     .buttonStyle(.plain)
                     .help("Quick Open File (⌘P)")
                 }
             }
-            .padding(.horizontal, 9)
-            .frame(height: 26)
-            .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 7.5, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 7.5, style: .continuous)
                     .strokeBorder(isSearchHovered ? CeptraTheme.borderStrong : CeptraTheme.border, lineWidth: 1)
             )
             .onHover { hovering in
@@ -126,7 +137,7 @@ struct SidebarExplorerView: View {
             // Tag filter strip (only when tags exist)
             if let tags = appState.workspace?.allTags, !tags.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 6) {
                         ForEach(tags, id: \.self) { tag in
                             let selected = appState.selectedTagFilter == tag
                             let isHovered = hoveredTag == tag
@@ -136,14 +147,14 @@ struct SidebarExplorerView: View {
                                 }
                             } label: {
                                 Text(tag)
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                                     .foregroundStyle(selected ? .white : CeptraTheme.violet)
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 2.5)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 3.5)
                                     .background(
                                         selected
                                             ? CeptraTheme.violet
-                                            : CeptraTheme.violet.opacity(isHovered ? 0.22 : 0.13),
+                                            : CeptraTheme.violet.opacity(isHovered ? 0.22 : 0.14),
                                         in: Capsule()
                                     )
                             }
@@ -159,7 +170,7 @@ struct SidebarExplorerView: View {
                         }
                     }
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 7)
                 }
                 .overlay(alignment: .bottom) {
                     Rectangle().fill(CeptraTheme.border).frame(height: 1)
@@ -216,12 +227,12 @@ struct SidebarExplorerView: View {
         LazyVStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text("PAGE OBJECTS & HELPERS")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.system(size: 10.5, weight: .semibold))
                     .tracking(0.6)
                     .foregroundStyle(CeptraTheme.textMuted)
                 Spacer()
                 Text("\(pageObjects.count)")
-                    .font(.system(size: 9.5, design: .monospaced))
+                    .font(.system(size: 10.5, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(CeptraTheme.textMuted)
             }
@@ -230,7 +241,7 @@ struct SidebarExplorerView: View {
 
             if pageObjects.isEmpty {
                 Text("No page objects or helpers found")
-                    .font(.system(size: 11.5))
+                    .font(.system(size: 12.5))
                     .foregroundStyle(CeptraTheme.textMuted)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
@@ -247,20 +258,20 @@ struct SidebarExplorerView: View {
                     Button {
                         appState.openFile(file)
                     } label: {
-                        HStack(spacing: 7) {
+                        HStack(spacing: 8) {
                             Text(badge.0)
-                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(badge.1)
-                                .frame(width: 24, alignment: .leading)
+                                .frame(width: 28, alignment: .leading)
                             Text(file.name)
-                                .font(.system(size: 11.5, weight: isActive ? .semibold : .regular))
+                                .font(.system(size: 13, weight: isActive ? .semibold : .regular))
                                 .foregroundStyle(isActive ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer(minLength: 4)
                         }
                         .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
+                        .padding(.vertical, 6)
                         .background(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
                                 .fill(isActive ? CeptraTheme.activeBG : Color.clear)
@@ -295,11 +306,11 @@ struct SidebarExplorerView: View {
             // Project root header row
             HStack(spacing: 6) {
                 Image(systemName: "folder.badge.gearshape")
-                    .font(.system(size: 11))
+                    .font(.system(size: 13))
                     .foregroundStyle(CeptraTheme.accent)
                 Text(workspace.rootURL.lastPathComponent.uppercased())
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(CeptraTheme.textMuted)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(CeptraTheme.textSecondary)
                     .tracking(0.6)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -309,23 +320,23 @@ struct SidebarExplorerView: View {
                         appState.run(mode: .runTag(tag: tag))
                     } label: {
                         Label("Run \(tag)", systemImage: "play.fill")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(CeptraTheme.success)
                     }
                     .buttonStyle(CeptraTactilePressStyle())
                     .disabled(appState.isRunning)
                 } else {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Button {
                             withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
                                 revealActiveFileInTree()
                             }
                         } label: {
                             Image(systemName: "scope")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(appState.activeTabPath == nil ? CeptraTheme.textMuted.opacity(0.45) : CeptraTheme.textMuted)
-                                .frame(width: 20, height: 20)
-                                .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(appState.activeTabPath == nil ? CeptraTheme.textMuted.opacity(0.45) : CeptraTheme.textSecondary)
+                                .frame(width: 24, height: 24)
+                                .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                         }
                         .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.92))
                         .disabled(appState.activeTabPath == nil)
@@ -337,10 +348,10 @@ struct SidebarExplorerView: View {
                             }
                         } label: {
                             Image(systemName: expandedFolders.isEmpty ? "chevron.down.square" : "chevron.up.square")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(CeptraTheme.textMuted)
-                                .frame(width: 20, height: 20)
-                                .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(CeptraTheme.textSecondary)
+                                .frame(width: 24, height: 24)
+                                .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                         }
                         .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.92))
                         .help(expandedFolders.isEmpty ? "Expand All Folders" : "Collapse All Folders")
@@ -351,10 +362,10 @@ struct SidebarExplorerView: View {
                             }
                         } label: {
                             Image(systemName: showHiddenEntries ? "eye" : "eye.slash")
-                                .font(.system(size: 10))
-                                .foregroundStyle(showHiddenEntries ? CeptraTheme.textSecondary : CeptraTheme.textMuted.opacity(0.65))
-                                .frame(width: 20, height: 20)
-                                .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(showHiddenEntries ? CeptraTheme.textSecondary : CeptraTheme.textMuted.opacity(0.7))
+                                .frame(width: 24, height: 24)
+                                .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                         }
                         .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.92))
                         .help(showHiddenEntries ? "Hide Dotfiles" : "Show Dotfiles (.github, .env, etc.)")
@@ -379,7 +390,7 @@ struct SidebarExplorerView: View {
 
             if visibleRoots.isEmpty {
                 Text("No matching files or folders")
-                    .font(.system(size: 11.5))
+                    .font(.system(size: 12.5))
                     .foregroundStyle(CeptraTheme.textMuted)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -411,18 +422,18 @@ struct SidebarExplorerView: View {
         }
         let sortedFolders = grouped.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
 
-        LazyVStack(alignment: .leading, spacing: 10) {
+        LazyVStack(alignment: .leading, spacing: 11) {
             if let tag = appState.selectedTagFilter {
                 HStack {
                     Text("Filtered by \(tag)")
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CeptraTheme.violet)
                     Spacer()
                     Button {
                         appState.run(mode: .runTag(tag: tag))
                     } label: {
                         Label("Run \(tag)", systemImage: "play.fill")
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(CeptraTheme.success)
                     }
                     .buttonStyle(.plain)
@@ -434,10 +445,10 @@ struct SidebarExplorerView: View {
             if matchingTests.isEmpty {
                 VStack(spacing: 6) {
                     Text("No executable CodeceptJS tests found")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(CeptraTheme.textSecondary)
                     Text("Test files must declare Feature() or Scenario() (or Gherkin Feature:).")
-                        .font(.system(size: 10.5))
+                        .font(.system(size: 11.5))
                         .foregroundStyle(CeptraTheme.textMuted)
                         .multilineTextAlignment(.center)
                 }
@@ -445,18 +456,18 @@ struct SidebarExplorerView: View {
                 .padding(18)
             } else {
                 ForEach(sortedFolders, id: \.self) { folder in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 5) {
+                    VStack(alignment: .leading, spacing: 2.5) {
+                        HStack(spacing: 6) {
                             Image(systemName: "folder")
-                                .font(.system(size: 10))
-                                .foregroundStyle(CeptraTheme.textMuted)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(CeptraTheme.textSecondary)
                             Text(folder == "." ? workspace.rootURL.lastPathComponent : folder)
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundStyle(CeptraTheme.textMuted)
+                                .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(CeptraTheme.textSecondary)
                             Spacer()
                         }
                         .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
+                        .padding(.vertical, 4)
 
                         ForEach(grouped[folder] ?? []) { file in
                             SuiteFileTreeRow(
@@ -596,47 +607,47 @@ private struct ProjectTreeNodeView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 5) {
+                HStack(spacing: 6) {
                     TreeIndentGuides(depth: depth)
 
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundStyle(isHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(isHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
                         .rotationEffect(.degrees(isFolderExpanded ? 90 : 0))
                         .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: isFolderExpanded)
-                        .frame(width: 11)
+                        .frame(width: 13)
 
                     Image(systemName: isFolderExpanded ? "folder.fill" : "folder")
-                        .font(.system(size: 11))
+                        .font(.system(size: 13.5))
                         .foregroundStyle(folderColor(for: node.name, isHidden: node.isHidden))
 
                     Text(node.name)
-                        .font(.system(size: 11.5, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(
                             node.isHidden || isOutputFolder(node.name)
                                 ? CeptraTheme.textMuted
-                                : (isHovered ? CeptraTheme.textPrimary : CeptraTheme.textPrimary.opacity(0.9))
+                                : (isHovered ? CeptraTheme.textPrimary : CeptraTheme.textPrimary.opacity(0.92))
                         )
                         .lineLimit(1)
 
                     Spacer(minLength: 4)
 
                     if node.testFileCount > 0 {
-                        HStack(spacing: 3) {
+                        HStack(spacing: 3.5) {
                             Image(systemName: "checkmark.seal.fill")
-                                .font(.system(size: 8))
-                                .foregroundStyle(CeptraTheme.accent.opacity(0.85))
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(CeptraTheme.accent.opacity(0.9))
                             Text("\(node.testFileCount)")
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(CeptraTheme.textMuted)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(CeptraTheme.textSecondary)
                         }
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
                         .background(CeptraTheme.elevatedBG.opacity(0.75), in: Capsule())
                     }
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 5)
                 .background {
                     if isHovered {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -707,16 +718,16 @@ private struct ProjectTreeNodeView: View {
         return Button {
             appState.openFile(file)
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 6) {
                 TreeIndentGuides(depth: depth)
-                Color.clear.frame(width: 11, height: 1) // align with chevron column
+                Color.clear.frame(width: 13, height: 1) // align with chevron column
 
                 Image(systemName: iconForFile(file, isActiveConfig: isActiveConfig))
-                    .font(.system(size: 11))
+                    .font(.system(size: 13.5))
                     .foregroundStyle(colorForFile(file, isActiveConfig: isActiveConfig))
 
                 Text(file.name)
-                    .font(.system(size: 11.5, weight: isActive || isActiveConfig ? .semibold : .regular))
+                    .font(.system(size: 13, weight: isActive || isActiveConfig ? .semibold : .regular))
                     .foregroundStyle(
                         isActive || isHovered ? CeptraTheme.textPrimary :
                         (node.isHidden ? CeptraTheme.textMuted : CeptraTheme.textSecondary)
@@ -728,15 +739,15 @@ private struct ProjectTreeNodeView: View {
 
                 if isActiveConfig {
                     Text("ACTIVE")
-                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                         .foregroundStyle(CeptraTheme.accentWarm)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1.5)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
                         .background(CeptraTheme.accentWarm.opacity(0.14), in: Capsule())
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
             .background {
                 let rowShape = RoundedRectangle(cornerRadius: 6, style: .continuous)
                 if isActive {
@@ -854,8 +865,8 @@ private struct SuiteFileTreeRow: View {
         let allScenarios = file.features.flatMap(\.scenarios)
         let matchingScenarios = allScenarios.filter { scenarioMatchesFilters($0) }
 
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 5) {
+        VStack(alignment: .leading, spacing: 1.5) {
+            HStack(spacing: 6) {
                 TreeIndentGuides(depth: depth)
 
                 Button {
@@ -868,11 +879,11 @@ private struct SuiteFileTreeRow: View {
                     }
                 } label: {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundStyle(isRowHovered ? CeptraTheme.textSecondary : CeptraTheme.textMuted)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(isRowHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .animation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion), value: isExpanded)
-                        .frame(width: 14, height: 18)
+                        .frame(width: 16, height: 22)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -882,14 +893,14 @@ private struct SuiteFileTreeRow: View {
                 Button {
                     appState.openFile(file)
                 } label: {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 6) {
                         Image(systemName: file.category.symbolName)
-                            .font(.system(size: 11))
+                            .font(.system(size: 13.5))
                             .foregroundStyle(file.category == .gherkinFeature ? CeptraTheme.violet : CeptraTheme.success)
 
                         Text(file.name)
-                            .font(.system(size: 11.5, weight: isActive ? .semibold : .medium))
-                            .foregroundStyle(isActive || isRowHovered ? CeptraTheme.textPrimary : CeptraTheme.textPrimary.opacity(0.88))
+                            .font(.system(size: 13, weight: isActive ? .semibold : .medium))
+                            .foregroundStyle(isActive || isRowHovered ? CeptraTheme.textPrimary : CeptraTheme.textPrimary.opacity(0.9))
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 4)
@@ -903,23 +914,24 @@ private struct SuiteFileTreeRow: View {
                         appState.run(mode: .runFile(relativePath: file.relativePath))
                     } label: {
                         Image(systemName: "play.fill")
-                            .font(.system(size: 8.5))
+                            .font(.system(size: 10))
                             .foregroundStyle(CeptraTheme.success)
-                            .frame(width: 18, height: 18)
-                            .background(CeptraTheme.success.opacity(0.15), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .frame(width: 22, height: 22)
+                            .background(CeptraTheme.success.opacity(0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
                     .buttonStyle(CeptraTactilePressStyle())
                     .disabled(appState.isRunning)
                     .help("Run \(file.name)")
                 } else {
                     Text("\(matchingScenarios.count)")
-                        .font(.system(size: 9.5, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .monospacedDigit()
-                        .foregroundStyle(CeptraTheme.textMuted)
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                        .padding(.trailing, 3)
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5.5)
             .background {
                 let rowShape = RoundedRectangle(cornerRadius: 6, style: .continuous)
                 if isActive {
@@ -965,21 +977,21 @@ private struct SuiteFileTreeRow: View {
             }
 
             if isExpanded {
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 1.5) {
                     ForEach(matchingScenarios) { scenario in
                         let status = appState.statusForScenario(scenario)
                         let isScenarioHovered = hoveredScenarioID == scenario.id
-                        HStack(spacing: 5) {
+                        HStack(spacing: 6) {
                             TreeIndentGuides(depth: depth + 1)
                             Color.clear.frame(width: 8, height: 1)
-                            StatusDotView(status: status, size: 6.5)
+                            StatusDotView(status: status, size: 8)
 
                             Button {
                                 appState.openFile(file, jumpToLine: scenario.lineNumber)
                             } label: {
                                 HStack(spacing: 4) {
                                     Text(scenario.cleanTitle)
-                                        .font(.system(size: 11))
+                                        .font(.system(size: 12.5))
                                         .foregroundStyle(
                                             scenario.modifier == .skip
                                                 ? CeptraTheme.textMuted
@@ -998,23 +1010,23 @@ private struct SuiteFileTreeRow: View {
                                     appState.run(mode: .runScenario(relativePath: file.relativePath, scenarioTitle: scenario.cleanTitle))
                                 } label: {
                                     Image(systemName: "play.fill")
-                                        .font(.system(size: 8))
+                                        .font(.system(size: 10))
                                         .foregroundStyle(CeptraTheme.success)
-                                        .frame(width: 18, height: 18)
-                                        .background(CeptraTheme.success.opacity(0.15), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                        .frame(width: 22, height: 22)
+                                        .background(CeptraTheme.success.opacity(0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                                 }
                                 .buttonStyle(CeptraTactilePressStyle())
                                 .disabled(appState.isRunning)
                                 .help("Run scenario \"\(scenario.cleanTitle)\"")
                             } else if let ms = appState.durationForScenario(scenario) {
                                 Text(ReportExporter.formatDuration(ms: ms))
-                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .font(.system(size: 10.5, design: .monospaced))
                                     .monospacedDigit()
                                     .foregroundStyle(status == .failed ? CeptraTheme.failure : CeptraTheme.textMuted)
                             }
                         }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4.5)
                         .background {
                             if isScenarioHovered {
                                 RoundedRectangle(cornerRadius: 6, style: .continuous)

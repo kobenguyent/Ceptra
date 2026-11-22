@@ -99,7 +99,42 @@ final class AppState: ObservableObject {
     @Published var isStatusBarVisible: Bool = true
     @Published var cursorLine: Int = 1
     @Published var cursorColumn: Int = 1
+    @Published var editorSelectedText: String = ""
     @Published var editorSelectedRange: NSRange = NSRange(location: 0, length: 0)
+    @Published var editorSelectedLineRange: ClosedRange<Int>? = nil
+    @Published var editorMutationTrigger: Int = 0
+    @Published var pendingEditorMutation: AIEditorMutationRequest? = nil
+
+    // Multi-Provider AI Assistant State
+    @Published var aiSessions: [AIChatSession] = []
+    @Published var activeAISessionID: UUID? = nil
+    @Published var aiComposerText: String = ""
+    @Published var isAIStreaming: Bool = false
+    @Published var aiLastError: String? = nil
+    @Published var aiEnabledContextKinds: Set<AIContextAttachmentKind> = [.activeFile, .codeceptAPI]
+    @Published var aiPendingAttachments: [AIUserAttachment] = []
+    @Published var aiAvailableSkills: [AISkillDescriptor] = []
+    @Published var aiPinnedSkill: AISkillDescriptor? = nil
+    @Published var showingAISkillsSheet: Bool = false
+    @Published var aiConnectionStatusByProfileID: [UUID: AIConnectionTestResult] = [:]
+    @Published var aiTestingProfileID: UUID? = nil
+    @Published var aiFetchingModelsProfileID: UUID? = nil
+    @Published var detectedAICLIs: [DetectedCLIAgent] = []
+    @Published var aiKeychainRevision: Int = 0
+    @Published var pinnedAIReplayStep: ExecutedStepRecord? = nil
+    @Published var pendingAIDiffPreview: AIPendingDiffPreview? = nil
+    @Published var showingAIProviderSettingsSheet: Bool = false
+    @Published var aiSettingsInitialProfileID: UUID? = nil
+    @Published var aiSettingsStartInAddGallery: Bool = false
+
+    // Guided Local Ollama Lifecycle State
+    @Published var ollamaStatus: OllamaRuntimeState = .unknown
+    @Published var isCheckingOllama: Bool = false
+    @Published var isStartingOllama: Bool = false
+    @Published var isInstallingOllamaApp: Bool = false
+    @Published var ollamaInstallLogLine: String = ""
+    @Published var ollamaPullProgress: OllamaPullProgress? = nil
+    @Published var ollamaPullError: String? = nil
 
     // Editor Tabs, IntelliSense & Import Navigation History
     @Published var openTabs: [OpenDocumentTab] = []
@@ -177,6 +212,15 @@ final class AppState: ObservableObject {
     let codeceptUIManager = CodeceptUIServerManager()
     private let updateService = UpdateService()
     let breakpointStore = BreakpointStore()
+    let aiRouter = AIProviderRouter()
+    let ollamaManager = OllamaManager()
+    let aiSecretStore: AISecretStore = MacOSKeychainSecretStore()
+    let aiConversationStore = AIConversationStore()
+    var aiStreamTask: Task<Void, Never>? = nil
+    var aiActiveStreamID: UUID = UUID()
+    var ollamaPullTask: Task<Void, Never>? = nil
+    var ollamaInstallTask: Task<Void, Never>? = nil
+    var lastOllamaProbeAt: Date? = nil
     var cdpClient: CDPInspectorClient? = nil
     var cdpEventTask: Task<Void, Never>? = nil
     var hasHandledInitialBreakOnStart: Bool = false
@@ -197,6 +241,10 @@ final class AppState: ObservableObject {
            FileManager.default.fileExists(atPath: firstPath) {
             openWorkspace(at: URL(fileURLWithPath: firstPath))
         }
+
+        // Default to Local Ollama out of the box when no AI provider has been configured yet
+        ensureDefaultLocalOllamaIfEmpty()
+        refreshAISkills()
 
         if loadedSettings.autoCheckForUpdates {
             Task { [weak self] in
@@ -446,6 +494,8 @@ final class AppState: ObservableObject {
         selectedReportID = runHistory.first?.id
         refreshSelectedReplayTrace()
         loadDebugStateForWorkspace(rootPath: scanned.rootURL.path)
+        loadAISessionsForWorkspace(rootPath: scanned.rootURL.path)
+        refreshAISkills()
         refreshArtifacts()
 
         // Auto-open first test file or config file for immediate productivity
@@ -470,6 +520,7 @@ final class AppState: ObservableObject {
         }
         workspace = scanned
         completionIndex = IntelliSenseEngine.buildWorkspaceIndex(workspace: scanned)
+        refreshAISkills()
         refreshArtifacts()
     }
 
@@ -991,6 +1042,12 @@ final class AppState: ObservableObject {
 
         // Launch directly in the system's default (or chosen) terminal app when System Console mode is enabled
         if settings.consoleExecutionMode == .systemTerminal && !isDebugSession {
+            let bridgeCheck = AICodeceptBridge.buildBridgeEnvironment(
+                settings: settings.aiSettings,
+                runOptions: runOptions,
+                consoleExecutionMode: .systemTerminal,
+                secretStore: aiSecretStore
+            )
             let command = CommandBuilder.build(
                 mode: mode,
                 options: runOptions,
@@ -1017,6 +1074,15 @@ final class AppState: ObservableObject {
                     isStep: false,
                     isHighlight: true
                 ))
+                if let warn = bridgeCheck.systemTerminalSkippedWarning {
+                    consoleLogs.append(ConsoleLogEntry(
+                        timestamp: Date(),
+                        text: "ℹ \(warn)",
+                        isError: false,
+                        isStep: false,
+                        isHighlight: false
+                    ))
+                }
                 showBanner("Launched \(mode.displayLabel) in \(terminalName) (\(toolchain.runtime.shortName))")
             } catch {
                 consoleLogs.append(ConsoleLogEntry(
@@ -1065,6 +1131,13 @@ final class AppState: ObservableObject {
             try? FileManager.default.createDirectory(at: runTraceDirectory, withIntermediateDirectories: true)
         }
 
+        let aiBridge = AICodeceptBridge.buildBridgeEnvironment(
+            settings: settings.aiSettings,
+            runOptions: runOptions,
+            consoleExecutionMode: .builtIn,
+            secretStore: aiSecretStore
+        )
+
         let command = CommandBuilder.build(
             mode: mode,
             options: runOptions,
@@ -1072,7 +1145,8 @@ final class AppState: ObservableObject {
             configFilePath: runConfig.configFilePath,
             toolchain: toolchain,
             debugOptions: isDebugSession ? debugLaunch : nil,
-            traceOutputDirectory: runTraceDirectory
+            traceOutputDirectory: runTraceDirectory,
+            secretEnvironmentOverrides: aiBridge.secretEnvironment
         )
 
         isRunning = true
@@ -1776,10 +1850,31 @@ final class AppState: ObservableObject {
         updateState = .installing(release: release)
         let plan = UpdateInstallPlan(downloadedAssetURL: artifact.fileURL)
         do {
+            // Stop child servers/subprocesses cleanly before handing off to the detached updater
+            stopCodeceptUIServer()
+            cancelAllAIBackgroundTasks()
+            if isRunning {
+                stopActiveRun()
+            }
+
             try UpdateInstaller.launchDetachedInstaller(plan: plan)
-            // Immediately close the running app so the detached installer can swap Ceptra.app and relaunch
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+
+            // Dismiss the modal SwiftUI sheet FIRST — AppKit defers/ignores NSApp.terminate(nil)
+            // while an attached sheet is open, which previously caused an endless "Closing Ceptra..." hang.
+            showingUpdateSheet = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                for window in NSApplication.shared.windows {
+                    if let sheet = window.attachedSheet {
+                        window.endSheet(sheet)
+                    }
+                    window.orderOut(nil)
+                }
                 NSApplication.shared.terminate(nil)
+
+                // Hard watchdog: guarantee exit even if an AppKit modal loop defers terminate()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    exit(0)
+                }
             }
         } catch {
             updateState = .failed(message: error.localizedDescription)

@@ -7,10 +7,10 @@ struct RightInspectorWindowView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Plain-text 36pt Right Window Tab Header (Replay · CodeceptUI · Outline · Debug)
+            // Plain-text 38pt Right Window Tab Header (Replay · CodeceptUI · Outline · Debug · AI)
             HStack(spacing: 8) {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: 13) {
                         ForEach(RightInspectorTab.allCases, id: \.self) { tab in
                             let isSelected = appState.activeRightTab == tab
                             Button {
@@ -19,18 +19,22 @@ struct RightInspectorWindowView: View {
                                     appState.persistModulePreferences()
                                 }
                             } label: {
-                                HStack(spacing: 4) {
+                                HStack(spacing: 4.5) {
                                     Text(tab.displayTitle)
-                                        .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
-                                        .foregroundStyle(isSelected ? CeptraTheme.textPrimary : CeptraTheme.textMuted)
+                                        .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                                        .foregroundStyle(isSelected ? CeptraTheme.textPrimary : CeptraTheme.textSecondary.opacity(0.85))
                                     if tab == .debug && !appState.breakpoints.isEmpty {
                                         Text("\(appState.breakpoints.count)")
-                                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                                             .monospacedDigit()
                                             .foregroundStyle(CeptraTheme.accentWarm)
+                                    } else if tab == .ai && appState.isAIStreaming {
+                                        Circle()
+                                            .fill(CeptraTheme.accent)
+                                            .frame(width: 6.5, height: 6.5)
                                     }
                                 }
-                                .padding(.vertical, 4)
+                                .padding(.vertical, 5)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -40,34 +44,30 @@ struct RightInspectorWindowView: View {
 
                 Spacer(minLength: 4)
 
-                Button {
-                    appState.showingReportsSheet = true
-                } label: {
-                    Image(systemName: "chart.bar.doc.horizontal")
-                        .font(.system(size: 11))
-                        .foregroundStyle(CeptraTheme.textMuted)
-                        .frame(width: 22, height: 22)
-                        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .help("Open Run History & Artifacts")
-
-                Button {
-                    withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                        appState.toggleRightSidebar()
+                HStack(spacing: 4) {
+                    RightInspectorHeaderIconButton(
+                        systemImage: "chart.bar.doc.horizontal",
+                        iconSize: 13.5,
+                        iconWeight: .medium,
+                        helpText: "Open Run History & Artifacts"
+                    ) {
+                        appState.showingReportsSheet = true
                     }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(CeptraTheme.textMuted)
-                        .frame(width: 22, height: 22)
-                        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+                    RightInspectorHeaderIconButton(
+                        systemImage: "xmark",
+                        iconSize: 12,
+                        iconWeight: .semibold,
+                        helpText: "Hide Right Sidebar (⌘⌥B)"
+                    ) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleRightSidebar()
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
-                .help("Hide Right Sidebar (⌘⌥B)")
             }
             .padding(.horizontal, 12)
-            .frame(height: 36)
+            .frame(height: 38)
             .overlay(alignment: .bottom) {
                 Rectangle().fill(CeptraTheme.border).frame(height: 1)
             }
@@ -86,10 +86,47 @@ struct RightInspectorWindowView: View {
                     )
                 case .debug:
                     DebugInspectorView()
+                case .ai:
+                    AIInspectorView()
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
         }
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
         .ceptraPaneWindow(subtle: true)
+    }
+}
+
+private struct RightInspectorHeaderIconButton: View {
+    let systemImage: String
+    var iconSize: CGFloat = 13.5
+    var iconWeight: Font.Weight = .medium
+    let helpText: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: iconSize, weight: iconWeight))
+                .foregroundStyle(isHovered ? CeptraTheme.textPrimary : CeptraTheme.textSecondary)
+                .frame(width: 26, height: 26)
+                .background(
+                    isHovered ? CeptraTheme.hoverBG : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(isHovered ? CeptraTheme.border : Color.clear, lineWidth: 0.75)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(CeptraTactilePressStyle(pressedScale: 0.94))
+        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: isHovered)
+        .onHover { isHovered = $0 }
+        .help(helpText)
     }
 }

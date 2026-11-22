@@ -389,6 +389,24 @@ struct ReplayInspectorView: View {
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(CeptraTheme.failure)
                         .textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Button {
+                        appState.triggerAIQuickAction(.debugReplayFailure, replayStep: step)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 9.5, weight: .semibold))
+                            Text("Debug with AI")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundStyle(CeptraTheme.accent)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(CeptraTheme.canvasBG, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(CeptraTheme.accent.opacity(0.4), lineWidth: 0.75))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Send this failing step's error, DOM snapshot, and network diagnostics to AI Assistant")
                 }
                 .padding(9)
                 .frame(maxWidth: .infinity, alignment: .leading)
