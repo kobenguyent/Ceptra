@@ -124,6 +124,10 @@ Ceptra includes a built-in AI Assistant designed for CodeceptJS 4.x authoring, l
   - Switch between **Read-Only** (`Read`), **Ask to Proceed** (`Ask`, unified diff preview before applying), and **Full Permissions** (`Full`, 1-click undoable Apply scoped strictly to the open workspace).
   - API keys are stored exclusively in macOS Keychain; sensitive files (`.env`, private keys, `~/.ssh`, `~/.aws`, credentials) are blocked from attachment and scrubbed via automatic secret redaction.
 
+<p align="center">
+  <img src="images/studio-ai-assistant.png" alt="Ceptra Native AI Assistant with Local Ollama, Universal /commands (SKILL.md), Apply/Diff, and 3-Tier Permission Mode" width="100%" />
+</p>
+
 ---
 
 ## 8. Multi-Config Monorepos, Node/Bun & System Console

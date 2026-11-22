@@ -95,6 +95,10 @@ Write scenarios, harden flaky locators, and diagnose Replay traces using local m
 - **Multimodal Attachments**: Paste (`⌘V`) or drag-and-drop screenshots, code/log files, PDFs, and `.mp4`/`.mov` test recordings alongside toggleable workspace context pills (`File`, `Selection`, `Console Errors`, `Replay Trace`, `I.* API`).
 - **3-Tier Permissions &amp; Security**: Switch between **Read-Only** (`Read`), **Ask to Proceed** (`Ask`, unified diff preview before applying), and **Full Permissions** (`Full`, 1-click undoable Apply jailed to the open workspace). API keys stay in macOS Keychain; sensitive files (`.env`, private keys, `~/.ssh`, `~/.aws`, credentials) are blocked and automatically redacted before cloud requests.
 
+<p align="center">
+  <img src="docs/images/studio-ai-assistant.png" alt="Ceptra Native AI Assistant with Local Ollama, Universal /commands (SKILL.md), Apply/Diff, and 3-Tier Permission Mode" width="100%" />
+</p>
+
 ---
 
 ### 4. Code Block Screenshots (`⌘⌥P` / `⌘⌥⇧P`)

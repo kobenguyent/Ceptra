@@ -8,9 +8,9 @@ struct RightInspectorWindowView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Plain-text 38pt Right Window Tab Header (Replay · CodeceptUI · Outline · Debug · AI)
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 13) {
+                    HStack(spacing: 10) {
                         ForEach(RightInspectorTab.allCases, id: \.self) { tab in
                             let isSelected = appState.activeRightTab == tab
                             Button {
@@ -19,15 +19,18 @@ struct RightInspectorWindowView: View {
                                     appState.persistModulePreferences()
                                 }
                             } label: {
-                                HStack(spacing: 4.5) {
+                                HStack(spacing: 4) {
                                     Text(tab.displayTitle)
-                                        .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                                        .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
                                         .foregroundStyle(isSelected ? CeptraTheme.textPrimary : CeptraTheme.textSecondary.opacity(0.85))
+                                        .lineLimit(1)
+                                        .fixedSize(horizontal: true, vertical: false)
                                     if tab == .debug && !appState.breakpoints.isEmpty {
                                         Text("\(appState.breakpoints.count)")
                                             .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                                             .monospacedDigit()
                                             .foregroundStyle(CeptraTheme.accentWarm)
+                                            .fixedSize(horizontal: true, vertical: false)
                                     } else if tab == .ai && appState.isAIStreaming {
                                         Circle()
                                             .fill(CeptraTheme.accent)
