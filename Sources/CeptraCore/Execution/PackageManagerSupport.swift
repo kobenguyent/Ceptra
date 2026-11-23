@@ -111,7 +111,7 @@ public enum PackageManagerSupport {
         env["PATH"] = toolchain.searchPath
         if !colorOutput {
             env["FORCE_COLOR"] = "0"
-            env["NO_COLOR"] = "1"
+            env.removeValue(forKey: "NO_COLOR")
         } else {
             env.removeValue(forKey: "NO_COLOR")
             if env["FORCE_COLOR"] == "0" {

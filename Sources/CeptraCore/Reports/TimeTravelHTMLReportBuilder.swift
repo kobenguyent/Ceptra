@@ -42,6 +42,7 @@ public enum TimeTravelHTMLReportBuilder {
         let scenarioTitle: String
         let filePath: String?
         let status: String
+        let scenarioKind: String
         let durationMs: Int
         let tags: [String]
         let errorMessage: String?
@@ -57,6 +58,7 @@ public enum TimeTravelHTMLReportBuilder {
         let featureTitle: String
         let scenarioTitle: String
         let scenarioStatus: String
+        let scenarioKind: String
         let tags: [String]
         let text: String
         let depth: Int
@@ -80,6 +82,47 @@ public enum TimeTravelHTMLReportBuilder {
         let assertion: TimeTravelAssertionRecord?
         let networkRequests: [TimeTravelNetworkEntry]
         let consoleEntries: [TimeTravelConsoleEntry]
+    }
+
+    /// Classifies a single scenario as `"web"`, `"api"`, or `"hybrid"` using visual captures,
+    /// API client exchanges (`isApiExchange`), API vs browser assertions (`isApiAssertion`),
+    /// and browser action signals so mixed Web + API suites never misclassify web tests as API replay.
+    private static func classifyScenarioKind(_ sc: ExecutedScenarioRecord) -> String {
+        let steps = sc.steps
+        let hasWebVisuals = steps.contains { $0.diagnostics?.hasWebVisuals == true }
+        let allNet = steps.flatMap { $0.diagnostics?.networkRequests ?? [] }
+        let hasApiExchanges = allNet.contains(where: \.isApiExchange)
+        let hasBrowserNet = allNet.contains { !$0.isApiExchange }
+        let hasApiAssertions = steps.contains { $0.diagnostics?.assertion?.isApiAssertion == true }
+        let hasWebAssertions = steps.contains { step in
+            guard let assertion = step.diagnostics?.assertion else { return false }
+            return !assertion.isApiAssertion
+        }
+        let hasWebStepText = steps.contains { step in
+            let t = step.text
+            return t.hasPrefix("page.") || t.hasPrefix("locator(") || t.hasPrefix("getBy") ||
+                t == "Navigate" || t.hasPrefix("Navigate ") ||
+                t == "Click" || t.hasPrefix("Click ") ||
+                t == "Fill" || t.hasPrefix("Fill ") ||
+                t == "Press" || t.hasPrefix("Press ") ||
+                t == "Hover" || t.hasPrefix("Hover ") ||
+                t == "Check" || t.hasPrefix("Check ") ||
+                t.hasPrefix("I amOnPage") || t.hasPrefix("I click") ||
+                t.hasPrefix("I fillField") || t.hasPrefix("I see ")
+        }
+        let hasWebSignals = hasWebVisuals || hasBrowserNet || hasWebAssertions || hasWebStepText
+        let hasApiActivity = hasApiExchanges || hasApiAssertions || (!hasWebSignals && !allNet.isEmpty)
+
+        if hasWebVisuals && hasApiActivity {
+            return "hybrid"
+        }
+        if hasWebSignals && hasApiExchanges {
+            return "hybrid"
+        }
+        if hasApiActivity && !hasWebSignals {
+            return "api"
+        }
+        return "web"
     }
 
     public static func build(_ report: TestRunReport, traceBundle: TimeTravelTraceBundle? = nil) -> String {
@@ -117,6 +160,7 @@ public enum TimeTravelHTMLReportBuilder {
 
         for (scIdx, sc) in baseScenarios.enumerated() {
             let firstIdx = timelineSteps.count
+            let scKind = classifyScenarioKind(sc)
             if sc.steps.isEmpty {
                 let stDate = sc.startedAt ?? report.startedAt
                 let offsetMs = max(0, Int((stDate.timeIntervalSince(report.startedAt) * 1000.0).rounded()))
@@ -127,6 +171,7 @@ public enum TimeTravelHTMLReportBuilder {
                     featureTitle: sc.featureTitle,
                     scenarioTitle: sc.scenarioTitle,
                     scenarioStatus: sc.status.rawValue,
+                    scenarioKind: scKind,
                     tags: sc.tags,
                     text: sc.scenarioTitle,
                     depth: 0,
@@ -169,6 +214,7 @@ public enum TimeTravelHTMLReportBuilder {
                         featureTitle: sc.featureTitle,
                         scenarioTitle: sc.scenarioTitle,
                         scenarioStatus: sc.status.rawValue,
+                        scenarioKind: scKind,
                         tags: sc.tags,
                         text: step.text,
                         depth: step.depth,
@@ -202,6 +248,7 @@ public enum TimeTravelHTMLReportBuilder {
                 scenarioTitle: sc.scenarioTitle,
                 filePath: sc.filePath,
                 status: sc.status.rawValue,
+                scenarioKind: scKind,
                 durationMs: sc.durationMs,
                 tags: sc.tags,
                 errorMessage: sc.errorMessage,
@@ -211,34 +258,27 @@ public enum TimeTravelHTMLReportBuilder {
             ))
         }
 
-        let hasWebVisuals = timelineSteps.contains {
-            $0.beforeShotAssetId != nil || $0.afterShotAssetId != nil || $0.domAssetId != nil
-        }
-        let allNetworkEntries = timelineSteps.flatMap(\.networkRequests)
-        let apiSourceSet: Set<String> = ["http", "https", "fetch", "rest", "graphql"]
-        let hasDirectApiEntries = allNetworkEntries.contains { entry in
-            if let src = entry.source?.lowercased(), apiSourceSet.contains(src) { return true }
-            if entry.resourceType?.lowercased() == "api" { return true }
-            return false
-        }
-        let hasAssertions = timelineSteps.contains { $0.assertion != nil }
-        let hasApiActivity = hasDirectApiEntries || hasAssertions || (!hasWebVisuals && !allNetworkEntries.isEmpty)
-
+        let scenarioKinds = Set(scenarioSummaries.map(\.scenarioKind))
         let reportMode: String
-        if hasWebVisuals && hasApiActivity {
+        if scenarioKinds.contains("hybrid") || (scenarioKinds.contains("web") && scenarioKinds.contains("api")) {
             reportMode = "hybrid"
-        } else if hasApiActivity {
+        } else if scenarioKinds.contains("api") {
             reportMode = "api"
         } else {
             reportMode = "web"
         }
 
-        let apiCallCount = allNetworkEntries.count
-        let measuredDurations = allNetworkEntries.compactMap(\.durationMs)
+        let allNetworkEntries = timelineSteps.flatMap(\.networkRequests)
+        let directApiEntries = allNetworkEntries.filter(\.isApiExchange)
+        let countedApiEntries = !directApiEntries.isEmpty
+            ? directApiEntries
+            : (reportMode == "api" ? allNetworkEntries : [])
+        let apiCallCount = countedApiEntries.count
+        let measuredDurations = countedApiEntries.compactMap(\.durationMs)
         let apiAvgLatencyMs: Int? = measuredDurations.isEmpty
             ? nil
             : Int((Double(measuredDurations.reduce(0, +)) / Double(measuredDurations.count)).rounded())
-        let apiErrorCount = allNetworkEntries.filter { req in
+        let apiErrorCount = countedApiEntries.filter { req in
             req.errorText != nil || (req.status ?? 0) >= 400
         }.count
 
@@ -799,6 +839,12 @@ public enum TimeTravelHTMLReportBuilder {
       const STEPS = Array.isArray(REPORT.steps) ? REPORT.steps : [];
       const ASSETS = REPORT.assets || {};
       const REPORT_MODE = META.reportMode || 'web';
+      const API_SOURCES = new Set(['http', 'https', 'fetch', 'rest', 'graphql', 'playwright-api']);
+      function isApiExchangeEntry(req) {
+        if (!req) return false;
+        if (req.source && API_SOURCES.has(String(req.source).toLowerCase())) return true;
+        return String(req.resourceType || '').toLowerCase() === 'api';
+      }
 
       // Build flat index of all HTTP exchanges across the run for assertion linking, waterfall, and diffing
       const ALL_EXCHANGES = [];
@@ -822,10 +868,11 @@ public enum TimeTravelHTMLReportBuilder {
         }
       }
 
-      const HAS_ANY_API = REPORT_MODE === 'api' || REPORT_MODE === 'hybrid' || ALL_EXCHANGES.length > 0 || STEPS.some((s) => Boolean(s.assertion));
+      const HAS_ANY_API = REPORT_MODE === 'api' || REPORT_MODE === 'hybrid';
 
       const state = {
         activeIndex: 0,
+        lastScenarioIndex: -1,
         statusFilter: 'all',
         searchQuery: '',
         activeTab: REPORT_MODE === 'api' ? 'api' : 'visual',
@@ -1038,6 +1085,28 @@ public enum TimeTravelHTMLReportBuilder {
           args.push(parsed.ok ? JSON.stringify(parsed.value, null, 2) : JSON.stringify(req.requestBody));
         }
         return `await I.${fn}(${args.join(', ')});`;
+      }
+
+      function buildPlaywrightSnippet(req) {
+        const m = (req.method || 'GET').toLowerCase();
+        const fn = ['get', 'post', 'put', 'patch', 'delete', 'head'].includes(m) ? m : 'fetch';
+        const urlStr = JSON.stringify(req.url || '');
+        if (req.requestBody && m !== 'get' && m !== 'head') {
+          const parsed = tryParseJSON(req.requestBody);
+          const payloadOpt = parsed.ok
+            ? `{ data: ${JSON.stringify(parsed.value, null, 2)} }`
+            : `{ data: ${JSON.stringify(req.requestBody)} }`;
+          return `const res = await request.${fn}(${urlStr}, ${payloadOpt});\nawait expect(res).toBeOK();`;
+        }
+        return `const res = await request.${fn}(${urlStr});\nawait expect(res).toBeOK();`;
+      }
+
+      function formatAssertionLabel(method) {
+        const m = String(method || 'assert').trim();
+        if (/^(?:expect|not\.|to[A-Z])/.test(m)) {
+          return m.startsWith('expect') ? m : `expect(…).${m}(…)`;
+        }
+        return `I.${m}(…)`;
       }
 
       function el(tag, attrs, children) {
@@ -1345,7 +1414,7 @@ public enum TimeTravelHTMLReportBuilder {
       function renderTicks() {
         els.ticks.replaceChildren();
         STEPS.forEach((s, idx) => {
-          const isApi = (s.networkRequests || []).length > 0 && !s.beforeShotAssetId && !s.afterShotAssetId;
+          const isApi = s.scenarioKind === 'api' || ((s.networkRequests || []).some(isApiExchangeEntry) && !s.beforeShotAssetId && !s.afterShotAssetId);
           const t = el('div', {
             class: `scrubber-tick ${statusCls(s.status)}${isApi ? ' api-tick' : ''}${idx === state.activeIndex ? ' active' : ''}`,
             title: `#${idx + 1} ${s.text}`,
@@ -1366,12 +1435,21 @@ public enum TimeTravelHTMLReportBuilder {
         for (const step of list) {
           if (step.scenarioIndex !== lastScenarioIdx) {
             lastScenarioIdx = step.scenarioIndex;
+            const kindPill = REPORT_MODE === 'hybrid'
+              ? el('span', {
+                  class: `mini-tag ${step.scenarioKind === 'api' ? 'cyan' : (step.scenarioKind === 'hybrid' ? 'violet' : '')}`,
+                  text: step.scenarioKind === 'api' ? 'API' : (step.scenarioKind === 'hybrid' ? 'WEB+API' : 'WEB')
+                })
+              : null;
             const head = el('div', { class: 'scenario-divider' }, [
               el('div', { style: 'min-width:0;flex:1' }, [
                 el('span', { class: 'sc-feat', text: step.featureTitle }),
                 el('span', { class: 'sc-name', text: step.scenarioTitle })
               ]),
-              el('span', { class: `status-pill ${statusCls(step.scenarioStatus)}`, text: step.scenarioStatus.toUpperCase() })
+              el('div', { style: 'display:flex;align-items:center;gap:5px;flex:none' }, [
+                kindPill,
+                el('span', { class: `status-pill ${statusCls(step.scenarioStatus)}`, text: step.scenarioStatus.toUpperCase() })
+              ])
             ]);
             els.timelineList.appendChild(head);
           }
@@ -1493,7 +1571,7 @@ public enum TimeTravelHTMLReportBuilder {
             el('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap' }, [
               el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
                 el('span', { class: `status-pill ${a.passed ? 'pass' : 'fail'}`, text: a.passed ? 'ASSERTION PASSED' : 'ASSERTION FAILED' }),
-                el('span', { class: 'mono', style: 'font-weight:600', text: `I.${a.method}(…)` })
+                el('span', { class: 'mono', style: 'font-weight:600', text: formatAssertionLabel(a.method) })
               ]),
               a.relatedRequestId && EXCHANGE_BY_ID.has(a.relatedRequestId)
                 ? el('button', {
@@ -1585,10 +1663,13 @@ public enum TimeTravelHTMLReportBuilder {
           }, lbl));
         }
 
+        const isPlaywrightApi = String(req.source || '').toLowerCase() === 'playwright-api';
         const actionBtns = el('div', { class: 'tb-group' }, [
           el('button', { type: 'button', class: 'tb-btn', text: 'Copy cURL', onClick: () => copyText(buildCurlCommand(req), 'cURL command') }),
           el('button', { type: 'button', class: 'tb-btn', text: 'Copy fetch()', onClick: () => copyText(buildFetchSnippet(req), 'fetch() snippet') }),
-          el('button', { type: 'button', class: 'tb-btn', text: 'CodeceptJS', onClick: () => copyText(buildCodeceptSnippet(req), 'CodeceptJS snippet') }),
+          isPlaywrightApi
+            ? el('button', { type: 'button', class: 'tb-btn', text: 'Playwright', onClick: () => copyText(buildPlaywrightSnippet(req), 'Playwright snippet') })
+            : el('button', { type: 'button', class: 'tb-btn', text: 'CodeceptJS', onClick: () => copyText(buildCodeceptSnippet(req), 'CodeceptJS snippet') }),
           el('button', {
             type: 'button',
             class: 'tb-btn primary',
@@ -2021,8 +2102,9 @@ public enum TimeTravelHTMLReportBuilder {
         const afterURI = step.afterShotAssetId ? ASSETS[step.afterShotAssetId] : null;
         const hasBoth = Boolean(beforeURI && afterURI);
 
-        // 1. Visual Diff Card (omitted on pure API runs to keep Console & Raw clean)
-        if (REPORT_MODE !== 'api' || beforeURI || afterURI) {
+        // 1. Visual Diff Card (omitted on API-only runs or pure API scenarios when no screenshots exist)
+        const isApiOnlyStep = REPORT_MODE === 'api' || step.scenarioKind === 'api';
+        if (!isApiOnlyStep || beforeURI || afterURI) {
           const modeGroup = el('div', { class: 'tb-group', role: 'group', 'aria-label': 'Screenshot view mode' });
           for (const [m, lbl] of [['side', 'Side-by-Side'], ['before', 'Before'], ['after', 'After'], ['curtain', 'Curtain Diff']]) {
             modeGroup.appendChild(el('button', {
@@ -2533,6 +2615,18 @@ public enum TimeTravelHTMLReportBuilder {
         state.liveReplayResult = null;
         const step = STEPS[clamped];
 
+        // In hybrid (mixed Web + API) reports, automatically adapt the active tab when switching scenarios
+        if (REPORT_MODE === 'hybrid' && step.scenarioIndex !== state.lastScenarioIndex) {
+          state.lastScenarioIndex = step.scenarioIndex;
+          if (step.scenarioKind === 'api' && (state.activeTab === 'visual' || state.activeTab === 'dom')) {
+            selectTab('api');
+          } else if (step.scenarioKind === 'web' && (state.activeTab === 'api' || state.activeTab === 'waterfall')) {
+            selectTab('visual');
+          }
+        } else {
+          state.lastScenarioIndex = step.scenarioIndex;
+        }
+
         renderTicks();
         renderTimeline();
         renderHero(step);
@@ -2739,13 +2833,16 @@ public enum TimeTravelHTMLReportBuilder {
         });
       }
 
-      // Initial render: API runs open directly on API Exchange (focusing first failure or first API step);
-      // Web runs open on Visual & Console.
-      selectTab(REPORT_MODE === 'api' ? 'api' : 'visual');
+      // Initial render: pick the right tab for the initial step's scenario kind
       const firstApiStepIdx = ALL_EXCHANGES.length > 0 ? ALL_EXCHANGES[0].stepIndex : 0;
       const initialIdx = failureIndices.length > 0
         ? failureIndices[0]
         : (REPORT_MODE === 'api' ? firstApiStepIdx : 0);
+      const initialStep = STEPS[initialIdx];
+      const initialTab = (REPORT_MODE === 'api' || (REPORT_MODE === 'hybrid' && initialStep && initialStep.scenarioKind === 'api'))
+        ? 'api'
+        : 'visual';
+      selectTab(initialTab);
       selectStep(initialIdx, false);
     })();
     """#

@@ -292,7 +292,7 @@ final class PlaywrightSupportTests: XCTestCase {
         }
 
         XCTAssertEqual(finished.count, 4)
-        XCTAssertEqual(finished[0].featureTitle, "Login")
+        XCTAssertEqual(finished[0].featureTitle, "[chromium] Login")
         XCTAssertEqual(finished[0].scenarioTitle, "signs in smoothly @smoke")
         XCTAssertEqual(finished[0].filePath, "tests/login.spec.ts")
         XCTAssertEqual(finished[0].status, .passed)
@@ -303,7 +303,7 @@ final class PlaywrightSupportTests: XCTestCase {
         XCTAssertEqual(finished[1].durationMs, 450)
 
         XCTAssertEqual(finished[2].status, .skipped)
-        XCTAssertEqual(finished[2].featureTitle, "checkout")
+        XCTAssertEqual(finished[2].featureTitle, "[firefox] checkout")
 
         XCTAssertEqual(finished[3].status, .passed)
         XCTAssertEqual(finished[3].durationMs, 120)
@@ -388,7 +388,7 @@ final class PlaywrightSupportTests: XCTestCase {
         let traces = TimeTravelTraceMerger.loadWorkerTraces(from: traceDir)
         XCTAssertEqual(traces.count, 1)
         let sc = traces[0]
-        XCTAssertEqual(sc.featureTitle, "Login")
+        XCTAssertEqual(sc.featureTitle, "[chromium] Login")
         XCTAssertEqual(sc.scenarioTitle, "submits login form")
         XCTAssertEqual(sc.status, .failed)
         XCTAssertEqual(sc.tags, ["@smoke"])
@@ -396,10 +396,11 @@ final class PlaywrightSupportTests: XCTestCase {
         XCTAssertEqual(sc.steps[0].diagnostics?.pageURL, "https://example.com/login")
         XCTAssertEqual(sc.steps[1].status, .failed)
         XCTAssertEqual(sc.steps[1].diagnostics?.assertion?.passed, false)
+        XCTAssertEqual(sc.steps[1].diagnostics?.assertion?.method, "toBeVisible")
         XCTAssertTrue(sc.steps[1].diagnostics?.afterScreenshotDataURI?.hasPrefix("data:image/png;base64,") == true)
         XCTAssertEqual(sc.steps[1].diagnostics?.consoleEntries.first?.level, .error)
 
-        // Verify standalone HTML time-travel export succeeds cleanly
+        // Verify standalone HTML time-travel export classifies web test as "web" (not "api")
         let reportID = UUID()
         let bundle = TimeTravelTraceBundle(reportID: reportID, scenarios: traces)
         let report = TestRunReport(
@@ -421,6 +422,464 @@ final class PlaywrightSupportTests: XCTestCase {
         let html = ReportExporter.toHTML(report, traceBundle: bundle)
         XCTAssertTrue(html.contains("submits login form"))
         XCTAssertTrue(html.contains("iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"))
+        XCTAssertTrue(html.contains(#"data-report-mode="web""#))
+        XCTAssertFalse(html.contains(#"data-report-mode="api""#))
+    }
+
+    func testPlaywrightColorEnvHasNoNoColorConflictAndAutoEnablesTrace() throws {
+        let root = try makeTempDir("pw-env-trace")
+        let binDir = root.appendingPathComponent("node_modules/.bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+        let pwBin = binDir.appendingPathComponent("playwright")
+        try "#!/usr/bin/env node\n".write(to: pwBin, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: pwBin.path)
+
+        let tc = NodeToolchainResolver.resolve(workspaceRoot: root, framework: .playwright, runtime: .node)
+        let traceDir = root.appendingPathComponent("test-results/.ceptra-traces/auto")
+
+        // Default traceMode (.configDefault) with timeTravelTrace enabled must auto-append --trace=on
+        let autoCmd = CommandBuilder.build(
+            mode: .runFile(relativePath: "tests/example.spec.ts"),
+            options: RunOptions(timeTravelTrace: true, playwrightTraceMode: .configDefault),
+            workspaceRoot: root,
+            toolchain: tc,
+            framework: .playwright,
+            traceOutputDirectory: traceDir,
+            colorOutput: false
+        )
+        XCTAssertEqual(autoCmd.environment["FORCE_COLOR"], "0")
+        XCTAssertNil(autoCmd.environment["NO_COLOR"], "NO_COLOR must be unset when FORCE_COLOR=0 to avoid Node warning")
+        XCTAssertTrue(autoCmd.arguments.contains("--trace=on"))
+
+        // Explicit .off traceMode must still be respected (no --trace=on override)
+        let offCmd = CommandBuilder.build(
+            mode: .runFile(relativePath: "tests/example.spec.ts"),
+            options: RunOptions(timeTravelTrace: true, playwrightTraceMode: .off),
+            workspaceRoot: root,
+            toolchain: tc,
+            framework: .playwright,
+            traceOutputDirectory: traceDir,
+            colorOutput: false
+        )
+        XCTAssertTrue(offCmd.arguments.contains("--trace=off"))
+        XCTAssertFalse(offCmd.arguments.contains("--trace=on"))
+    }
+
+    func testMixedPlaywrightWebAndApiReplayClassificationAndDeduplicatedMerge() {
+        let now = Date()
+        // 1. Pure Playwright web test with zero screenshots and Playwright web assertions -> MUST be "web"
+        let webTrace = ExecutedScenarioRecord(
+            featureTitle: "[chromium] Playwright Docs",
+            scenarioTitle: "has title and opens Getting Started @web",
+            filePath: "/repo/tests/example.spec.ts",
+            status: .passed,
+            durationMs: 680,
+            startedAt: now,
+            finishedAt: now.addingTimeInterval(0.68),
+            tags: ["@smoke", "@web"],
+            steps: [
+                ExecutedStepRecord(
+                    text: #"Navigate to "https://playwright.dev/""#,
+                    status: .passed,
+                    durationMs: 320,
+                    startedAt: now,
+                    diagnostics: TimeTravelStepDiagnostics(pageURL: "https://playwright.dev/")
+                ),
+                ExecutedStepRecord(
+                    text: #"Expect "toHaveTitle""#,
+                    status: .passed,
+                    durationMs: 12,
+                    startedAt: now.addingTimeInterval(0.32),
+                    diagnostics: TimeTravelStepDiagnostics(
+                        pageURL: "https://playwright.dev/",
+                        assertion: TimeTravelAssertionRecord(method: "toHaveTitle", passed: true)
+                    )
+                )
+            ]
+        )
+
+        // List reporter emitted describe-level @smoke inline in scenarioTitle
+        let webPrimaryFromList = ExecutedScenarioRecord(
+            featureTitle: "[chromium] Playwright Docs",
+            scenarioTitle: "has title and opens Getting Started @web @smoke",
+            filePath: "tests/example.spec.ts",
+            status: .passed,
+            durationMs: 680,
+            tags: ["@smoke", "@web"],
+            steps: []
+        )
+
+        let mergedWebOnly = TimeTravelTraceMerger.merge(
+            primaryScenarios: [webPrimaryFromList],
+            traceScenarios: [webTrace],
+            runStartedAt: now
+        )
+        XCTAssertEqual(mergedWebOnly.count, 1, "Matching [project] + stripped @tags must not duplicate scenarios")
+        XCTAssertEqual(mergedWebOnly[0].steps.count, 2)
+
+        let webReportID = UUID()
+        let webOnlyReport = TestRunReport(
+            id: webReportID,
+            projectPath: "/repo",
+            projectName: "pw-web",
+            label: "Web Only",
+            commandLine: "playwright test tests/example.spec.ts",
+            startedAt: now,
+            finishedAt: now.addingTimeInterval(1),
+            exitCode: 0,
+            passedCount: 1,
+            failedCount: 0,
+            skippedCount: 0,
+            durationMs: 680,
+            scenarios: [webPrimaryFromList],
+            rawOutput: ""
+        )
+        let webOnlyHTML = TimeTravelHTMLReportBuilder.build(
+            webOnlyReport,
+            traceBundle: TimeTravelTraceBundle(reportID: webReportID, scenarios: [webTrace])
+        )
+        XCTAssertTrue(webOnlyHTML.contains(#"data-report-mode="web""#))
+        XCTAssertTrue(webOnlyHTML.contains(#""scenarioKind":"web""#))
+        XCTAssertFalse(webOnlyHTML.contains(#"data-report-mode="api""#))
+
+        // 2. Mixed Web + API Playwright run -> MUST be "hybrid" with per-scenario web & api kinds
+        let reqID = "pw-api-req-1"
+        let apiTrace = ExecutedScenarioRecord(
+            featureTitle: "[chromium] JSONPlaceholder API",
+            scenarioTitle: "GET /todos/1 returns valid todo @api",
+            filePath: "/repo/tests/api.spec.ts",
+            status: .passed,
+            durationMs: 145,
+            startedAt: now.addingTimeInterval(0.7),
+            finishedAt: now.addingTimeInterval(0.845),
+            tags: ["@api"],
+            steps: [
+                ExecutedStepRecord(
+                    text: #"GET "/todos/1""#,
+                    status: .passed,
+                    durationMs: 120,
+                    startedAt: now.addingTimeInterval(0.7),
+                    diagnostics: TimeTravelStepDiagnostics(
+                        networkRequests: [
+                            TimeTravelNetworkEntry(
+                                id: reqID,
+                                method: "GET",
+                                url: "https://jsonplaceholder.typicode.com/todos/1",
+                                resourceType: "api",
+                                source: "playwright-api",
+                                status: 200,
+                                statusText: "OK",
+                                durationMs: 120,
+                                responseBody: #"{"id":1,"title":"delectus aut autem"}"#
+                            )
+                        ]
+                    )
+                ),
+                ExecutedStepRecord(
+                    text: #"Expect "toBeOK""#,
+                    status: .passed,
+                    durationMs: 2,
+                    startedAt: now.addingTimeInterval(0.82),
+                    diagnostics: TimeTravelStepDiagnostics(
+                        assertion: TimeTravelAssertionRecord(method: "toBeOK", passed: true, relatedRequestId: reqID)
+                    )
+                )
+            ]
+        )
+
+        let apiPrimaryFromList = ExecutedScenarioRecord(
+            featureTitle: "[chromium] JSONPlaceholder API",
+            scenarioTitle: "GET /todos/1 returns valid todo @api",
+            filePath: "tests/api.spec.ts",
+            status: .passed,
+            durationMs: 145,
+            tags: ["@api"],
+            steps: []
+        )
+
+        let mixedReportID = UUID()
+        let mixedReport = TestRunReport(
+            id: mixedReportID,
+            projectPath: "/repo",
+            projectName: "pw-mixed",
+            label: "Mixed Web + API",
+            commandLine: "playwright test",
+            startedAt: now,
+            finishedAt: now.addingTimeInterval(1),
+            exitCode: 0,
+            passedCount: 2,
+            failedCount: 0,
+            skippedCount: 0,
+            durationMs: 845,
+            scenarios: [webPrimaryFromList, apiPrimaryFromList],
+            rawOutput: ""
+        )
+        let mixedHTML = TimeTravelHTMLReportBuilder.build(
+            mixedReport,
+            traceBundle: TimeTravelTraceBundle(reportID: mixedReportID, scenarios: [webTrace, apiTrace])
+        )
+        XCTAssertTrue(mixedHTML.contains(#"data-report-mode="hybrid""#))
+        XCTAssertTrue(mixedHTML.contains(#""scenarioKind":"web""#))
+        XCTAssertTrue(mixedHTML.contains(#""scenarioKind":"api""#))
+        XCTAssertTrue(mixedHTML.contains(#""apiCallCount":1"#))
+    }
+
+    func testPlaywrightTraceZipExtractionCapturesWebScreenshotsDOMAndAPIPayloads() throws {
+        guard let nodePath = NodeToolchainResolver.findExecutable(
+            named: "node",
+            in: NodeToolchainResolver.buildSearchPath()
+        ) else {
+            throw XCTSkip("Node.js not available on host")
+        }
+
+        let workDir = try makeTempDir("pw-zip-extract")
+        let traceDir = workDir.appendingPathComponent("traces", isDirectory: true)
+        try FileManager.default.createDirectory(at: traceDir, withIntermediateDirectories: true)
+
+        guard let reporterURL = PlaywrightTimeTravelReporterLoader.ensureReporterFileURL(baseDirectory: workDir) else {
+            XCTFail("Failed to materialize Playwright reporter")
+            return
+        }
+
+        // Build a valid DEFLATE ZIP matching Playwright's trace.zip schema and feed it to the reporter
+        let driverJS = """
+        const fs = require('node:fs');
+        const path = require('node:path');
+        const zlib = require('node:zlib');
+        const Reporter = require(\(CommandBuilder.shellSingleQuote(reporterURL.path)));
+
+        // Minimal zero-dep ZIP writer (DEFLATE) to synthesize a real Playwright trace.zip
+        const crcTable = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+          let c = n;
+          for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+          crcTable[n] = c >>> 0;
+        }
+        function crc32(buf) {
+          let c = 0xffffffff;
+          for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+          return (c ^ 0xffffffff) >>> 0;
+        }
+        function writeZip(outPath, files) {
+          const locals = [];
+          const centrals = [];
+          let offset = 0;
+          for (const [name, data] of Object.entries(files)) {
+            const raw = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
+            const comp = zlib.deflateRawSync(raw);
+            const nameBuf = Buffer.from(name, 'utf8');
+            const crc = crc32(raw);
+
+            const lh = Buffer.alloc(30);
+            lh.writeUInt32LE(0x04034b50, 0);
+            lh.writeUInt16LE(20, 4);
+            lh.writeUInt16LE(8, 8);
+            lh.writeUInt32LE(crc, 14);
+            lh.writeUInt32LE(comp.length, 18);
+            lh.writeUInt32LE(raw.length, 22);
+            lh.writeUInt16LE(nameBuf.length, 26);
+            locals.push(lh, nameBuf, comp);
+
+            const ch = Buffer.alloc(46);
+            ch.writeUInt32LE(0x02014b50, 0);
+            ch.writeUInt16LE(20, 4);
+            ch.writeUInt16LE(20, 6);
+            ch.writeUInt16LE(8, 10);
+            ch.writeUInt32LE(crc, 16);
+            ch.writeUInt32LE(comp.length, 20);
+            ch.writeUInt32LE(raw.length, 24);
+            ch.writeUInt16LE(nameBuf.length, 28);
+            ch.writeUInt32LE(offset, 42);
+            centrals.push(ch, nameBuf);
+
+            offset += lh.length + nameBuf.length + comp.length;
+          }
+          const cdBuf = Buffer.concat(centrals);
+          const eocd = Buffer.alloc(22);
+          eocd.writeUInt32LE(0x06054b50, 0);
+          eocd.writeUInt16LE(Object.keys(files).length, 8);
+          eocd.writeUInt16LE(Object.keys(files).length, 10);
+          eocd.writeUInt32LE(cdBuf.length, 12);
+          eocd.writeUInt32LE(offset, 16);
+          fs.writeFileSync(outPath, Buffer.concat([...locals, cdBuf, eocd]));
+        }
+
+        const baseMs = Date.now();
+        const tinyJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9]);
+
+        // 1. Web trace.zip with screencast-frame, frame-snapshot, input box, and browser network
+        const webZip = path.join(\(CommandBuilder.shellSingleQuote(workDir.path)), 'web-trace.zip');
+        const webTraceNDJSON = [
+          JSON.stringify({ type: 'context-options', wallTime: baseMs, monotonicTime: 100, options: { viewport: { width: 1280, height: 720 } } }),
+          JSON.stringify({ type: 'before', callId: 'call@1', apiName: 'page.goto', startTime: 110, wallTime: baseMs + 10, params: { url: 'https://playwright.dev/' } }),
+          JSON.stringify({ type: 'screencast-frame', file: 'screencast/page@1-1.jpeg', width: 1280, height: 720, timestamp: 220, frameSwapWallTime: baseMs + 120 }),
+          JSON.stringify({ type: 'frame-snapshot', snapshot: { callId: 'call@1', snapshotName: 'after@call@1', frameUrl: 'https://playwright.dev/', timestamp: 225, html: ['HTML', {}, ['HEAD', {}, ['TITLE', {}, 'Playwright']], ['BODY', {}, ['H1', { id: 'hero' }, 'Fast and reliable']]] } }),
+          JSON.stringify({ type: 'after', callId: 'call@1', endTime: 240 }),
+          JSON.stringify({ type: 'before', callId: 'call@2', apiName: 'locator.click', startTime: 260, wallTime: baseMs + 160, params: { selector: 'a.get-started' } }),
+          JSON.stringify({ type: 'input', callId: 'call@2', box: { x: 100, y: 200, width: 140, height: 42 } }),
+          JSON.stringify({ type: 'screencast-frame', file: 'screencast/page@1-2.jpeg', width: 1280, height: 720, timestamp: 320, frameSwapWallTime: baseMs + 220 }),
+          JSON.stringify({ type: 'after', callId: 'call@2', endTime: 330 })
+        ].join('\\n');
+        const webNetworkNDJSON = JSON.stringify({
+          type: 'resource-snapshot',
+          snapshot: {
+            startedDateTime: new Date(baseMs + 20).toISOString(),
+            time: 85,
+            request: { method: 'GET', url: 'https://playwright.dev/', headers: [{ name: 'Accept', value: 'text/html' }] },
+            response: { status: 200, statusText: 'OK', headers: [{ name: 'content-type', value: 'text/html' }], content: { size: 512, mimeType: 'text/html' } }
+          }
+        });
+        writeZip(webZip, {
+          '1-trace.trace': webTraceNDJSON,
+          '1-trace.network': webNetworkNDJSON,
+          'screencast/page@1-1.jpeg': tinyJpeg,
+          'screencast/page@1-2.jpeg': tinyJpeg
+        });
+
+        // 2. API trace.zip with _apiRequestRef, resources/*.json body, and timings
+        const apiZip = path.join(\(CommandBuilder.shellSingleQuote(workDir.path)), 'api-trace.zip');
+        const apiBody = JSON.stringify({ id: 1, title: 'delectus aut autem', completed: false });
+        const apiNetworkNDJSON = JSON.stringify({
+          type: 'resource-snapshot',
+          snapshot: {
+            _apiRequestRef: 'request@1',
+            startedDateTime: new Date(baseMs + 1010).toISOString(),
+            time: 94,
+            request: {
+              method: 'GET',
+              url: 'https://jsonplaceholder.typicode.com/todos/1',
+              headers: [
+                { name: 'Authorization', value: 'Bearer super-secret' },
+                { name: 'Accept', value: 'application/json' }
+              ]
+            },
+            response: {
+              status: 200,
+              statusText: 'OK',
+              headers: [{ name: 'content-type', value: 'application/json' }],
+              content: { size: apiBody.length, mimeType: 'application/json', _file: 'resources/todo1.json' }
+            },
+            timings: { dns: 4, connect: 12, ssl: 18, wait: 52, receive: 8 }
+          }
+        });
+        writeZip(apiZip, {
+          '0-trace.network': apiNetworkNDJSON,
+          'resources/todo1.json': apiBody
+        });
+
+        const rep = new Reporter();
+        rep.onBegin({ projects: [{ name: 'chromium' }] });
+
+        // Run Web Test
+        const webTest = {
+          title: 'opens home @web',
+          tags: ['@web'],
+          location: { file: '/repo/tests/example.spec.ts', line: 5, column: 3 },
+          titlePath: () => ['', 'chromium', 'tests/example.spec.ts', 'Docs', 'opens home @web'],
+          parent: { project: () => ({ name: 'chromium' }) }
+        };
+        rep.onTestBegin(webTest, { startTime: new Date(baseMs) });
+        const noisyHook = { title: 'Before Hooks', category: 'hook', startTime: new Date(baseMs), duration: 2 };
+        rep.onStepBegin(webTest, {}, noisyHook);
+        rep.onStepEnd(webTest, {}, noisyHook);
+        const wStep1 = { title: 'Navigate to "https://playwright.dev/"', category: 'pw:api', startTime: new Date(baseMs + 10), duration: 130 };
+        rep.onStepBegin(webTest, {}, wStep1);
+        rep.onStepEnd(webTest, {}, wStep1);
+        const wStep2 = { title: "Click locator('a.get-started')", category: 'pw:api', startTime: new Date(baseMs + 160), duration: 70 };
+        rep.onStepBegin(webTest, {}, wStep2);
+        rep.onStepEnd(webTest, {}, wStep2);
+        rep.onTestEnd(webTest, {
+          status: 'passed',
+          duration: 250,
+          startTime: new Date(baseMs),
+          attachments: [{ name: 'trace', contentType: 'application/zip', path: webZip }]
+        });
+
+        // Run API Test
+        const apiTest = {
+          title: 'fetches todo @api',
+          tags: ['@api'],
+          location: { file: '/repo/tests/api.spec.ts', line: 5, column: 3 },
+          titlePath: () => ['', 'chromium', 'tests/api.spec.ts', 'API', 'fetches todo @api'],
+          parent: { project: () => ({ name: 'chromium' }) }
+        };
+        rep.onTestBegin(apiTest, { startTime: new Date(baseMs + 1000) });
+        const aStep1 = { title: 'GET "/todos/1"', category: 'pw:api', startTime: new Date(baseMs + 1005), duration: 110 };
+        rep.onStepBegin(apiTest, {}, aStep1);
+        rep.onStepEnd(apiTest, {}, aStep1);
+        const aStep2 = { title: 'Expect "toBeOK"', category: 'expect', startTime: new Date(baseMs + 1120), duration: 2 };
+        rep.onStepBegin(apiTest, {}, aStep2);
+        rep.onStepEnd(apiTest, {}, aStep2);
+        rep.onTestEnd(apiTest, {
+          status: 'passed',
+          duration: 130,
+          startTime: new Date(baseMs + 1000),
+          attachments: [{ name: 'trace', contentType: 'application/zip', path: apiZip }]
+        });
+        rep.onEnd({ status: 'passed' });
+        """
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: nodePath)
+        proc.arguments = ["-e", driverJS]
+        var env = ProcessInfo.processInfo.environment
+        env["CEPTRA_TIME_TRAVEL_DIR"] = traceDir.path
+        proc.environment = env
+        try proc.run()
+        proc.waitUntilExit()
+        XCTAssertEqual(proc.terminationStatus, 0)
+
+        let traces = TimeTravelTraceMerger.loadWorkerTraces(from: traceDir)
+        XCTAssertEqual(traces.count, 2)
+
+        // Verify Web test trace extraction & noisy hook filtering
+        let web = traces[0]
+        XCTAssertEqual(web.featureTitle, "[chromium] Docs")
+        XCTAssertEqual(web.steps.count, 2, "Passing Before Hooks wrapper should be filtered out")
+        XCTAssertTrue(web.steps[0].diagnostics?.afterScreenshotDataURI?.hasPrefix("data:image/jpeg;base64,") == true)
+        XCTAssertEqual(web.steps[0].diagnostics?.domSnapshot?.title, "Playwright")
+        XCTAssertTrue(web.steps[0].diagnostics?.domSnapshot?.html.contains("Fast and reliable") == true)
+        XCTAssertEqual(web.steps[0].diagnostics?.networkRequests.first?.source, "playwright-browser")
+        XCTAssertEqual(web.steps[1].diagnostics?.domSnapshot?.targetBoundingBox?.x, 100)
+        XCTAssertEqual(web.steps[1].diagnostics?.domSnapshot?.targetBoundingBox?.viewportWidth, 1280)
+
+        // Verify API test trace extraction, redaction, timings, and assertion linking
+        let api = traces[1]
+        XCTAssertEqual(api.featureTitle, "[chromium] API")
+        XCTAssertEqual(api.steps.count, 2)
+        let req = api.steps[0].diagnostics?.networkRequests.first
+        XCTAssertEqual(req?.source, "playwright-api")
+        XCTAssertEqual(req?.resourceType, "api")
+        XCTAssertEqual(req?.status, 200)
+        XCTAssertEqual(req?.requestHeaders["Authorization"], "[REDACTED]")
+        XCTAssertEqual(req?.timings?.ttfbMs, 52)
+        XCTAssertTrue(req?.responseBody?.contains("delectus aut autem") == true)
+        XCTAssertEqual(api.steps[1].diagnostics?.assertion?.method, "toBeOK")
+        XCTAssertEqual(api.steps[1].diagnostics?.assertion?.relatedRequestId, req?.id)
+
+        // Verify mixed HTML report mode & per-scenario classification
+        let reportID = UUID()
+        let report = TestRunReport(
+            id: reportID,
+            projectPath: workDir.path,
+            projectName: "pw-e2e",
+            label: "Full Suite",
+            commandLine: "playwright test",
+            startedAt: Date(),
+            finishedAt: Date(),
+            exitCode: 0,
+            passedCount: 2,
+            failedCount: 0,
+            skippedCount: 0,
+            durationMs: 380,
+            scenarios: traces,
+            rawOutput: ""
+        )
+        let html = TimeTravelHTMLReportBuilder.build(report, traceBundle: TimeTravelTraceBundle(reportID: reportID, scenarios: traces))
+        XCTAssertTrue(html.contains(#"data-report-mode="hybrid""#))
+        XCTAssertTrue(html.contains(#""scenarioKind":"web""#))
+        XCTAssertTrue(html.contains(#""scenarioKind":"api""#))
+        XCTAssertTrue(html.contains("delectus aut autem"))
     }
 
     // MARK: - IntelliSense, AI Prompt & Backward Compatibility

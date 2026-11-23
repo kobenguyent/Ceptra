@@ -200,7 +200,7 @@ public enum CommandBuilder {
         env["PATH"] = toolchain.searchPath
         if !colorOutput {
             env["FORCE_COLOR"] = "0"
-            env["NO_COLOR"] = "1"
+            env.removeValue(forKey: "NO_COLOR")
         } else {
             env.removeValue(forKey: "NO_COLOR")
             if env["FORCE_COLOR"] == "0" {
@@ -436,7 +436,7 @@ public enum CommandBuilder {
         env["PATH"] = toolchain.searchPath
         if !colorOutput {
             env["FORCE_COLOR"] = "0"
-            env["NO_COLOR"] = "1"
+            env.removeValue(forKey: "NO_COLOR")
             // Never block Built-in Console runs waiting for Ctrl+C on Playwright's HTML report server
             env["PLAYWRIGHT_HTML_OPEN"] = "never"
         } else {
@@ -495,6 +495,12 @@ public enum CommandBuilder {
                let reporterURL = PlaywrightTimeTravelReporterLoader.ensureReporterFileURL() {
                 env["CEPTRA_TIME_TRAVEL_DIR"] = traceOutputDirectory.path
                 envOverrides["CEPTRA_TIME_TRAVEL_DIR"] = traceOutputDirectory.path
+                // Enable Playwright trace capture automatically when using Config Default so both
+                // passing Web tests (screenshots, DOM, console) and API tests (full HTTP bodies & timings)
+                // populate Ceptra's Replay Inspector and standalone HTML report out of the box.
+                if options.playwrightTraceMode == .configDefault && !args.contains(where: { $0.hasPrefix("--trace") }) {
+                    args.append("--trace=on")
+                }
                 args.append("--reporter=list,\(reporterURL.path)")
             } else {
                 args.append("--reporter=list")

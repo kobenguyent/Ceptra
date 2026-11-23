@@ -160,7 +160,8 @@ public enum TimeTravelTraceMerger {
 
     private static func matchKey(feature: String, scenario: String) -> String {
         let f = feature.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        let s = scenario.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let strippedScenario = ParsedScenario.stripTags(from: scenario)
+        let s = strippedScenario.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         return "\(f)::\(s)"
     }
 

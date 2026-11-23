@@ -63,26 +63,46 @@ struct ReplayInspectorView: View {
         activeSteps.firstIndex(where: { $0.status == .failed || $0.errorMessage != nil })
     }
 
-    private var isApiOnlyRun: Bool {
-        let allSteps = scenarios.flatMap(\.steps)
-        let hasVisuals = allSteps.contains { $0.diagnostics?.hasWebVisuals == true }
-        let hasApi = allSteps.contains { $0.diagnostics?.hasApiTraffic == true }
-        return hasApi && !hasVisuals
+    private func isApiOnlyScenario(_ scenario: ExecutedScenarioRecord?) -> Bool {
+        guard let scenario else { return false }
+        let steps = scenario.steps
+        let hasVisuals = steps.contains { $0.diagnostics?.hasWebVisuals == true }
+        let hasApi = steps.contains { $0.diagnostics?.hasApiTraffic == true }
+        let hasWebSignal = hasVisuals || steps.contains { step in
+            if step.diagnostics?.networkRequests.contains(where: { !$0.isApiExchange }) == true { return true }
+            if let assertion = step.diagnostics?.assertion, !assertion.isApiAssertion { return true }
+            let t = step.text
+            return t.hasPrefix("page.") || t.hasPrefix("locator(") || t.hasPrefix("getBy") ||
+                t == "Navigate" || t.hasPrefix("Navigate ") ||
+                t == "Click" || t.hasPrefix("Click ") ||
+                t == "Fill" || t.hasPrefix("Fill ") ||
+                t.hasPrefix("I amOnPage") || t.hasPrefix("I click") ||
+                t.hasPrefix("I fillField") || t.hasPrefix("I see ")
+        }
+        return hasApi && !hasWebSignal
+    }
+
+    private var isActiveScenarioApiOnly: Bool {
+        isApiOnlyScenario(activeScenario)
     }
 
     private func preferredInitialStepIndex(in steps: [ExecutedStepRecord]) -> Int {
         if let failIdx = steps.firstIndex(where: { $0.status == .failed || $0.errorMessage != nil }) {
             return failIdx
         }
-        if isApiOnlyRun, let apiIdx = steps.firstIndex(where: { $0.diagnostics?.networkRequests.isEmpty == false }) {
+        if isActiveScenarioApiOnly, let apiIdx = steps.firstIndex(where: { $0.diagnostics?.networkRequests.isEmpty == false }) {
             return apiIdx
         }
         return 0
     }
 
-    private func syncDetailTabForCurrentRun() {
-        if isApiOnlyRun && (detailTab == .visual || detailTab == .dom) {
-            detailTab = .network
+    private func syncDetailTabForActiveScenario() {
+        if isActiveScenarioApiOnly {
+            if detailTab == .visual || detailTab == .dom {
+                detailTab = .network
+            }
+        } else if detailTab == .network {
+            detailTab = .visual
         }
     }
 
@@ -115,7 +135,7 @@ struct ReplayInspectorView: View {
             }
         }
         .onAppear {
-            syncDetailTabForCurrentRun()
+            syncDetailTabForActiveScenario()
             if !activeSteps.isEmpty && selectedStepIndex == 0 {
                 selectedStepIndex = preferredInitialStepIndex(in: activeSteps)
             }
@@ -125,11 +145,14 @@ struct ReplayInspectorView: View {
             appState.refreshSelectedReplayTrace()
             selectedScenarioIndex = 0
             selectedStepIndex = preferredInitialStepIndex(in: activeSteps)
-            syncDetailTabForCurrentRun()
+            syncDetailTabForActiveScenario()
         }
         .onChange(of: appState.activeReplayTraceBundle?.reportID) { _, _ in
             selectedStepIndex = preferredInitialStepIndex(in: activeSteps)
-            syncDetailTabForCurrentRun()
+            syncDetailTabForActiveScenario()
+        }
+        .onChange(of: selectedScenarioIndex) { _, _ in
+            syncDetailTabForActiveScenario()
         }
         .onChange(of: appState.liveReplaySteps.count) { _, newCount in
             if appState.isRunning && newCount > 0 {
@@ -180,19 +203,30 @@ struct ReplayInspectorView: View {
     private var scenarioPicker: some View {
         Menu {
             ForEach(Array(scenarios.enumerated()), id: \.element.id) { idx, sc in
+                let kindTag = isApiOnlyScenario(sc) ? "API" : "WEB"
                 Button {
                     stopPlayback()
                     selectedScenarioIndex = idx
-                    selectedStepIndex = sc.steps.firstIndex(where: { $0.status == .failed }) ?? 0
+                    selectedStepIndex = preferredInitialStepIndex(in: sc.steps)
                 } label: {
-                    Label(sc.scenarioTitle, systemImage: CeptraTheme.symbol(for: sc.status))
+                    Label("[\(kindTag)] \(sc.featureTitle) › \(sc.scenarioTitle)", systemImage: CeptraTheme.symbol(for: sc.status))
                 }
             }
         } label: {
             HStack(spacing: 6) {
                 if let sc = activeScenario {
+                    let isApi = isApiOnlyScenario(sc)
                     StatusDotView(status: sc.status, size: 7)
-                    Text(sc.scenarioTitle)
+                    Text(isApi ? "API" : "WEB")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(isApi ? CeptraTheme.cyan : CeptraTheme.accent)
+                        .padding(.horizontal, 4.5)
+                        .padding(.vertical, 1.5)
+                        .background(
+                            (isApi ? CeptraTheme.cyan : CeptraTheme.accent).opacity(0.14),
+                            in: RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        )
+                    Text("\(sc.featureTitle) › \(sc.scenarioTitle)")
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(CeptraTheme.textPrimary)
                         .lineLimit(1)
@@ -276,7 +310,7 @@ struct ReplayInspectorView: View {
     private var stepTimelineList: some View {
         VStack(spacing: 0) {
             if activeSteps.isEmpty {
-                Text(appState.isRunning ? "Waiting for CodeceptJS steps…" : "No steps recorded for this scenario.")
+                Text(appState.isRunning ? "Waiting for test steps…" : "No steps recorded for this scenario.")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(CeptraTheme.textMuted)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -563,11 +597,15 @@ struct ReplayInspectorView: View {
         let requests = resolved.requests
         VStack(alignment: .leading, spacing: 8) {
             if let assertion = step.diagnostics?.assertion {
+                let lowerMethod = assertion.method.lowercased()
+                let assertionTitle = (lowerMethod.hasPrefix("to") || lowerMethod.hasPrefix("not.") || lowerMethod.hasPrefix("expect"))
+                    ? (lowerMethod.hasPrefix("expect") ? assertion.method : "expect(…).\(assertion.method)(…)")
+                    : "I.\(assertion.method)(…)"
                 HStack(spacing: 6) {
                     Image(systemName: assertion.passed ? "checkmark.seal.fill" : "xmark.seal.fill")
                         .font(.system(size: 10.5))
                         .foregroundStyle(assertion.passed ? CeptraTheme.success : CeptraTheme.failure)
-                    Text("I.\(assertion.method)(…)")
+                    Text(assertionTitle)
                         .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(CeptraTheme.textPrimary)
                     Spacer()

@@ -111,6 +111,31 @@ public struct TimeTravelAssertionRecord: Codable, Equatable, Hashable, Sendable 
         self.message = try c.decodeIfPresent(String.self, forKey: .message)
         self.relatedRequestId = try c.decodeIfPresent(String.self, forKey: .relatedRequestId)
     }
+
+    /// True when this assertion validates an HTTP/API response rather than browser DOM/UI state.
+    public var isApiAssertion: Bool {
+        if let rel = relatedRequestId, !rel.isEmpty {
+            return true
+        }
+        let lower = method.lowercased()
+        // Explicit browser/DOM assertions are never API assertions
+        let webPatterns = [
+            "tobevisible", "tobehidden", "tobeenabled", "tobedisabled", "tobechecked",
+            "tobefocused", "tobeattached", "tobeeditable", "tobeempty", "tobeinviewport",
+            "tohavetext", "tocontaintext", "tohavevalue", "tohavevalues", "tohaveattribute",
+            "tohaveclass", "tohavecount", "tohavecss", "tohaveid", "tohavejsproperty",
+            "tohaveurl", "tohavetitle", "tohavescreenshot", "tohaveaccessible", "tomatcharia",
+            "seeelement", "dontseeelement", "seeinfield", "seeincurrenturl", "seeintitle"
+        ]
+        if webPatterns.contains(where: { lower.contains($0) }) {
+            return false
+        }
+        let apiPatterns = [
+            "seeresponse", "dontseeresponse", "tobeok", "toequal", "tomatchobject",
+            "tostrictequal", "tocontain", "tohaveproperty", "tobelength", "tohavelength"
+        ]
+        return apiPatterns.contains(where: { lower.contains($0) })
+    }
 }
 
 public struct TimeTravelNetworkEntry: Identifiable, Codable, Equatable, Hashable, Sendable {
@@ -189,6 +214,16 @@ public struct TimeTravelNetworkEntry: Identifiable, Codable, Equatable, Hashable
         self.requestBody = try c.decodeIfPresent(String.self, forKey: .requestBody)
         self.responseBody = try c.decodeIfPresent(String.self, forKey: .responseBody)
         self.errorText = try c.decodeIfPresent(String.self, forKey: .errorText)
+    }
+
+    /// True when this request was issued directly by an API test client (Node http/https/fetch,
+    /// CodeceptJS REST/GraphQL, or Playwright `APIRequestContext`), as opposed to browser page subresources.
+    public var isApiExchange: Bool {
+        if let src = source?.lowercased(),
+           ["http", "https", "fetch", "rest", "graphql", "playwright-api"].contains(src) {
+            return true
+        }
+        return resourceType?.lowercased() == "api"
     }
 }
 
@@ -291,7 +326,7 @@ public struct TimeTravelStepDiagnostics: Codable, Equatable, Hashable, Sendable 
     }
 
     public var hasApiTraffic: Bool {
-        !networkRequests.isEmpty || assertion != nil
+        networkRequests.contains(where: \.isApiExchange) || (assertion?.isApiAssertion == true)
     }
 
     public var isEmpty: Bool {

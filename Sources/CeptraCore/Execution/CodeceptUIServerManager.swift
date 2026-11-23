@@ -155,7 +155,7 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
         env["HOST"] = "127.0.0.1"
         env["PORT"] = String(port)
         env["FORCE_COLOR"] = "0"
-        env["NO_COLOR"] = "1"
+        env.removeValue(forKey: "NO_COLOR")
 
         if framework == .playwright {
             var tailArgs: [String] = ["test", "--ui-host=127.0.0.1", "--ui-port=\(port)"]
@@ -254,7 +254,7 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = toolchain.searchPath
         env["FORCE_COLOR"] = "0"
-        env["NO_COLOR"] = "1"
+        env.removeValue(forKey: "NO_COLOR")
 
         let pkg = framework.uiPackageName
         let pmExecName = packageManager.executableName

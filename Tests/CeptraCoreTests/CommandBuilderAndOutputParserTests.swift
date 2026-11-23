@@ -466,7 +466,8 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
         )
         XCTAssertNotNil(nodeCmd.environment["NODE_OPTIONS"])
         XCTAssertTrue(nodeCmd.arguments.contains("--no-colors"))
-        XCTAssertEqual(nodeCmd.environment["NO_COLOR"], "1")
+        XCTAssertEqual(nodeCmd.environment["FORCE_COLOR"], "0")
+        XCTAssertNil(nodeCmd.environment["NO_COLOR"])
 
         // 2. Bun runtime resolves symlink to underlying codecept.js and executes via bun (omitting Node-only NODE_OPTIONS)
         let bunTC = NodeToolchainResolver.resolve(

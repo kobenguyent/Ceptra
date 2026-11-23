@@ -405,7 +405,9 @@ public final class LiveOutputParser {
             return ("Playwright", body, nil)
         }
 
-        if parts.first?.hasPrefix("[") == true && parts.first?.hasSuffix("]") == true {
+        var projectName: String? = nil
+        if let first = parts.first, first.hasPrefix("["), first.hasSuffix("]"), first.count > 2 {
+            projectName = String(first.dropFirst().dropLast())
             parts.removeFirst()
         }
 
@@ -419,11 +421,12 @@ public final class LiveOutputParser {
 
         guard let scenarioTitle = parts.last else {
             let fallback = filePath.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? "Test"
-            return ("Playwright", fallback, filePath)
+            let feat = projectName.map { "[\($0)] Playwright" } ?? "Playwright"
+            return (feat, fallback, filePath)
         }
 
         let describeParts = parts.dropLast()
-        let featureTitle: String
+        var featureTitle: String
         if !describeParts.isEmpty {
             featureTitle = describeParts.joined(separator: " › ")
         } else if let filePath {
@@ -433,6 +436,10 @@ public final class LiveOutputParser {
             featureTitle = stem.isEmpty ? "Playwright" : stem
         } else {
             featureTitle = "Playwright"
+        }
+
+        if let projectName, !projectName.isEmpty {
+            featureTitle = "[\(projectName)] \(featureTitle)"
         }
 
         return (featureTitle, scenarioTitle, filePath)
