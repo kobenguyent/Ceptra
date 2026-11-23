@@ -206,7 +206,7 @@ struct CommandPaletteView: View {
             PaletteItem(
                 id: "act-run-all",
                 title: "Run All Tests",
-                subtitle: "Execute all CodeceptJS suites in workspace",
+                subtitle: "Execute all \(appState.activeFramework.displayName) suites in workspace",
                 icon: "play.circle.fill",
                 iconColor: CeptraTheme.success,
                 badge: "⌘R",
@@ -223,8 +223,8 @@ struct CommandPaletteView: View {
             ),
             PaletteItem(
                 id: "act-codecept-ui",
-                title: "Open CodeceptUI Live",
-                subtitle: "Launch embedded @codeceptjs/ui dashboard",
+                title: appState.isPlaywrightWorkspace ? "Open Playwright UI Mode" : "Open CodeceptUI Live",
+                subtitle: appState.isPlaywrightWorkspace ? "Launch embedded playwright test --ui runner" : "Launch embedded @codeceptjs/ui dashboard",
                 icon: "macwindow",
                 iconColor: CeptraTheme.violet,
                 badge: "⌘⌥U",
@@ -274,8 +274,10 @@ struct CommandPaletteView: View {
             ),
             PaletteItem(
                 id: "act-ai-generate",
-                title: "Generate CodeceptJS Scenario with AI",
-                subtitle: "Create scenario matching active file & I.* custom steps",
+                title: appState.isPlaywrightWorkspace ? "Generate Playwright Test with AI" : "Generate CodeceptJS Scenario with AI",
+                subtitle: appState.isPlaywrightWorkspace
+                    ? "Create @playwright/test spec matching active file & page objects"
+                    : "Create scenario matching active file & I.* custom steps",
                 icon: "sparkles.rectangle.stack",
                 iconColor: CeptraTheme.violet,
                 badge: "AI",
@@ -348,6 +350,29 @@ struct CommandPaletteView: View {
                 }
             )
         ])
+
+        if appState.isPlaywrightWorkspace {
+            list.append(contentsOf: [
+                PaletteItem(
+                    id: "act-pw-codegen",
+                    title: "Launch Playwright Codegen Recorder",
+                    subtitle: "Record browser actions directly into Playwright Test code",
+                    icon: "record.circle",
+                    iconColor: CeptraTheme.failure,
+                    badge: "PW",
+                    action: { appState.launchPlaywrightCodegen() }
+                ),
+                PaletteItem(
+                    id: "act-pw-html-report",
+                    title: "Open Playwright HTML Report",
+                    subtitle: "Open playwright-report/index.html or run playwright show-report",
+                    icon: "doc.richtext",
+                    iconColor: CeptraTheme.accent,
+                    badge: "PW",
+                    action: { appState.openPlaywrightHTMLReport() }
+                )
+            ])
+        }
 
         // 2. Workspace files
         if let ws = appState.workspace {

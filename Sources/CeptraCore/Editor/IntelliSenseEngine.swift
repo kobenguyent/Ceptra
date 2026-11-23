@@ -192,18 +192,19 @@ public enum IntelliSenseEngine {
             return candidates.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: candidates)
         }
 
-        // 3. Tag completion after `@` (e.g. inside Scenario('... @sm'))
+        // 3. Tag completion after `@` (e.g. inside Scenario('... @sm') or test('...', { tag: '@sm' }))
         if let tagPrefix = matchTrailingRegex(#"(@[A-Za-z0-9_:-]*)$"#, in: linePrefix) {
             let replaceRange = NSRange(location: cursorUTF16Offset - (tagPrefix as NSString).length, length: (tagPrefix as NSString).length)
             let lower = tagPrefix.lowercased()
+            let isPW = isPlaywrightContext(source: source, sourceFileURL: sourceFileURL, workspace: workspace)
             let pool = Array(Set(index.workspaceTags + ["@smoke", "@e2e", "@api", "@regression", "@slow", "@wip"])).sorted()
             let matches = pool
                 .filter { $0.lowercased().hasPrefix(lower) }
-                .map { CompletionItem(label: $0, insertText: $0, signature: "", detail: "CodeceptJS tag", kind: .tag) }
+                .map { CompletionItem(label: $0, insertText: $0, signature: "", detail: isPW ? "Playwright tag" : "CodeceptJS tag", kind: .tag) }
             return matches.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: matches)
         }
 
-        // 4. Member access after `I.` / `I.retry(...).` / `<alias>.`
+        // 4. Member access after `I.` / `page.` / `request.` / `test.` / `expect(...).` / `<alias>.`
         if let memberMatch = matchMemberAccess(linePrefix) {
             let receiver = memberMatch.receiver
             let typed = memberMatch.memberPrefix
@@ -221,6 +222,16 @@ public enum IntelliSenseEngine {
                     CompletionItem(label: "todo", insertText: "todo('');", signature: "(title)", detail: "Pending todo scenario", kind: .dsl, cursorBackOffset: 3),
                     CompletionItem(label: "tag", insertText: "tag('@smoke')", signature: "(tag)", detail: "Attach tag", kind: .dsl, cursorBackOffset: 2)
                 ]
+            } else if receiver == "test" {
+                pool = builtInPlaywrightTestMembers
+            } else if receiver == "page" || receiver == "frame" {
+                pool = builtInPlaywrightPageActions
+            } else if receiver == "request" {
+                pool = builtInPlaywrightRequestActions
+            } else if receiver == "expect" {
+                pool = builtInPlaywrightExpectMatchers
+            } else if receiver == "locator" || receiver.hasSuffix("Locator") {
+                pool = builtInPlaywrightLocatorActions
             } else if let aliasMembers = index.memberMethodsByAlias[receiver] {
                 pool = aliasMembers
             } else if let sourceFileURL, let workspace {
@@ -240,13 +251,14 @@ public enum IntelliSenseEngine {
             return ranked.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: ranked)
         }
 
-        // 5. General identifier / CodeceptJS DSL / Keywords / Local symbols
+        // 5. General identifier / CodeceptJS or Playwright DSL / Keywords / Local symbols
         guard let wordPrefix = matchTrailingRegex(#"([A-Za-z_$][\w$]*)$"#, in: linePrefix), !wordPrefix.isEmpty else {
             return nil
         }
 
         let replaceRange = NSRange(location: cursorUTF16Offset - (wordPrefix as NSString).length, length: (wordPrefix as NSString).length)
-        var pool: [CompletionItem] = builtInDSLItems + jsKeywordItems
+        let isPW = isPlaywrightContext(source: source, sourceFileURL: sourceFileURL, workspace: workspace)
+        var pool: [CompletionItem] = (isPW ? builtInPlaywrightDSLItems : builtInDSLItems) + jsKeywordItems
 
         // Configured include aliases (`I`, `homePage`, `loginPage`, etc.)
         if let includes = workspace?.config.includes {
@@ -414,8 +426,42 @@ public enum IntelliSenseEngine {
         return joined.hasPrefix("..") ? joined : "./\(joined)"
     }
 
+    private static func isPlaywrightContext(source: String, sourceFileURL: URL?, workspace: CodeceptWorkspace?) -> Bool {
+        if source.contains("@playwright/test") || source.contains("@playwright/experimental-ct") {
+            return true
+        }
+        if let sourceFileURL, let workspace {
+            return workspace.resolvedConfig(forFilePath: sourceFileURL.path).framework == .playwright
+        }
+        return workspace?.config.framework == .playwright
+    }
+
     private static func matchMemberAccess(_ linePrefix: String) -> (receiver: String, memberPrefix: String)? {
-        // Supports `I.click`, `I.retry(2).see`, `loginPage.sub`
+        // 1. Balanced-paren call chain ending in `.memberPrefix`:
+        //    - `expect(page.getByRole('button')).toBe` / `expect.soft(loc).not.toHave`
+        //    - `page.getByRole('button', { name: 'Save' }).cli`
+        if let trailingDotMatch = matchTrailingMemberPrefix(linePrefix) {
+            let member = trailingDotMatch.memberPrefix
+            var beforeDot = trailingDotMatch.prefixBeforeDot
+            if beforeDot.hasSuffix(".not") {
+                beforeDot = String(beforeDot.dropLast(4))
+            }
+            if beforeDot.hasSuffix(")"),
+               let callHead = receiverBeforeBalancedCall(beforeDot) {
+                if callHead == "expect" || callHead == "expect.soft" || callHead == "expect.poll" {
+                    return ("expect", member)
+                }
+                let locatorMethods = [
+                    ".locator", ".getByRole", ".getByTestId", ".getByText", ".getByLabel",
+                    ".getByPlaceholder", ".getByAltText", ".getByTitle",
+                    ".first", ".last", ".nth", ".filter"
+                ]
+                if locatorMethods.contains(where: { callHead.hasSuffix($0) }) {
+                    return ("locator", member)
+                }
+            }
+        }
+        // 2. Direct identifier member access: `I.click`, `I.retry(2).see`, `page.goto`, `request.get`, `test.describe`, `loginPage.sub`
         let pattern = #"([A-Za-z_$][\w$]*)(?:\.retry\s*\([^)]*\))?\.([A-Za-z_$][\w$]*)?$"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         let ns = linePrefix as NSString
@@ -425,6 +471,82 @@ public enum IntelliSenseEngine {
         let receiver = ns.substring(with: m.range(at: 1))
         let member = m.range(at: 2).location != NSNotFound ? ns.substring(with: m.range(at: 2)) : ""
         return (receiver, member)
+    }
+
+    private static func matchTrailingMemberPrefix(_ linePrefix: String) -> (prefixBeforeDot: String, memberPrefix: String)? {
+        guard let regex = try? NSRegularExpression(pattern: #"\.([A-Za-z_$][\w$]*)?$"#) else { return nil }
+        let ns = linePrefix as NSString
+        guard let m = regex.firstMatch(in: linePrefix, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        let prefixBeforeDot = ns.substring(to: m.range.location)
+        let member = m.range(at: 1).location != NSNotFound ? ns.substring(with: m.range(at: 1)) : ""
+        return (prefixBeforeDot, member)
+    }
+
+    /// Given a prefix ending in `)` (e.g. `await expect(page.getByRole('button'))`),
+    /// walks backwards across balanced parentheses/strings and returns the identifier chain
+    /// immediately preceding the opening `(` (e.g. `expect` or `page.getByRole`).
+    private static func receiverBeforeBalancedCall(_ text: String) -> String? {
+        let chars = Array(text)
+        guard !chars.isEmpty, chars.last == ")" else { return nil }
+        var depth = 0
+        var inString: Character? = nil
+        var openIndex: Int? = nil
+
+        var i = chars.count - 1
+        while i >= 0 {
+            let c = chars[i]
+            if let quote = inString {
+                if c == quote {
+                    // Check if escaped
+                    var backslashes = 0
+                    var k = i - 1
+                    while k >= 0 && chars[k] == "\\" {
+                        backslashes += 1
+                        k -= 1
+                    }
+                    if backslashes % 2 == 0 {
+                        inString = nil
+                    }
+                }
+                i -= 1
+                continue
+            }
+            if c == "'" || c == "\"" || c == "`" {
+                inString = c
+                i -= 1
+                continue
+            }
+            if c == ")" {
+                depth += 1
+            } else if c == "(" {
+                depth -= 1
+                if depth == 0 {
+                    openIndex = i
+                    break
+                }
+            }
+            i -= 1
+        }
+
+        guard let openIdx = openIndex else { return nil }
+        var end = openIdx - 1
+        while end >= 0 && chars[end].isWhitespace {
+            end -= 1
+        }
+        guard end >= 0 else { return nil }
+        var start = end
+        while start >= 0 {
+            let ch = chars[start]
+            if ch.isLetter || ch.isNumber || ch == "_" || ch == "$" || ch == "." {
+                start -= 1
+            } else {
+                break
+            }
+        }
+        let head = String(chars[(start + 1)...end])
+        return head.isEmpty ? nil : head
     }
 
     private static func matchTrailingRegex(_ pattern: String, in text: String) -> String? {
@@ -595,5 +717,132 @@ public enum IntelliSenseEngine {
         CompletionItem(label: "clearCookie", insertText: "clearCookie()", signature: "(name?)", detail: "Clear browser cookies", kind: .action),
         CompletionItem(label: "switchTo", insertText: "switchTo('')", signature: "(locator?)", detail: "Switch into iframe", kind: .action, cursorBackOffset: 2),
         CompletionItem(label: "executeScript", insertText: "executeScript(() => {\n  \n})", signature: "(fn, args?)", detail: "Run JS in browser context", kind: .action, cursorBackOffset: 3)
+    ]
+
+    // MARK: - Curated Playwright Test (@playwright/test) Catalog
+
+    public static let builtInPlaywrightDSLItems: [CompletionItem] = [
+        CompletionItem(label: "test", insertText: "test('', async ({ page }) => {\n  \n});", signature: "(title, fn)", detail: "Playwright test case", kind: .dsl, cursorBackOffset: 27),
+        CompletionItem(label: "expect", insertText: "await expect().toBeVisible();", signature: "(actual)", detail: "Playwright web-first assertion", kind: .dsl, cursorBackOffset: 16),
+        CompletionItem(label: "defineConfig", insertText: "defineConfig({\n  \n})", signature: "(config)", detail: "Playwright config helper", kind: .dsl, cursorBackOffset: 2),
+        CompletionItem(label: "devices", insertText: "devices['Desktop Chrome']", signature: "[name]", detail: "Playwright device descriptors", kind: .dsl)
+    ]
+
+    public static let builtInPlaywrightTestMembers: [CompletionItem] = [
+        CompletionItem(label: "describe", insertText: "describe('', () => {\n  \n});", signature: "(title, fn)", detail: "Group related tests", kind: .dsl, cursorBackOffset: 17),
+        CompletionItem(label: "step", insertText: "step('', async () => {\n  \n});", signature: "(title, fn)", detail: "Named step in trace & replay", kind: .dsl, cursorBackOffset: 19),
+        CompletionItem(label: "beforeEach", insertText: "beforeEach(async ({ page }) => {\n  \n});", signature: "(fn)", detail: "Run before each test", kind: .dsl, cursorBackOffset: 4),
+        CompletionItem(label: "afterEach", insertText: "afterEach(async ({ page }) => {\n  \n});", signature: "(fn)", detail: "Run after each test", kind: .dsl, cursorBackOffset: 4),
+        CompletionItem(label: "beforeAll", insertText: "beforeAll(async () => {\n  \n});", signature: "(fn)", detail: "Run once before suite", kind: .dsl, cursorBackOffset: 4),
+        CompletionItem(label: "afterAll", insertText: "afterAll(async () => {\n  \n});", signature: "(fn)", detail: "Run once after suite", kind: .dsl, cursorBackOffset: 4),
+        CompletionItem(label: "only", insertText: "only('', async ({ page }) => {\n  \n});", signature: "(title, fn)", detail: "Run only this test", kind: .dsl, cursorBackOffset: 27),
+        CompletionItem(label: "skip", insertText: "skip('', async ({ page }) => {\n  \n});", signature: "(title, fn)", detail: "Skip this test", kind: .dsl, cursorBackOffset: 27),
+        CompletionItem(label: "fixme", insertText: "fixme('', async ({ page }) => {\n  \n});", signature: "(title, fn)", detail: "Mark test as fixme", kind: .dsl, cursorBackOffset: 27),
+        CompletionItem(label: "fail", insertText: "fail('', async ({ page }) => {\n  \n});", signature: "(title, fn)", detail: "Expect test to fail", kind: .dsl, cursorBackOffset: 27),
+        CompletionItem(label: "slow", insertText: "slow();", signature: "()", detail: "Triple timeout for test", kind: .dsl),
+        CompletionItem(label: "use", insertText: "use({});", signature: "(options)", detail: "Override test options", kind: .dsl, cursorBackOffset: 3),
+        CompletionItem(label: "extend", insertText: "extend({});", signature: "(fixtures)", detail: "Create custom fixtures", kind: .dsl, cursorBackOffset: 3),
+        CompletionItem(label: "setTimeout", insertText: "setTimeout(60_000);", signature: "(ms)", detail: "Set test timeout in ms", kind: .dsl, cursorBackOffset: 2)
+    ]
+
+    public static let builtInPlaywrightPageActions: [CompletionItem] = [
+        CompletionItem(label: "goto", insertText: "goto('')", signature: "(url, opts?)", detail: "Navigate to URL", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "getByRole", insertText: "getByRole('button', { name: '' })", signature: "(role, opts?)", detail: "Locate by ARIA role", kind: .action, cursorBackOffset: 4),
+        CompletionItem(label: "getByTestId", insertText: "getByTestId('')", signature: "(testId)", detail: "Locate by data-testid", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "getByText", insertText: "getByText('')", signature: "(text, opts?)", detail: "Locate by visible text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "getByLabel", insertText: "getByLabel('')", signature: "(text, opts?)", detail: "Locate form control by label", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "getByPlaceholder", insertText: "getByPlaceholder('')", signature: "(text, opts?)", detail: "Locate input by placeholder", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "getByAltText", insertText: "getByAltText('')", signature: "(text, opts?)", detail: "Locate image by alt text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "getByTitle", insertText: "getByTitle('')", signature: "(text, opts?)", detail: "Locate by title attribute", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "locator", insertText: "locator('')", signature: "(selector, opts?)", detail: "Create CSS/XPath locator", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "frameLocator", insertText: "frameLocator('')", signature: "(selector)", detail: "Locate elements inside iframe", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "click", insertText: "click('')", signature: "(selector, opts?)", detail: "Click element", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "fill", insertText: "fill('', '')", signature: "(selector, value)", detail: "Fill input field", kind: .action, cursorBackOffset: 6),
+        CompletionItem(label: "press", insertText: "press('', 'Enter')", signature: "(selector, key)", detail: "Press keyboard key", kind: .action, cursorBackOffset: 11),
+        CompletionItem(label: "hover", insertText: "hover('')", signature: "(selector)", detail: "Hover over element", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "check", insertText: "check('')", signature: "(selector)", detail: "Check checkbox/radio", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "uncheck", insertText: "uncheck('')", signature: "(selector)", detail: "Uncheck checkbox", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "selectOption", insertText: "selectOption('', '')", signature: "(selector, values)", detail: "Select dropdown option", kind: .action, cursorBackOffset: 6),
+        CompletionItem(label: "waitForURL", insertText: "waitForURL('')", signature: "(url, opts?)", detail: "Wait for navigation URL", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "waitForResponse", insertText: "waitForResponse('')", signature: "(urlOrPred, opts?)", detail: "Wait for network response", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "waitForRequest", insertText: "waitForRequest('')", signature: "(urlOrPred, opts?)", detail: "Wait for network request", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "waitForLoadState", insertText: "waitForLoadState('networkidle')", signature: "(state?)", detail: "Wait for load state", kind: .action),
+        CompletionItem(label: "route", insertText: "route('**/*', (route) => route.continue())", signature: "(url, handler)", detail: "Intercept network requests", kind: .action),
+        CompletionItem(label: "screenshot", insertText: "screenshot({ path: 'screenshot.png' })", signature: "(opts?)", detail: "Capture screenshot", kind: .action),
+        CompletionItem(label: "evaluate", insertText: "evaluate(() => {\n  \n})", signature: "(fn, arg?)", detail: "Execute JS in page", kind: .action, cursorBackOffset: 3),
+        CompletionItem(label: "reload", insertText: "reload()", signature: "(opts?)", detail: "Reload current page", kind: .action),
+        CompletionItem(label: "goBack", insertText: "goBack()", signature: "(opts?)", detail: "Navigate back", kind: .action),
+        CompletionItem(label: "setViewportSize", insertText: "setViewportSize({ width: 1440, height: 900 })", signature: "(size)", detail: "Resize viewport", kind: .action),
+        CompletionItem(label: "pause", insertText: "pause()", signature: "()", detail: "Pause in Playwright Inspector", kind: .action),
+        CompletionItem(label: "title", insertText: "title()", signature: "()", detail: "Return page title", kind: .action),
+        CompletionItem(label: "url", insertText: "url()", signature: "()", detail: "Return current URL", kind: .action),
+        CompletionItem(label: "content", insertText: "content()", signature: "()", detail: "Return full page HTML", kind: .action),
+        CompletionItem(label: "close", insertText: "close()", signature: "()", detail: "Close page", kind: .action)
+    ]
+
+    public static let builtInPlaywrightLocatorActions: [CompletionItem] = [
+        CompletionItem(label: "click", insertText: "click()", signature: "(opts?)", detail: "Click matched element", kind: .action),
+        CompletionItem(label: "dblclick", insertText: "dblclick()", signature: "(opts?)", detail: "Double-click element", kind: .action),
+        CompletionItem(label: "fill", insertText: "fill('')", signature: "(value, opts?)", detail: "Fill input text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "clear", insertText: "clear()", signature: "(opts?)", detail: "Clear input field", kind: .action),
+        CompletionItem(label: "press", insertText: "press('Enter')", signature: "(key, opts?)", detail: "Press key on element", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "pressSequentially", insertText: "pressSequentially('')", signature: "(text, opts?)", detail: "Type character by character", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "hover", insertText: "hover()", signature: "(opts?)", detail: "Hover over element", kind: .action),
+        CompletionItem(label: "focus", insertText: "focus()", signature: "(opts?)", detail: "Focus element", kind: .action),
+        CompletionItem(label: "check", insertText: "check()", signature: "(opts?)", detail: "Check checkbox/radio", kind: .action),
+        CompletionItem(label: "uncheck", insertText: "uncheck()", signature: "(opts?)", detail: "Uncheck checkbox", kind: .action),
+        CompletionItem(label: "selectOption", insertText: "selectOption('')", signature: "(values, opts?)", detail: "Select option", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "setInputFiles", insertText: "setInputFiles('')", signature: "(files)", detail: "Upload file(s)", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "waitFor", insertText: "waitFor({ state: 'visible' })", signature: "(opts?)", detail: "Wait for locator state", kind: .action),
+        CompletionItem(label: "scrollIntoViewIfNeeded", insertText: "scrollIntoViewIfNeeded()", signature: "()", detail: "Scroll element into view", kind: .action),
+        CompletionItem(label: "textContent", insertText: "textContent()", signature: "()", detail: "Read textContent", kind: .action),
+        CompletionItem(label: "innerText", insertText: "innerText()", signature: "()", detail: "Read innerText", kind: .action),
+        CompletionItem(label: "inputValue", insertText: "inputValue()", signature: "()", detail: "Read input value", kind: .action),
+        CompletionItem(label: "getAttribute", insertText: "getAttribute('')", signature: "(name)", detail: "Read HTML attribute", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "isVisible", insertText: "isVisible()", signature: "()", detail: "Check immediate visibility", kind: .action),
+        CompletionItem(label: "isEnabled", insertText: "isEnabled()", signature: "()", detail: "Check enabled state", kind: .action),
+        CompletionItem(label: "isChecked", insertText: "isChecked()", signature: "()", detail: "Check checked state", kind: .action),
+        CompletionItem(label: "count", insertText: "count()", signature: "()", detail: "Count matched elements", kind: .action),
+        CompletionItem(label: "first", insertText: "first()", signature: "()", detail: "First matched element", kind: .action),
+        CompletionItem(label: "last", insertText: "last()", signature: "()", detail: "Last matched element", kind: .action),
+        CompletionItem(label: "nth", insertText: "nth(0)", signature: "(index)", detail: "Nth matched element", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "filter", insertText: "filter({ hasText: '' })", signature: "(opts)", detail: "Narrow locator matches", kind: .action, cursorBackOffset: 4),
+        CompletionItem(label: "screenshot", insertText: "screenshot()", signature: "(opts?)", detail: "Screenshot element", kind: .action)
+    ]
+
+    public static let builtInPlaywrightRequestActions: [CompletionItem] = [
+        CompletionItem(label: "get", insertText: "get('')", signature: "(url, opts?)", detail: "HTTP GET request", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "post", insertText: "post('', { data: {} })", signature: "(url, opts?)", detail: "HTTP POST request", kind: .action, cursorBackOffset: 15),
+        CompletionItem(label: "put", insertText: "put('', { data: {} })", signature: "(url, opts?)", detail: "HTTP PUT request", kind: .action, cursorBackOffset: 15),
+        CompletionItem(label: "patch", insertText: "patch('', { data: {} })", signature: "(url, opts?)", detail: "HTTP PATCH request", kind: .action, cursorBackOffset: 15),
+        CompletionItem(label: "delete", insertText: "delete('')", signature: "(url, opts?)", detail: "HTTP DELETE request", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "head", insertText: "head('')", signature: "(url, opts?)", detail: "HTTP HEAD request", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "fetch", insertText: "fetch('', { method: 'GET' })", signature: "(urlOrReq, opts?)", detail: "Generic HTTP request", kind: .action, cursorBackOffset: 21),
+        CompletionItem(label: "storageState", insertText: "storageState()", signature: "(opts?)", detail: "Export cookies & storage", kind: .action),
+        CompletionItem(label: "dispose", insertText: "dispose()", signature: "()", detail: "Dispose APIRequestContext", kind: .action)
+    ]
+
+    public static let builtInPlaywrightExpectMatchers: [CompletionItem] = [
+        CompletionItem(label: "toBeVisible", insertText: "toBeVisible()", signature: "(opts?)", detail: "Assert locator is visible", kind: .action),
+        CompletionItem(label: "toBeHidden", insertText: "toBeHidden()", signature: "(opts?)", detail: "Assert locator is hidden", kind: .action),
+        CompletionItem(label: "toBeEnabled", insertText: "toBeEnabled()", signature: "(opts?)", detail: "Assert locator is enabled", kind: .action),
+        CompletionItem(label: "toBeDisabled", insertText: "toBeDisabled()", signature: "(opts?)", detail: "Assert locator is disabled", kind: .action),
+        CompletionItem(label: "toBeChecked", insertText: "toBeChecked()", signature: "(opts?)", detail: "Assert checkbox is checked", kind: .action),
+        CompletionItem(label: "toBeFocused", insertText: "toBeFocused()", signature: "(opts?)", detail: "Assert element has focus", kind: .action),
+        CompletionItem(label: "toHaveText", insertText: "toHaveText('')", signature: "(expected, opts?)", detail: "Assert exact/regex text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "toContainText", insertText: "toContainText('')", signature: "(expected, opts?)", detail: "Assert substring text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "toHaveValue", insertText: "toHaveValue('')", signature: "(value, opts?)", detail: "Assert input value", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "toHaveAttribute", insertText: "toHaveAttribute('', '')", signature: "(name, value)", detail: "Assert DOM attribute", kind: .action, cursorBackOffset: 6),
+        CompletionItem(label: "toHaveClass", insertText: "toHaveClass('')", signature: "(expected)", detail: "Assert CSS class", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "toHaveCount", insertText: "toHaveCount(1)", signature: "(count)", detail: "Assert matched element count", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "toHaveURL", insertText: "toHaveURL('')", signature: "(urlOrRegex)", detail: "Assert page URL", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "toHaveTitle", insertText: "toHaveTitle('')", signature: "(titleOrRegex)", detail: "Assert page title", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "toHaveScreenshot", insertText: "toHaveScreenshot()", signature: "(name?, opts?)", detail: "Visual regression assertion", kind: .action),
+        CompletionItem(label: "toBeOK", insertText: "toBeOK()", signature: "()", detail: "Assert HTTP 2xx APIResponse", kind: .action),
+        CompletionItem(label: "toEqual", insertText: "toEqual()", signature: "(expected)", detail: "Deep equality assertion", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "toContain", insertText: "toContain()", signature: "(item)", detail: "Assert array/string contains", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "toBeTruthy", insertText: "toBeTruthy()", signature: "()", detail: "Assert truthy value", kind: .action),
+        CompletionItem(label: "toMatchObject", insertText: "toMatchObject({})", signature: "(subset)", detail: "Assert object subset match", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "not", insertText: "not.", signature: "", detail: "Negate matcher", kind: .dsl)
     ]
 }

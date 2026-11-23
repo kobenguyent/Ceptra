@@ -44,6 +44,21 @@ public enum ArtifactScanner {
         return items.sorted { $0.modifiedAt > $1.modifiedAt }
     }
 
+    /// Scans multiple artifact directories (e.g. `test-results/` and `playwright-report/`),
+    /// deduplicating by absolute path and sorting newest-first.
+    public static func scan(directories: [URL]) -> [ReportArtifact] {
+        var seen = Set<String>()
+        var combined: [ReportArtifact] = []
+        for dir in directories {
+            for item in scan(outputDirectoryURL: dir) {
+                if seen.insert(item.path).inserted {
+                    combined.append(item)
+                }
+            }
+        }
+        return combined.sorted { $0.modifiedAt > $1.modifiedAt }
+    }
+
     public static func newestJUnitXML(in outputDirectoryURL: URL, modifiedAfter cutoff: Date? = nil) -> URL? {
         let xmls = scan(outputDirectoryURL: outputDirectoryURL).filter { $0.kind == .junitXML }
         if let cutoff {
@@ -78,7 +93,8 @@ public enum ArtifactScanner {
         case "aria", "har", "log", "txt":
             return .snapshot
         default:
-            if fileName.lowercased().contains("trace") && ext == "json" {
+            let lower = fileName.lowercased()
+            if lower.contains("trace") && (ext == "json" || ext == "zip") {
                 return .aiTrace
             }
             return nil

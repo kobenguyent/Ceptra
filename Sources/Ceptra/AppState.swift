@@ -339,14 +339,28 @@ final class AppState: ObservableObject {
         return runHistory.first
     }
 
+    var activeFramework: TestFrameworkKind {
+        workspace?.config.framework ?? .codeceptJS
+    }
+
+    var isPlaywrightWorkspace: Bool {
+        activeFramework == .playwright
+    }
+
     var resolvedToolchain: ResolvedToolchain? {
+        resolvedToolchain(for: activeFramework)
+    }
+
+    func resolvedToolchain(for framework: TestFrameworkKind) -> ResolvedToolchain? {
         guard let root = workspace?.rootURL else { return nil }
         return NodeToolchainResolver.resolve(
             workspaceRoot: root,
+            framework: framework,
             runtime: settings.jsRuntime,
             customNodePath: settings.customNodePath,
             customBunPath: settings.customBunPath,
-            customCodeceptPath: settings.customCodeceptPath
+            customCodeceptPath: settings.customCodeceptPath,
+            customPlaywrightPath: settings.customPlaywrightPath
         )
     }
 
@@ -447,8 +461,8 @@ final class AppState: ObservableObject {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Open CodeceptJS Workspace"
-        panel.message = "Select a CodeceptJS project folder containing codecept.conf.* or test files."
+        panel.prompt = "Open Test Workspace"
+        panel.message = "Select a CodeceptJS or Playwright Test project folder containing codecept.conf.*, playwright.config.*, or test files."
         if panel.runModal() == .OK, let url = panel.url {
             openWorkspace(at: url)
         }
@@ -467,6 +481,23 @@ final class AppState: ObservableObject {
                 showBanner("Created starter CodeceptJS 4.x workspace at \(url.lastPathComponent)")
             } catch {
                 showBanner("Could not scaffold workspace: \(error.localizedDescription)", isError: true)
+            }
+        }
+    }
+
+    func createSamplePlaywrightWorkspacePanel() {
+        let panel = NSSavePanel()
+        panel.title = "Create Sample Playwright Test Workspace"
+        panel.prompt = "Create Workspace"
+        panel.nameFieldStringValue = "my-playwright-tests"
+        panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try ProjectScaffolder.createSamplePlaywrightWorkspace(at: url)
+                openWorkspace(at: url)
+                showBanner("Created starter Playwright Test workspace at \(url.lastPathComponent)")
+            } catch {
+                showBanner("Could not scaffold Playwright workspace: \(error.localizedDescription)", isError: true)
             }
         }
     }
@@ -552,8 +583,8 @@ final class AppState: ObservableObject {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.directoryURL = root
-        panel.prompt = "Use CodeceptJS Config"
-        panel.message = "Select any CodeceptJS configuration file (.ts, .js, .cjs, .mjs, .json)."
+        panel.prompt = "Use Test Config"
+        panel.message = "Select any CodeceptJS or Playwright Test configuration file (.ts, .js, .cjs, .mjs, .json)."
         panel.allowedContentTypes = [
             .javaScript,
             .json,
@@ -624,8 +655,28 @@ final class AppState: ObservableObject {
             artifacts = []
             return
         }
-        let outputURL = workspace.config.resolvedOutputURL(rootURL: workspace.rootURL)
-        artifacts = ArtifactScanner.scan(outputDirectoryURL: outputURL)
+        var dirs: [URL] = [workspace.config.resolvedOutputURL(rootURL: workspace.rootURL)]
+        if let htmlReportURL = workspace.config.resolvedHTMLReportURL(rootURL: workspace.rootURL) {
+            dirs.append(htmlReportURL)
+        }
+        artifacts = ArtifactScanner.scan(directories: dirs)
+    }
+
+    func openPlaywrightHTMLReport() {
+        guard let workspace else { return }
+        if let reportDir = workspace.config.resolvedHTMLReportURL(rootURL: workspace.rootURL) {
+            let indexFile = reportDir.appendingPathComponent("index.html")
+            if FileManager.default.fileExists(atPath: indexFile.path) {
+                NSWorkspace.shared.open(indexFile)
+                showBanner("Opened Playwright HTML Report")
+                return
+            }
+        }
+        run(mode: .playwrightShowReport(reportDirectory: workspace.config.htmlReportDirectory))
+    }
+
+    func launchPlaywrightCodegen() {
+        run(mode: .playwrightCodegen(url: workspace?.config.baseURL))
     }
 
     // MARK: - File & Editor Tabs
@@ -769,7 +820,7 @@ final class AppState: ObservableObject {
         let ext = stdURL.pathExtension.lowercased()
         let content = (try? String(contentsOf: stdURL, encoding: .utf8)) ?? ""
         let parsedFeatures: [ParsedFeature]
-        if ["js", "ts", "mjs", "cjs", "mts", "cts", "feature"].contains(ext) {
+        if ["js", "ts", "mjs", "cjs", "mts", "cts", "jsx", "tsx", "feature"].contains(ext) {
             parsedFeatures = TestFileParser.parse(content: content, filePath: stdURL.path)
         } else {
             parsedFeatures = []
@@ -799,7 +850,7 @@ final class AppState: ObservableObject {
         let cat = openTabs[idx].category
         if cat == .testSuite || cat == .gherkinFeature || cat == .other {
             let ext = URL(fileURLWithPath: filePath).pathExtension.lowercased()
-            if ["js", "ts", "mjs", "cjs", "mts", "cts", "feature"].contains(ext) {
+            if ["js", "ts", "mjs", "cjs", "mts", "cts", "jsx", "tsx", "feature"].contains(ext) {
                 liveParsedFeaturesByPath[filePath] = TestFileParser.parse(content: newText, filePath: filePath)
             }
         }
@@ -1009,12 +1060,12 @@ final class AppState: ObservableObject {
     // MARK: - Execution Engine
 
     func run(mode: CodeceptRunMode, debugLaunch: DebugLaunchOptions? = nil) {
-        guard let workspace, let toolchain = resolvedToolchain else {
-            showBanner("Open a CodeceptJS workspace first.", isError: true)
+        guard let workspace else {
+            showBanner("Open a test workspace first.", isError: true)
             return
         }
         guard !isRunning else {
-            showBanner("A CodeceptJS run is already in progress.", isError: true)
+            showBanner("A test run is already in progress.", isError: true)
             return
         }
 
@@ -1023,15 +1074,22 @@ final class AppState: ObservableObject {
             showBanner("Step-through debugging is supported for single-process runs (Run File / Scenario / All), not parallel workers.", isError: true)
             return
         }
-        if isDebugSession && toolchain.runtime == .bun {
-            showBanner("Interactive CDP step-through debugging requires Node.js. Switch runtime to Node in the toolbar or Settings.", isError: true)
-            return
-        }
 
         saveAllDirtyFiles()
 
         let currentWorkspace = self.workspace ?? workspace
         let runConfig = effectiveConfig(for: mode, in: currentWorkspace)
+        let runFramework = runConfig.framework
+        guard let toolchain = resolvedToolchain(for: runFramework) else {
+            showBanner("Could not resolve \(runFramework.displayName) toolchain.", isError: true)
+            return
+        }
+        if isDebugSession && toolchain.runtime == .bun {
+            showBanner("Interactive CDP step-through debugging requires Node.js. Switch runtime to Node in the toolbar or Settings.", isError: true)
+            return
+        }
+
+        let modeLabel = mode.displayLabel(for: runFramework)
         let didAutoSelectDifferentConfig = runConfig.configFilePath != currentWorkspace.config.configFilePath
         if didAutoSelectDifferentConfig && !currentWorkspace.config.isCustomConfigOverride {
             let syncedWorkspace = currentWorkspace.withActiveConfig(runConfig)
@@ -1042,18 +1100,21 @@ final class AppState: ObservableObject {
 
         // Launch directly in the system's default (or chosen) terminal app when System Console mode is enabled
         if settings.consoleExecutionMode == .systemTerminal && !isDebugSession {
-            let bridgeCheck = AICodeceptBridge.buildBridgeEnvironment(
-                settings: settings.aiSettings,
-                runOptions: runOptions,
-                consoleExecutionMode: .systemTerminal,
-                secretStore: aiSecretStore
-            )
+            let bridgeCheck = runFramework == .codeceptJS
+                ? AICodeceptBridge.buildBridgeEnvironment(
+                    settings: settings.aiSettings,
+                    runOptions: runOptions,
+                    consoleExecutionMode: .systemTerminal,
+                    secretStore: aiSecretStore
+                )
+                : AICodeceptBridge.BridgeResult()
             let command = CommandBuilder.build(
                 mode: mode,
                 options: runOptions,
                 workspaceRoot: currentWorkspace.rootURL,
                 configFilePath: runConfig.configFilePath,
                 toolchain: toolchain,
+                framework: runFramework,
                 debugOptions: nil,
                 traceOutputDirectory: nil,
                 colorOutput: true
@@ -1063,7 +1124,7 @@ final class AppState: ObservableObject {
                 let terminalName = try SystemTerminalLauncher.launch(
                     command: command,
                     runtime: toolchain.runtime,
-                    title: mode.displayLabel,
+                    title: modeLabel,
                     toolchain: toolchain,
                     preferredAppPath: settings.customTerminalAppPath
                 )
@@ -1083,7 +1144,7 @@ final class AppState: ObservableObject {
                         isHighlight: false
                     ))
                 }
-                showBanner("Launched \(mode.displayLabel) in \(terminalName) (\(toolchain.runtime.shortName))")
+                showBanner("Launched \(modeLabel) in \(terminalName) (\(toolchain.runtime.shortName))")
             } catch {
                 consoleLogs.append(ConsoleLogEntry(
                     timestamp: Date(),
@@ -1119,7 +1180,7 @@ final class AppState: ObservableObject {
         switch mode {
         case .runAll, .runFile, .runScenario, .runTag, .runLastFailed, .runWorkers, .runMultiple:
             shouldRecordHistory = true
-        case .dryRun, .checkEnvironment, .generateDefinitions, .listActions:
+        case .dryRun, .checkEnvironment, .generateDefinitions, .listActions, .playwrightCodegen, .playwrightShowReport:
             shouldRecordHistory = false
         }
 
@@ -1131,12 +1192,14 @@ final class AppState: ObservableObject {
             try? FileManager.default.createDirectory(at: runTraceDirectory, withIntermediateDirectories: true)
         }
 
-        let aiBridge = AICodeceptBridge.buildBridgeEnvironment(
-            settings: settings.aiSettings,
-            runOptions: runOptions,
-            consoleExecutionMode: .builtIn,
-            secretStore: aiSecretStore
-        )
+        let aiBridge = runFramework == .codeceptJS
+            ? AICodeceptBridge.buildBridgeEnvironment(
+                settings: settings.aiSettings,
+                runOptions: runOptions,
+                consoleExecutionMode: .builtIn,
+                secretStore: aiSecretStore
+            )
+            : AICodeceptBridge.BridgeResult()
 
         let command = CommandBuilder.build(
             mode: mode,
@@ -1144,6 +1207,7 @@ final class AppState: ObservableObject {
             workspaceRoot: currentWorkspace.rootURL,
             configFilePath: runConfig.configFilePath,
             toolchain: toolchain,
+            framework: runFramework,
             debugOptions: isDebugSession ? debugLaunch : nil,
             traceOutputDirectory: runTraceDirectory,
             secretEnvironmentOverrides: aiBridge.secretEnvironment
@@ -1168,7 +1232,7 @@ final class AppState: ObservableObject {
             activeRightTab = .replay
             persistModulePreferences()
         }
-        activeRunLabel = isDebugSession ? "Debug: \(mode.displayLabel)" : mode.displayLabel
+        activeRunLabel = isDebugSession ? "Debug: \(modeLabel)" : modeLabel
         lastCommandLine = command.displayCommand
         var initialLogs: [ConsoleLogEntry] = []
         if didAutoSelectDifferentConfig,
@@ -1260,7 +1324,7 @@ final class AppState: ObservableObject {
                         id: reportID,
                         projectPath: projectPath,
                         projectName: projectName,
-                        label: mode.displayLabel,
+                        label: modeLabel,
                         commandLine: command.displayCommand,
                         startedAt: result.startedAt,
                         finishedAt: result.finishedAt,
@@ -1284,7 +1348,7 @@ final class AppState: ObservableObject {
                         id: reportID,
                         projectPath: projectPath,
                         projectName: projectName,
-                        label: mode.displayLabel,
+                        label: modeLabel,
                         commandLine: command.displayCommand,
                         startedAt: result.startedAt,
                         finishedAt: result.finishedAt,
@@ -1318,9 +1382,9 @@ final class AppState: ObservableObject {
                 if result.wasCancelled {
                     self.showBanner("Execution cancelled.")
                 } else if result.exitCode == 0 {
-                    self.showBanner("\(mode.displayLabel) succeeded (\(passed) passed in \(ReportExporter.formatDuration(ms: totalMs))).")
+                    self.showBanner("\(modeLabel) succeeded (\(passed) passed in \(ReportExporter.formatDuration(ms: totalMs))).")
                 } else {
-                    self.showBanner("\(mode.displayLabel) finished with exit code \(result.exitCode) (\(failed) failed).", isError: true)
+                    self.showBanner("\(modeLabel) finished with exit code \(result.exitCode) (\(failed) failed).", isError: true)
                 }
             } catch {
                 self.isRunning = false
@@ -1333,14 +1397,14 @@ final class AppState: ObservableObject {
                     isStep: false,
                     isHighlight: false
                 ))
-                self.showBanner("Could not start CodeceptJS: \(error.localizedDescription)", isError: true)
+                self.showBanner("Could not start \(runFramework.displayName): \(error.localizedDescription)", isError: true)
             }
         }
     }
 
     func runActiveFile() {
         guard isActiveTabExecutableTestFile, let tab = activeTab else {
-            showBanner("Select a CodeceptJS test file containing Feature() or Scenario() to run.", isError: true)
+            showBanner("Select a test file containing Feature()/Scenario() or Playwright test() to run.", isError: true)
             return
         }
         let targetRel = activeWorkspaceFile?.relativePath ?? tab.relativePath
@@ -1513,7 +1577,7 @@ final class AppState: ObservableObject {
         case .logLine(let text, let isError):
             let trimmed = text.trimmingCharacters(in: .whitespaces)
             let isStep = text.hasPrefix("    ") && !trimmed.isEmpty
-            let isHighlight = trimmed.hasPrefix("✔") || trimmed.hasPrefix("✖") || trimmed.hasPrefix("OK |") || trimmed.hasPrefix("FAIL |")
+            let isHighlight = trimmed.hasPrefix("✔") || trimmed.hasPrefix("✓") || trimmed.hasPrefix("✖") || trimmed.hasPrefix("✘") || trimmed.hasPrefix("OK |") || trimmed.hasPrefix("FAIL |")
             consoleLogs.append(ConsoleLogEntry(
                 timestamp: Date(),
                 text: text,
@@ -1633,18 +1697,27 @@ final class AppState: ObservableObject {
         selectedReportID = nil
     }
 
-    // MARK: - Modular 3-Window Workspace & CodeceptUI Lifecycle
+    // MARK: - Modular 3-Window Workspace & Live UI Server Lifecycle
 
     var activeHelperDisplayName: String {
-        guard let helpers = workspace?.config.helpers, !helpers.isEmpty else {
+        guard let config = workspace?.config else {
             return "CodeceptJS"
         }
-        return helpers.first?.name ?? "CodeceptJS"
+        if config.framework == .playwright {
+            if let firstProject = config.playwrightProjects.first {
+                return "Playwright · \(firstProject)"
+            }
+            return "Playwright Test"
+        }
+        guard !config.helpers.isEmpty else {
+            return "CodeceptJS"
+        }
+        return config.helpers.first?.name ?? "CodeceptJS"
     }
 
     var isCodeceptUIInstalled: Bool {
         guard let root = workspace?.rootURL else { return false }
-        return CodeceptUIServerManager.isInstalled(in: root)
+        return CodeceptUIServerManager.isInstalled(in: root, framework: activeFramework)
     }
 
     func persistModulePreferences() {
@@ -1720,8 +1793,10 @@ final class AppState: ObservableObject {
     }
 
     func startCodeceptUIServer() {
-        guard let workspace, let toolchain = resolvedToolchain else {
-            showBanner("Open a CodeceptJS workspace first.", isError: true)
+        let framework = activeFramework
+        let toolLabel = framework.uiToolDisplayName
+        guard let workspace, let toolchain = resolvedToolchain(for: framework) else {
+            showBanner("Open a test workspace first.", isError: true)
             return
         }
         guard !codeceptUIManager.isRunning else { return }
@@ -1732,6 +1807,7 @@ final class AppState: ObservableObject {
                 workspaceRoot: workspace.rootURL,
                 customConfigPath: workspace.config.configFilePath,
                 toolchain: toolchain,
+                framework: framework,
                 onOutput: { [weak self] line in
                     Task { @MainActor [weak self] in
                         self?.codeceptUILogs.append(line)
@@ -1747,7 +1823,7 @@ final class AppState: ObservableObject {
                             if code == 0 || code == 15 {
                                 self.codeceptUIStatus = .stopped
                             } else {
-                                self.codeceptUIStatus = .failed(message: "@codeceptjs/ui exited with code \(code).")
+                                self.codeceptUIStatus = .failed(message: "\(toolLabel) exited with code \(code).")
                             }
                         }
                     }
@@ -1761,13 +1837,13 @@ final class AppState: ObservableObject {
                 if ready {
                     self.codeceptUIStatus = .running(url: started.url, port: started.port)
                 } else if self.codeceptUIStatus == .starting(port: started.port) {
-                    self.codeceptUIStatus = .failed(message: "Timed out waiting for @codeceptjs/ui on 127.0.0.1:\(started.port).")
+                    self.codeceptUIStatus = .failed(message: "Timed out waiting for \(toolLabel) on 127.0.0.1:\(started.port).")
                     self.codeceptUIManager.stop()
                 }
             }
         } catch {
             codeceptUIStatus = .failed(message: error.localizedDescription)
-            showBanner("Could not start @codeceptjs/ui: \(error.localizedDescription)", isError: true)
+            showBanner("Could not start \(toolLabel): \(error.localizedDescription)", isError: true)
         }
     }
 
@@ -1784,11 +1860,13 @@ final class AppState: ObservableObject {
     }
 
     func installCodeceptUIPackage() {
-        guard let workspace, let toolchain = resolvedToolchain else { return }
+        let framework = activeFramework
+        guard let workspace, let toolchain = resolvedToolchain(for: framework) else { return }
         let cmd = CodeceptUIServerManager.buildInstallCommand(
             packageManager: workspace.packageManager,
             workspaceRoot: workspace.rootURL,
-            toolchain: toolchain
+            toolchain: toolchain,
+            framework: framework
         )
         runDependencyAction(.customShell(command: cmd.displayCommand))
     }

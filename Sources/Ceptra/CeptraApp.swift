@@ -54,10 +54,19 @@ struct CeptraApp: App {
         .defaultSize(width: 1360, height: 840)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Open CodeceptJS Workspace…") {
+                Button("Open Test Workspace…") {
                     appState.openWorkspacePanel()
                 }
                 .keyboardShortcut("o", modifiers: .command)
+
+                Menu("Create Sample Workspace") {
+                    Button("Playwright Test Project (TypeScript)…") {
+                        appState.createSamplePlaywrightWorkspacePanel()
+                    }
+                    Button("CodeceptJS 4.x Project…") {
+                        appState.createSampleWorkspacePanel()
+                    }
+                }
 
                 Button("New File…") {
                     appState.presentNewFileSheet(inDirectory: appState.activeFileParentRelativeDirectory)
@@ -165,7 +174,7 @@ struct CeptraApp: App {
                 .disabled(appState.breakpoints.isEmpty)
             }
 
-            CommandMenu("CodeceptJS") {
+            CommandMenu("Runner") {
                 Button("Run All Tests") {
                     appState.run(mode: .runAll)
                 }
@@ -178,7 +187,7 @@ struct CeptraApp: App {
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(!appState.isActiveTabExecutableTestFile || appState.isRunning)
 
-                Button("Dry Run (Discover & Validate)") {
+                Button(appState.isPlaywrightWorkspace ? "List Tests (playwright test --list)" : "Dry Run (Discover & Validate)") {
                     appState.run(mode: .dryRun(relativePath: nil))
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
@@ -191,7 +200,7 @@ struct CeptraApp: App {
 
                 Divider()
 
-                Button("Run Workers (run-workers)") {
+                Button(appState.isPlaywrightWorkspace ? "Run Workers (--workers)" : "Run Workers (run-workers)") {
                     appState.runWorkersWithCurrentOptions()
                 }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
@@ -202,13 +211,13 @@ struct CeptraApp: App {
                 }
                 .disabled(appState.workspace == nil)
 
-                Button("Run Multiple — All Suites (run-multiple --all)") {
+                Button(appState.isPlaywrightWorkspace ? "Run All Projects" : "Run Multiple — All Suites (run-multiple --all)") {
                     appState.run(mode: .runMultiple(suites: [], runAll: true))
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
                 .disabled(appState.workspace == nil || appState.isRunning)
 
-                Button("Configure Multiple Run…") {
+                Button(appState.isPlaywrightWorkspace ? "Configure Projects Run…" : "Configure Multiple Run…") {
                     appState.presentParallelRunSheet(tab: .multiple)
                 }
                 .disabled(appState.workspace == nil)
@@ -223,15 +232,32 @@ struct CeptraApp: App {
 
                 Divider()
 
-                Button("Check Environment (codeceptjs check)") {
-                    appState.run(mode: .checkEnvironment)
-                }
-                .disabled(appState.workspace == nil || appState.isRunning)
+                if appState.isPlaywrightWorkspace {
+                    Button("Record with Playwright Codegen…") {
+                        appState.launchPlaywrightCodegen()
+                    }
+                    .disabled(appState.workspace == nil || appState.isRunning)
 
-                Button("Generate Type Definitions (codeceptjs def)") {
-                    appState.run(mode: .generateDefinitions)
+                    Button("Open Playwright HTML Report") {
+                        appState.openPlaywrightHTMLReport()
+                    }
+                    .disabled(appState.workspace == nil)
+
+                    Button("Check Playwright Version") {
+                        appState.run(mode: .checkEnvironment)
+                    }
+                    .disabled(appState.workspace == nil || appState.isRunning)
+                } else {
+                    Button("Check Environment (codeceptjs check)") {
+                        appState.run(mode: .checkEnvironment)
+                    }
+                    .disabled(appState.workspace == nil || appState.isRunning)
+
+                    Button("Generate Type Definitions (codeceptjs def)") {
+                        appState.run(mode: .generateDefinitions)
+                    }
+                    .disabled(appState.workspace == nil || appState.isRunning)
                 }
-                .disabled(appState.workspace == nil || appState.isRunning)
 
                 Button("Select Custom Config File…") {
                     appState.selectCustomConfigPanel()
@@ -253,6 +279,9 @@ struct CeptraApp: App {
                         appState.runDependencyAction(.outdated)
                     }
                     Divider()
+                    Button("Update @playwright/test (@latest)") {
+                        appState.runDependencyAction(.upgradePlaywright)
+                    }
                     Button("Update CodeceptJS (@latest)") {
                         appState.runDependencyAction(.upgradeCodeceptJS)
                     }
@@ -415,7 +444,7 @@ struct CeptraApp: App {
                 .keyboardShortcut("t", modifiers: [.command, .option])
                 .disabled(appState.workspace == nil)
 
-                Button("Open CodeceptUI Live") {
+                Button(appState.isPlaywrightWorkspace ? "Open Playwright UI Live" : "Open CodeceptUI Live") {
                     appState.toggleRightTab(.codeceptUI)
                 }
                 .keyboardShortcut("u", modifiers: [.command, .option])

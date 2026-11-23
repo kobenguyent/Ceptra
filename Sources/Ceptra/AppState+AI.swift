@@ -772,6 +772,7 @@ extension AppState {
         }
 
         return AIContextInput(
+            framework: activeFramework,
             activeFilePath: activeTab?.filePath,
             activeFileRelativePath: activeTab?.relativePath,
             activeFileLanguage: activeTab?.language,
@@ -782,6 +783,7 @@ extension AppState {
             consoleErrorLines: errorLines,
             failingReplayStep: failingStep,
             helperDisplayName: activeHelperDisplayName,
+            playwrightProjects: workspace?.config.playwrightProjects ?? [],
             customStepNames: customStepNames,
             pageObjectNames: pageNames
         )
@@ -842,6 +844,7 @@ extension AppState {
         guard let root = workspace?.rootURL else { return nil }
         let candidateDirs = [
             root.appendingPathComponent("output", isDirectory: true),
+            root.appendingPathComponent("test-results", isDirectory: true),
             root.appendingPathComponent("artifacts", isDirectory: true)
         ]
         var newest: (url: URL, date: Date)? = nil

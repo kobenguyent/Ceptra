@@ -18,8 +18,14 @@ public enum CodeceptRunMode: Equatable, Hashable, Sendable {
     case checkEnvironment
     case generateDefinitions
     case listActions
+    case playwrightCodegen(url: String? = nil)
+    case playwrightShowReport(reportDirectory: String? = nil)
 
     public var displayLabel: String {
+        displayLabel(for: .codeceptJS)
+    }
+
+    public func displayLabel(for framework: TestFrameworkKind) -> String {
         switch self {
         case .runAll:
             return "Run All Tests"
@@ -32,7 +38,9 @@ public enum CodeceptRunMode: Equatable, Hashable, Sendable {
         case .runLastFailed:
             return "Re-run Failed"
         case .runWorkers(let count, let strategy, let selectedRuns, _, let lastFailed):
-            var label = "Run \(count) Workers (\(strategy.rawValue))"
+            var label = framework == .playwright
+                ? "Run \(count) Workers"
+                : "Run \(count) Workers (\(strategy.rawValue))"
             if !selectedRuns.isEmpty {
                 label += " · \(selectedRuns.joined(separator: ", "))"
             } else if lastFailed {
@@ -41,18 +49,28 @@ public enum CodeceptRunMode: Equatable, Hashable, Sendable {
             return label
         case .runMultiple(let suites, let runAll):
             let clean = suites.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            if framework == .playwright {
+                if runAll || clean.isEmpty {
+                    return "Run All Projects"
+                }
+                return "Run Projects (\(clean.joined(separator: ", ")))"
+            }
             if runAll || clean.isEmpty {
                 return "Run Multiple (--all)"
             }
             return "Run Multiple (\(clean.joined(separator: ", ")))"
         case .dryRun:
-            return "Dry Run"
+            return framework == .playwright ? "List Tests (--list)" : "Dry Run"
         case .checkEnvironment:
-            return "Check Environment"
+            return framework == .playwright ? "Playwright Version" : "Check Environment"
         case .generateDefinitions:
-            return "Generate steps.d.ts"
+            return framework == .playwright ? "Playwright Codegen" : "Generate steps.d.ts"
         case .listActions:
-            return "List I.* Actions"
+            return framework == .playwright ? "List Tests (--list)" : "List I.* Actions"
+        case .playwrightCodegen:
+            return "Playwright Codegen"
+        case .playwrightShowReport:
+            return "Playwright HTML Report"
         }
     }
 
@@ -60,7 +78,8 @@ public enum CodeceptRunMode: Equatable, Hashable, Sendable {
         switch self {
         case .runAll, .runFile, .runScenario, .runTag, .runLastFailed:
             return true
-        case .runWorkers, .runMultiple, .dryRun, .checkEnvironment, .generateDefinitions, .listActions:
+        case .runWorkers, .runMultiple, .dryRun, .checkEnvironment, .generateDefinitions,
+             .listActions, .playwrightCodegen, .playwrightShowReport:
             return false
         }
     }
@@ -77,8 +96,29 @@ public enum CodeceptRunMode: Equatable, Hashable, Sendable {
             guard let relativePath, !relativePath.isEmpty else { return nil }
             return relativePath
         case .runAll, .runTag, .runLastFailed, .runWorkers, .runMultiple,
-             .checkEnvironment, .generateDefinitions, .listActions:
+             .checkEnvironment, .generateDefinitions, .listActions,
+             .playwrightCodegen, .playwrightShowReport:
             return nil
+        }
+    }
+}
+
+public enum PlaywrightTraceMode: String, Codable, CaseIterable, Identifiable, Equatable, Hashable, Sendable {
+    case configDefault = "default"
+    case on = "on"
+    case retainOnFailure = "retain-on-failure"
+    case onFirstRetry = "on-first-retry"
+    case off = "off"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .configDefault: return "Config Default"
+        case .on: return "Always On"
+        case .retainOnFailure: return "Retain on Failure"
+        case .onFirstRetry: return "On First Retry"
+        case .off: return "Off"
         }
     }
 }
@@ -119,6 +159,11 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
     public var esmCjsCompat: Bool
     public var timeTravelTrace: Bool
     public var debugLaunchOptions: DebugLaunchOptions
+    public var playwrightHeaded: Bool
+    public var playwrightTraceMode: PlaywrightTraceMode
+    public var playwrightUpdateSnapshots: Bool
+    public var playwrightRetries: Int?
+    public var playwrightSelectedProjects: [String]
 
     public init(
         showSteps: Bool = true,
@@ -141,7 +186,12 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         multipleRunAll: Bool = true,
         esmCjsCompat: Bool = true,
         timeTravelTrace: Bool = true,
-        debugLaunchOptions: DebugLaunchOptions = DebugLaunchOptions()
+        debugLaunchOptions: DebugLaunchOptions = DebugLaunchOptions(),
+        playwrightHeaded: Bool = false,
+        playwrightTraceMode: PlaywrightTraceMode = .configDefault,
+        playwrightUpdateSnapshots: Bool = false,
+        playwrightRetries: Int? = nil,
+        playwrightSelectedProjects: [String] = []
     ) {
         self.showSteps = showSteps
         self.debug = debug
@@ -164,6 +214,11 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         self.esmCjsCompat = esmCjsCompat
         self.timeTravelTrace = timeTravelTrace
         self.debugLaunchOptions = debugLaunchOptions
+        self.playwrightHeaded = playwrightHeaded
+        self.playwrightTraceMode = playwrightTraceMode
+        self.playwrightUpdateSnapshots = playwrightUpdateSnapshots
+        self.playwrightRetries = playwrightRetries
+        self.playwrightSelectedProjects = playwrightSelectedProjects
     }
 
     public init(from decoder: Decoder) throws {
@@ -189,6 +244,11 @@ public struct RunOptions: Codable, Equatable, Hashable, Sendable {
         self.esmCjsCompat = try c.decodeIfPresent(Bool.self, forKey: .esmCjsCompat) ?? true
         self.timeTravelTrace = try c.decodeIfPresent(Bool.self, forKey: .timeTravelTrace) ?? true
         self.debugLaunchOptions = try c.decodeIfPresent(DebugLaunchOptions.self, forKey: .debugLaunchOptions) ?? DebugLaunchOptions()
+        self.playwrightHeaded = try c.decodeIfPresent(Bool.self, forKey: .playwrightHeaded) ?? false
+        self.playwrightTraceMode = try c.decodeIfPresent(PlaywrightTraceMode.self, forKey: .playwrightTraceMode) ?? .configDefault
+        self.playwrightUpdateSnapshots = try c.decodeIfPresent(Bool.self, forKey: .playwrightUpdateSnapshots) ?? false
+        self.playwrightRetries = try c.decodeIfPresent(Int.self, forKey: .playwrightRetries)
+        self.playwrightSelectedProjects = try c.decodeIfPresent([String].self, forKey: .playwrightSelectedProjects) ?? []
     }
 
     public static let availableQuickPlugins: [String] = [

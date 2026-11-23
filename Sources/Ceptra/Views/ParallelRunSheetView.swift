@@ -45,9 +45,13 @@ struct ParallelRunSheetView: View {
         return .runMultiple(suites: suites, runAll: suites.isEmpty)
     }
 
+    private var isPlaywright: Bool {
+        appState.isPlaywrightWorkspace
+    }
+
     private var commandPreview: String {
         guard let ws = appState.workspace, let tc = appState.resolvedToolchain else {
-            return "codeceptjs"
+            return isPlaywright ? "playwright test" : "codeceptjs"
         }
         let mode = appState.parallelRunSheetTab == .workers ? effectiveWorkerMode : effectiveMultipleMode
         return CommandBuilder.build(
@@ -56,6 +60,7 @@ struct ParallelRunSheetView: View {
             workspaceRoot: ws.rootURL,
             configFilePath: ws.config.configFilePath,
             toolchain: tc,
+            framework: ws.config.framework,
             colorOutput: appState.isSystemConsoleMode
         ).displayCommand
     }
@@ -65,10 +70,10 @@ struct ParallelRunSheetView: View {
             // Header + Mode Switcher
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Parallel & Multi-Suite Execution")
+                    Text(isPlaywright ? "Parallel Workers & Projects" : "Parallel & Multi-Suite Execution")
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(CeptraTheme.textPrimary)
-                    Text("CodeceptJS 4.x run-workers & run-multiple launcher")
+                    Text(isPlaywright ? "Playwright Test --workers & --project launcher" : "CodeceptJS 4.x run-workers & run-multiple launcher")
                         .font(.system(size: 11))
                         .foregroundStyle(CeptraTheme.textMuted)
                 }
@@ -78,7 +83,12 @@ struct ParallelRunSheetView: View {
             CeptraGlassSegmentedControl(
                 options: ParallelRunTab.allCases,
                 selection: $appState.parallelRunSheetTab,
-                label: { $0.rawValue }
+                label: { tab in
+                    if isPlaywright {
+                        return tab == .workers ? "Workers (--workers)" : "Projects (--project)"
+                    }
+                    return tab.rawValue
+                }
             )
 
             Divider().overlay(CeptraTheme.border)
@@ -142,7 +152,9 @@ struct ParallelRunSheetView: View {
                     appState.run(mode: mode)
                 } label: {
                     Label(
-                        appState.parallelRunSheetTab == .workers ? "Run Workers" : "Run Multiple",
+                        appState.parallelRunSheetTab == .workers
+                            ? "Run Workers"
+                            : (isPlaywright ? "Run Projects" : "Run Multiple"),
                         systemImage: "play.fill"
                     )
                 }
@@ -195,39 +207,41 @@ struct ParallelRunSheetView: View {
                 Spacer()
             }
 
-            // Distribution Strategy
-            VStack(alignment: .leading, spacing: 6) {
+            // Distribution Strategy & Serial Pattern (CodeceptJS only)
+            if !isPlaywright {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 12) {
+                        Text("Strategy (--by)")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(CeptraTheme.textPrimary)
+                            .frame(width: 90, alignment: .leading)
+
+                        Picker("", selection: $appState.runOptions.workerStrategy) {
+                            ForEach(WorkerStrategy.allCases, id: \.self) { strat in
+                                Text(strat.rawValue).tag(strat)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 240)
+                        Spacer()
+                    }
+                    Text(appState.runOptions.workerStrategy.summary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(CeptraTheme.textMuted)
+                        .padding(.leading, 102)
+                }
+
+                // Serial Pattern & Last Failed
                 HStack(spacing: 12) {
-                    Text("Strategy (--by)")
+                    Text("Serial (--serial)")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(CeptraTheme.textPrimary)
                         .frame(width: 90, alignment: .leading)
 
-                    Picker("", selection: $appState.runOptions.workerStrategy) {
-                        ForEach(WorkerStrategy.allCases, id: \.self) { strat in
-                            Text(strat.rawValue).tag(strat)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 240)
-                    Spacer()
+                    TextField("Optional pattern run serially after workers (e.g. @serial)", text: $appState.runOptions.workerSerialPattern)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11.5, design: .monospaced))
                 }
-                Text(appState.runOptions.workerStrategy.summary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(CeptraTheme.textMuted)
-                    .padding(.leading, 102)
-            }
-
-            // Serial Pattern & Last Failed
-            HStack(spacing: 12) {
-                Text("Serial (--serial)")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(CeptraTheme.textPrimary)
-                    .frame(width: 90, alignment: .leading)
-
-                TextField("Optional pattern run serially after workers (e.g. @serial)", text: $appState.runOptions.workerSerialPattern)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11.5, design: .monospaced))
             }
 
             HStack(spacing: 12) {
@@ -237,16 +251,17 @@ struct ParallelRunSheetView: View {
                     .font(.system(size: 12))
             }
 
-            // Optional Multiple Selected Runs inside run-workers
+            // Optional Project / Multiple Selected Runs filter
             VStack(alignment: .leading, spacing: 6) {
-                Text("Optional Multiple Runs Filter ([selectedRuns...])")
+                Text(isPlaywright ? "Optional Projects Filter (--project=...)" : "Optional Multiple Runs Filter ([selectedRuns...])")
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(CeptraTheme.textSecondary)
 
                 if !multipleSuites.isEmpty {
-                    FlowChipStack(items: multipleSuites.flatMap { suite in
-                        [suite.name] + suite.browserTargets
-                    }) { target in
+                    let chipTargets: [String] = isPlaywright
+                        ? multipleSuites.map(\.name)
+                        : multipleSuites.flatMap { suite in [suite.name] + suite.browserTargets }
+                    FlowChipStack(items: chipTargets) { target in
                         let isSelected = appState.runOptions.workerSelectedRuns.contains(target)
                         Button {
                             if isSelected {
@@ -271,50 +286,77 @@ struct ParallelRunSheetView: View {
                     }
                 }
 
-                TextField("Optional extra run names (space-separated, e.g. smoke:chromium)", text: $customWorkerRunsText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11.5, design: .monospaced))
+                TextField(
+                    isPlaywright
+                        ? "Optional extra project names (space-separated, e.g. chromium webkit)"
+                        : "Optional extra run names (space-separated, e.g. smoke:chromium)",
+                    text: $customWorkerRunsText
+                )
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11.5, design: .monospaced))
             }
         }
     }
 
-    // MARK: - Multiple Tab
+    // MARK: - Multiple / Projects Tab
 
     private var multipleConfigurationBody: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("Run all configured multiple suites (--all)", isOn: $appState.runOptions.multipleRunAll)
-                .toggleStyle(.checkbox)
-                .font(.system(size: 12.5, weight: .medium))
+            Toggle(
+                isPlaywright ? "Run all configured projects" : "Run all configured multiple suites (--all)",
+                isOn: $appState.runOptions.multipleRunAll
+            )
+            .toggleStyle(.checkbox)
+            .font(.system(size: 12.5, weight: .medium))
 
             if multipleSuites.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "info.circle.fill")
                             .foregroundStyle(CeptraTheme.accentWarm)
-                        Text("No static `multiple: { ... }` section detected in the active config.")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(CeptraTheme.textPrimary)
+                        Text(
+                            isPlaywright
+                                ? "No static `projects: [ ... ]` array detected in the active Playwright config."
+                                : "No static `multiple: { ... }` section detected in the active config."
+                        )
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CeptraTheme.textPrimary)
                     }
-                    Text("CodeceptJS `run-multiple` reads suite definitions from `multiple` in your config file. You can still run `--all` or enter custom suite names below if your config builds `multiple` dynamically.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(CeptraTheme.textSecondary)
+                    Text(
+                        isPlaywright
+                            ? "Playwright Test runs browser/device projects defined in `projects` in `playwright.config.*`. You can still run all tests or enter project names below."
+                            : "CodeceptJS `run-multiple` reads suite definitions from `multiple` in your config file. You can still run `--all` or enter custom suite names below if your config builds `multiple` dynamically."
+                    )
+                    .font(.system(size: 11))
+                    .foregroundStyle(CeptraTheme.textSecondary)
 
                     HStack(spacing: 8) {
-                        Button("Copy Example multiple Config") {
-                            let snippet = """
-                            multiple: {
-                              basic: {
-                                browsers: ['chromium', 'firefox'],
-                              },
-                              smoke: {
-                                grep: '@smoke',
-                                browsers: ['chromium'],
-                              },
-                            },
-                            """
+                        Button(isPlaywright ? "Copy Example projects Config" : "Copy Example multiple Config") {
+                            let snippet: String
+                            if isPlaywright {
+                                snippet = """
+                                projects: [
+                                  { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+                                  { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+                                  { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+                                ],
+                                """
+                            } else {
+                                snippet = """
+                                multiple: {
+                                  basic: {
+                                    browsers: ['chromium', 'firefox'],
+                                  },
+                                  smoke: {
+                                    grep: '@smoke',
+                                    browsers: ['chromium'],
+                                  },
+                                },
+                                """
+                            }
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(snippet, forType: .string)
-                            appState.showBanner("Copied multiple config snippet")
+                            appState.showBanner(isPlaywright ? "Copied projects config snippet" : "Copied multiple config snippet")
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -335,7 +377,7 @@ struct ParallelRunSheetView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CeptraTheme.accentWarm.opacity(0.35), lineWidth: 0.75))
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("CONFIGURED SUITES (\(multipleSuites.count))")
+                    Text(isPlaywright ? "CONFIGURED PROJECTS (\(multipleSuites.count))" : "CONFIGURED SUITES (\(multipleSuites.count))")
                         .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                         .foregroundStyle(CeptraTheme.textMuted)
 

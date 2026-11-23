@@ -91,19 +91,44 @@ public struct ParsedStep: Identifiable, Codable, Equatable, Hashable, Sendable {
             return .gherkin
         }
         let lower = action.lowercased()
-        if lower.hasPrefix("amon") || lower.contains("url") || lower.contains("refresh") || lower.contains("back") || lower.contains("tab") || lower.contains("switch") {
-            return .navigation
+        if lower == "step" && (lowerActor == "test" || lowerActor == "flow") {
+            return .control
         }
-        if lower.hasPrefix("see") || lower.hasPrefix("dontsee") || lower.hasPrefix("expect") || lower.hasPrefix("assert") || lower.contains("responsecode") || lower.contains("responsecontains") || lower.contains("responsevalid") {
+        if lowerActor == "expect" || lowerActor == "assert"
+            || lower.hasPrefix("see") || lower.hasPrefix("dontsee")
+            || lower.hasPrefix("expect") || lower.hasPrefix("assert")
+            || lower.hasPrefix("tobe") || lower.hasPrefix("tohave")
+            || lower.hasPrefix("tocontain") || lower.hasPrefix("toequal")
+            || lower.hasPrefix("tomatch") || lower.hasPrefix("tothrow")
+            || lower.hasPrefix("topass") || lower.contains("responsecode")
+            || lower.contains("responsecontains") || lower.contains("responsevalid") {
             return .assertion
         }
-        if lower.hasPrefix("send") || lower.contains("request") || lower.contains("graphql") || lower.contains("bearer") || lower.contains("header") || lower.contains("mutation") || lower.contains("query") {
+        if lowerActor == "request"
+            || lower.hasPrefix("send") || lower.contains("request")
+            || lower.contains("graphql") || lower.contains("bearer")
+            || lower.contains("header") || lower.contains("mutation")
+            || lower.contains("query") || lower == "route"
+            || lower == "unroute" || lower == "fetch"
+            || lower == "waitforresponse" || lower == "waitforrequest" {
             return .network
+        }
+        if lower.hasPrefix("amon") || lower == "goto" || lower == "reload"
+            || lower == "goback" || lower == "goforward" || lower == "setviewportsize"
+            || lower.contains("url") || lower.contains("refresh") || lower.contains("back")
+            || lower.contains("tab") || lower.contains("switch") {
+            return .navigation
         }
         if lower.hasPrefix("wait") || lower.hasPrefix("retry") {
             return .wait
         }
-        if lower.contains("click") || lower.contains("fill") || lower.contains("type") || lower.contains("press") || lower.contains("check") || lower.contains("select") || lower.contains("attach") || lower.contains("drag") || lower.contains("scroll") || lower.contains("hover") || lower.contains("clear") || lower.contains("focus") {
+        if lower.contains("click") || lower.contains("fill") || lower.contains("type")
+            || lower.contains("press") || lower.contains("check") || lower.contains("select")
+            || lower.contains("attach") || lower.contains("drag") || lower.contains("scroll")
+            || lower.contains("hover") || lower.contains("clear") || lower.contains("focus")
+            || lower.hasPrefix("getby") || lower == "locator" || lower == "tap"
+            || lower == "dblclick" || lower == "uncheck" || lower == "setinputfiles"
+            || lower == "screenshot" {
             return .interaction
         }
         if ["retryto", "tryto", "within", "session", "eachelement", "pause"].contains(lower) {

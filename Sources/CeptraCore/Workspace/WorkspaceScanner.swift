@@ -13,7 +13,7 @@ public enum WorkspaceScanner {
     ]
 
     private static let codeTestExtensions: Set<String> = [
-        "js", "ts", "mjs", "cjs", "mts", "cts", "feature"
+        "js", "ts", "mjs", "cjs", "mts", "cts", "jsx", "tsx", "feature"
     ]
 
     private static let maxTreeDepth = 12
@@ -64,6 +64,9 @@ public enum WorkspaceScanner {
                 stepDefAbsolutePaths.insert(resolveAbsolutePath(stepDef, base: cfgTestRoot))
             }
             resolvedOutputPaths.insert(cfg.resolvedOutputURL(rootURL: standardizedRoot).path)
+            if let htmlReportURL = cfg.resolvedHTMLReportURL(rootURL: standardizedRoot) {
+                resolvedOutputPaths.insert(htmlReportURL.path)
+            }
         }
 
         let packageManager = PackageManagerSupport.detectPackageManager(in: standardizedRoot)
@@ -197,8 +200,13 @@ public enum WorkspaceScanner {
                 if ignoredDirectories.contains(name) {
                     continue
                 }
-                // Keep CodeceptJS output directory visible in the tree as a leaf folder without scanning generated artifacts as tests
-                let isOutputDir = context.resolvedOutputPaths.contains(fullPath) || name == "output" || name == "_output"
+                // Keep CodeceptJS/Playwright output directories visible in the tree as leaf folders without scanning generated artifacts as tests
+                let isOutputDir = context.resolvedOutputPaths.contains(fullPath)
+                    || name == "output"
+                    || name == "_output"
+                    || name == "test-results"
+                    || name == "playwright-report"
+                    || name == "blob-report"
                 let realDirPath = stdURL.resolvingSymlinksInPath().path
                 let children: [WorkspaceTreeNode]
                 if isOutputDir {
@@ -341,7 +349,7 @@ public enum WorkspaceScanner {
     ) -> WorkspaceFileCategory {
         if fullPath == activeConfigPath
             || knownConfigPaths.contains(fullPath)
-            || ConfigParser.configFileNames.contains(fileName)
+            || ConfigParser.allStandardConfigFileNames.contains(fileName)
             || fileName == "package.json"
             || fileName == "tsconfig.json"
             || fileName == "jsconfig.json"
@@ -351,7 +359,11 @@ public enum WorkspaceScanner {
         let lowerName = fileName.lowercased()
         let lowerPath = relativePath.lowercased()
 
-        if helperAbsolutePaths.contains(fullPath) || lowerPath.contains("helper") || lowerPath.hasPrefix("helpers/") {
+        if helperAbsolutePaths.contains(fullPath)
+            || lowerPath.contains("helper")
+            || lowerPath.hasPrefix("helpers/")
+            || lowerPath.contains("fixtures/")
+            || lowerPath.hasPrefix("fixtures/") {
             return .helper
         }
         if stepDefAbsolutePaths.contains(fullPath) || lowerPath.contains("step_definitions/") || lowerPath.contains("stepdefinitions/") {

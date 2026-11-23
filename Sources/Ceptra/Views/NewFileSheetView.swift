@@ -161,12 +161,17 @@ struct NewFileSheetView: View {
         }
         .onAppear {
             let isTS = appState.workspace?.config.isTypeScript ?? false
+            let isPW = appState.isPlaywrightWorkspace
             if let initial = appState.newFileInitialDirectory {
                 directory = initial
                 hasCustomDirectoryOverride = true
-                selectedKind = inferredDefaultKind(forDirectory: initial, isTypeScript: isTS)
+                selectedKind = inferredDefaultKind(forDirectory: initial, isTypeScript: isTS, isPlaywright: isPW)
             } else {
-                selectedKind = isTS ? .tsTest : .jsTest
+                if isPW {
+                    selectedKind = isTS ? .playwrightTSTest : .playwrightJSTest
+                } else {
+                    selectedKind = isTS ? .tsTest : .jsTest
+                }
                 directory = selectedKind.suggestedDirectory
                 hasCustomDirectoryOverride = false
             }
@@ -176,15 +181,20 @@ struct NewFileSheetView: View {
         }
     }
 
-    private func inferredDefaultKind(forDirectory dir: String, isTypeScript: Bool) -> ScaffoldTemplateKind {
+    private func inferredDefaultKind(forDirectory dir: String, isTypeScript: Bool, isPlaywright: Bool) -> ScaffoldTemplateKind {
         let lower = dir.lowercased()
         if lower.isEmpty { return .blankFile }
         let last = (lower as NSString).lastPathComponent
         if ["tests", "test", "e2e", "specs", "spec"].contains(last) {
+            if isPlaywright {
+                return isTypeScript ? .playwrightTSTest : .playwrightJSTest
+            }
             return isTypeScript ? .tsTest : .jsTest
         }
         if last == "features" { return .gherkinFeature }
-        if ["pages", "pageobjects", "fragments"].contains(last) { return .pageObject }
+        if ["pages", "pageobjects", "fragments"].contains(last) {
+            return isPlaywright ? .playwrightPageObject : .pageObject
+        }
         if last == "helpers" { return .customHelper }
         return .blankFile
     }

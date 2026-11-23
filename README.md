@@ -5,7 +5,7 @@
 <h1 align="center">Ceptra</h1>
 
 <p align="center">
-  <strong>Native macOS IDE for CodeceptJS 4.x.</strong><br/>
+  <strong>Native macOS IDE for CodeceptJS 4.x &amp; Playwright Test.</strong><br/>
   Built in SwiftUI &amp; AppKit — zero Electron overhead, zero third-party Swift dependencies.
 </p>
 
@@ -14,9 +14,10 @@
     <img src="https://img.shields.io/github/v/release/kobenguyent/Ceptra?style=flat-square&color=3b82f6&label=release" alt="Latest Release" />
   </a>
   <img src="https://img.shields.io/badge/macOS-14.0%2B-111827?style=flat-square&logo=apple&logoColor=white" alt="macOS 14+" />
-  <img src="https://img.shields.io/badge/CodeceptJS-4.x-f59e0b?style=flat-square" alt="CodeceptJS 4.x" />
+  <img src="https://img.shields.io/badge/CodeceptJS-4.x-f59e0b?style=flat-square&logoColor=white" alt="CodeceptJS 4.x" />
+  <img src="https://img.shields.io/badge/Playwright-Test-2ead33?style=flat-square&logoColor=white" alt="Playwright Test" />
   <img src="https://img.shields.io/badge/Swift-5.9%2B%20Native-f97316?style=flat-square&logo=swift&logoColor=white" alt="Pure Swift" />
-  <img src="https://img.shields.io/badge/Runtime-Node.js%20%7C%20Bun-10b981?style=flat-square" alt="Node.js & Bun" />
+  <img src="https://img.shields.io/badge/Runtime-Node.js%20%7C%20Bun-10b981?style=flat-square&logoColor=white" alt="Node.js & Bun" />
   <a href="LICENSE">
     <img src="https://img.shields.io/github/license/kobenguyent/Ceptra?style=flat-square&color=6366f1" alt="License" />
   </a>
@@ -38,16 +39,17 @@
 
 ## Why Ceptra?
 
-Running CodeceptJS 4.x across TypeScript, ESM, Playwright, and REST/GraphQL suites usually means juggling an editor, terminal tabs, ad-hoc logs, and config flags. **Ceptra** brings the entire workflow into one native macOS workspace:
+Running **CodeceptJS 4.x** or **Playwright Test (`@playwright/test`)** across TypeScript, ESM, browser projects, and REST/GraphQL suites usually means juggling an editor, terminal tabs, ad-hoc logs, and config flags. **Ceptra** brings both frameworks into one native macOS workspace:
 
 | Challenge | How Ceptra Solves It |
 | --- | --- |
 | **Slow, memory-hungry editors** | Native **SwiftUI + AppKit** (`TextKit 1`) — fast startup, crisp typography, smooth pinch &amp; scroll zoom, zero Electron footprint. |
-| **Blind test failures** | **Zero-config Web &amp; API Time-Travel Replay** — automatic step screenshots, DOM snapshots, HTTP/fetch capture, JSON tree &amp; timing waterfall, exported as a single offline HTML file. |
-| **Painful debugging** | **Built-in CDP Step-Through Debugger** (`⌘⇧B`) with gutter breakpoints, conditional breakpoints, logpoints, locals, watch expressions, and interactive `pause()` shell. |
-| **Monorepo config mistakes** | **Automatic per-file `-c` config resolution** — detects every `codecept.conf.*` across `tests/web` and `tests/api`, picks the owning config automatically, and switches between **Node.js &amp; Bun** or **Built-in &amp; System Console** in one click. |
-| **Authoring &amp; fixing tests** | **Multi-Provider AI Assistant &amp; `/commands`** (`⌘⌥A`) — connect **Local Ollama**, Cloud APIs, or local CLI agents with multimodal attachments, portable `SKILL.md` skills, and 3-tier workspace permission controls. |
-| **Sharing test snippets** | **Code Block Screenshots** (`⌘⌥P` / `⌘⌥⇧P`) — 1-step 2×/3× Retina PNG snapshots of any selection or enclosing `Scenario()` block with gradients, themes, and macOS chrome. |
+| **First-class Playwright Test &amp; CodeceptJS** | Auto-detects `playwright.config.{ts,js,mjs,cjs}` &amp; `codecept.conf.*`, parses `test.describe`/`test`/`test.step`/`page.*`/`expect` &amp; `Feature`/`Scenario`, embeds **Playwright UI Mode** (`playwright test --ui`) &amp; `@codeceptjs/ui`, plus **Playwright Codegen**, `--project` / `--workers` / `--headed` / `--trace` controls, and curated `page.*` / `expect().*` / `request.*` / `I.*` IntelliSense. |
+| **Blind test failures** | **Zero-config Web &amp; API Time-Travel Replay** — automatic step screenshots, DOM snapshots, HTTP/fetch capture, Playwright step/attachment capture, JSON tree &amp; timing waterfall, exported as a single offline HTML file. |
+| **Painful debugging** | **Built-in CDP Step-Through Debugger** (`⌘⇧B`) with gutter breakpoints, conditional breakpoints, logpoints, locals, watch expressions, `PWDEBUG=1` Inspector support, and CodeceptJS's interactive `pause()` shell. |
+| **Monorepo config mistakes** | **Automatic per-file `-c` config resolution** — detects every `codecept.conf.*` and `playwright.config.*` even in mixed monorepos, picks the owning config &amp; framework toolchain automatically, and switches between **Node.js &amp; Bun** or **Built-in &amp; System Console** in one click. |
+| **Authoring &amp; fixing tests** | **Multi-Provider AI Assistant &amp; `/commands`** (`⌘⌥A`) — framework-aware prompts for Playwright Test &amp; CodeceptJS with **Local Ollama**, Cloud APIs, or local CLI agents, multimodal attachments, portable `SKILL.md` skills, and 3-tier workspace permission controls. |
+| **Sharing test snippets** | **Code Block Screenshots** (`⌘⌥P` / `⌘⌥⇧P`) — 1-step 2×/3× Retina PNG snapshots of any selection or enclosing `test()` / `Scenario()` block with gradients, themes, and macOS chrome. |
 
 ---
 

@@ -20,7 +20,7 @@ struct RightInspectorWindowView: View {
                                 }
                             } label: {
                                 HStack(spacing: 4) {
-                                    Text(tab.displayTitle)
+                                    Text(tab.displayTitle(for: appState.activeFramework))
                                         .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
                                         .foregroundStyle(isSelected ? CeptraTheme.textPrimary : CeptraTheme.textSecondary.opacity(0.85))
                                         .lineLimit(1)

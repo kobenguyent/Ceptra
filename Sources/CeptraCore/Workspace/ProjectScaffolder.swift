@@ -2,10 +2,13 @@ import Foundation
 
 public enum ScaffoldTemplateKind: String, CaseIterable, Identifiable, Sendable {
     case blankFile = "Blank / Custom File"
+    case playwrightTSTest = "Playwright Test (.spec.ts)"
+    case playwrightJSTest = "Playwright Test (.spec.js)"
+    case playwrightPageObject = "Playwright Page Object (.ts)"
     case jsTest = "CodeceptJS Test (.js)"
     case tsTest = "CodeceptJS Test (.ts)"
     case gherkinFeature = "Gherkin Feature (.feature)"
-    case pageObject = "Page Object (.js)"
+    case pageObject = "CodeceptJS Page Object (.js)"
     case customHelper = "Custom Helper (.js)"
 
     public var id: String { rawValue }
@@ -13,6 +16,9 @@ public enum ScaffoldTemplateKind: String, CaseIterable, Identifiable, Sendable {
     public var defaultExtension: String {
         switch self {
         case .blankFile: return ""
+        case .playwrightTSTest: return ".spec.ts"
+        case .playwrightJSTest: return ".spec.js"
+        case .playwrightPageObject: return "Page.ts"
         case .jsTest: return "_test.js"
         case .tsTest: return "_test.ts"
         case .gherkinFeature: return ".feature"
@@ -24,9 +30,9 @@ public enum ScaffoldTemplateKind: String, CaseIterable, Identifiable, Sendable {
     public var suggestedDirectory: String {
         switch self {
         case .blankFile: return ""
-        case .jsTest, .tsTest: return "tests"
+        case .playwrightTSTest, .playwrightJSTest, .jsTest, .tsTest: return "tests"
         case .gherkinFeature: return "features"
-        case .pageObject: return "pages"
+        case .playwrightPageObject, .pageObject: return "pages"
         case .customHelper: return "helpers"
         }
     }
@@ -61,6 +67,68 @@ public enum ProjectScaffolder {
         switch kind {
         case .blankFile:
             return ""
+
+        case .playwrightTSTest:
+            return """
+            import { test, expect } from '@playwright/test';
+
+            test.describe('\(title)', { tag: '@smoke' }, () => {
+              test.beforeEach(async ({ page }) => {
+                await page.goto('/');
+              });
+
+              test('renders primary experience', async ({ page }) => {
+                await expect(page.locator('body')).toBeVisible();
+                await expect(page).toHaveTitle(/.+/);
+              });
+
+              test('validates API response', { tag: '@api' }, async ({ request }) => {
+                const response = await request.get('/health');
+                await expect(response).toBeOK();
+              });
+            });
+            """
+
+        case .playwrightJSTest:
+            return """
+            import { test, expect } from '@playwright/test';
+
+            test.describe('\(title)', { tag: '@smoke' }, () => {
+              test.beforeEach(async ({ page }) => {
+                await page.goto('/');
+              });
+
+              test('renders primary experience', async ({ page }) => {
+                await expect(page.locator('body')).toBeVisible();
+                await expect(page).toHaveTitle(/.+/);
+              });
+            });
+            """
+
+        case .playwrightPageObject:
+            return """
+            import type { Locator, Page } from '@playwright/test';
+
+            export class \(identifier)Page {
+              readonly page: Page;
+              readonly heading: Locator;
+              readonly submitButton: Locator;
+
+              constructor(page: Page) {
+                this.page = page;
+                this.heading = page.getByRole('heading', { level: 1 });
+                this.submitButton = page.getByRole('button', { name: /submit/i });
+              }
+
+              async goto() {
+                await this.page.goto('/\(identifier.lowercased())');
+              }
+
+              async submit() {
+                await this.submitButton.click();
+              }
+            }
+            """
 
         case .jsTest:
             return """
@@ -266,6 +334,142 @@ public enum ProjectScaffolder {
         )
     }
 
+    /// Scaffolds a ready-to-run Playwright Test (`@playwright/test`) TypeScript sample workspace at `directoryURL`.
+    public static func createSamplePlaywrightWorkspace(at directoryURL: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try fm.createDirectory(at: directoryURL.appendingPathComponent("tests"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: directoryURL.appendingPathComponent("pages"), withIntermediateDirectories: true)
+
+        let packageJSON = """
+        {
+          "name": "\(directoryURL.lastPathComponent)",
+          "version": "1.0.0",
+          "type": "module",
+          "scripts": {
+            "test": "playwright test",
+            "test:ui": "playwright test --ui",
+            "test:headed": "playwright test --headed",
+            "report": "playwright show-report"
+          },
+          "devDependencies": {
+            "@playwright/test": "^1.50.0",
+            "@types/node": "^22.0.0"
+          }
+        }
+        """
+
+        let tsconfigJSON = """
+        {
+          "compilerOptions": {
+            "target": "ES2022",
+            "module": "ESNext",
+            "moduleResolution": "Bundler",
+            "strict": true,
+            "esModuleInterop": true,
+            "skipLibCheck": true,
+            "noEmit": true
+          },
+          "include": ["playwright.config.ts", "tests/**/*.ts", "pages/**/*.ts"]
+        }
+        """
+
+        let playwrightConfigTS = """
+        import { defineConfig, devices } from '@playwright/test';
+
+        export default defineConfig({
+          testDir: './tests',
+          outputDir: './test-results',
+          fullyParallel: true,
+          forbidOnly: !!process.env.CI,
+          retries: process.env.CI ? 2 : 0,
+          workers: process.env.CI ? 1 : undefined,
+          reporter: [['list'], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
+          use: {
+            baseURL: 'https://playwright.dev',
+            trace: 'on-first-retry',
+            screenshot: 'only-on-failure',
+          },
+          projects: [
+            {
+              name: 'chromium',
+              use: { ...devices['Desktop Chrome'] },
+            },
+            {
+              name: 'firefox',
+              use: { ...devices['Desktop Firefox'] },
+            },
+            {
+              name: 'webkit',
+              use: { ...devices['Desktop Safari'] },
+            },
+          ],
+        });
+        """
+
+        let exampleSpec = """
+        import { test, expect } from '@playwright/test';
+        import { HomePage } from '../pages/HomePage';
+
+        test.describe('Playwright Docs', { tag: '@smoke' }, () => {
+          test('has title and opens Getting Started @web', async ({ page }) => {
+            const home = new HomePage(page);
+            await test.step('Open Playwright home page', async () => {
+              await home.goto();
+              await expect(page).toHaveTitle(/Playwright/);
+            });
+
+            await test.step('Navigate to Installation guide', async () => {
+              await home.clickGetStarted();
+              await expect(page.getByRole('heading', { name: 'Installation' })).toBeVisible();
+            });
+          });
+        });
+        """
+
+        let apiSpec = """
+        import { test, expect } from '@playwright/test';
+
+        test.describe('Public JSON API', { tag: '@api' }, () => {
+          test('fetches a todo resource', async ({ request }) => {
+            const response = await request.get('https://jsonplaceholder.typicode.com/todos/1');
+            await expect(response).toBeOK();
+            const payload = await response.json();
+            expect(payload).toMatchObject({ id: 1 });
+          });
+        });
+        """
+
+        let homePageTS = """
+        import type { Locator, Page } from '@playwright/test';
+
+        export class HomePage {
+          readonly page: Page;
+          readonly getStartedLink: Locator;
+
+          constructor(page: Page) {
+            this.page = page;
+            this.getStartedLink = page.getByRole('link', { name: 'Get started' });
+          }
+
+          async goto() {
+            await this.page.goto('/');
+          }
+
+          async clickGetStarted() {
+            await this.getStartedLink.click();
+          }
+        }
+        """
+
+        try packageJSON.write(to: directoryURL.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+        try tsconfigJSON.write(to: directoryURL.appendingPathComponent("tsconfig.json"), atomically: true, encoding: .utf8)
+        try playwrightConfigTS.write(to: directoryURL.appendingPathComponent("playwright.config.ts"), atomically: true, encoding: .utf8)
+        try exampleSpec.write(to: directoryURL.appendingPathComponent("tests/example.spec.ts"), atomically: true, encoding: .utf8)
+        try apiSpec.write(to: directoryURL.appendingPathComponent("tests/api.spec.ts"), atomically: true, encoding: .utf8)
+        try homePageTS.write(to: directoryURL.appendingPathComponent("pages/HomePage.ts"), atomically: true, encoding: .utf8)
+    }
+
     public static func sanitizeIdentifier(_ raw: String) -> String {
         let parts = raw.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
         guard !parts.isEmpty else { return "Custom" }
@@ -374,7 +578,7 @@ public enum ProjectScaffolder {
             finalLast = last
         } else {
             let baseName = sanitizeIdentifier(last)
-            let stem = (kind == .pageObject) ? baseName : baseName.lowercased()
+            let stem = (kind == .pageObject || kind == .playwrightPageObject) ? baseName : baseName.lowercased()
             finalLast = stem + kind.defaultExtension
         }
 
@@ -510,4 +714,79 @@ public struct CodeSnippetItem: Identifiable, Sendable {
             """
         )
     ]
+
+    public static let playwrightSnippets: [CodeSnippetItem] = [
+        CodeSnippetItem(
+            id: "pw-test",
+            title: "Playwright Test",
+            subtitle: "Standard async Playwright test with web-first assertions",
+            body: """
+            test('verifies user flow @smoke', async ({ page }) => {
+              await page.goto('/');
+              await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+            });
+            """
+        ),
+        CodeSnippetItem(
+            id: "pw-describe",
+            title: "test.describe Suite",
+            subtitle: "Grouped suite with beforeEach hook and tag",
+            body: """
+            test.describe('Feature Suite', { tag: '@smoke' }, () => {
+              test.beforeEach(async ({ page }) => {
+                await page.goto('/');
+              });
+
+              test('completes primary action', async ({ page }) => {
+                await page.getByRole('button', { name: 'Continue' }).click();
+                await expect(page).toHaveURL(/dashboard/);
+              });
+            });
+            """
+        ),
+        CodeSnippetItem(
+            id: "pw-step",
+            title: "test.step Block",
+            subtitle: "Structured step visible in Replay & Trace Viewer",
+            body: """
+            await test.step('Submit checkout form', async () => {
+              await page.getByLabel('Email').fill('qa@example.com');
+              await page.getByRole('button', { name: 'Submit' }).click();
+            });
+            """
+        ),
+        CodeSnippetItem(
+            id: "pw-api",
+            title: "API Request Test",
+            subtitle: "Built-in APIRequestContext GET + JSON assertion",
+            body: """
+            test('verifies REST endpoint', { tag: '@api' }, async ({ request }) => {
+              const response = await request.get('/api/users/1');
+              await expect(response).toBeOK();
+              expect(await response.json()).toMatchObject({ id: 1 });
+            });
+            """
+        ),
+        CodeSnippetItem(
+            id: "pw-route-mock",
+            title: "Network Route Mock",
+            subtitle: "Intercept and mock HTTP response with page.route",
+            body: """
+            await page.route('**/api/items', async (route) => {
+              await route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify([{ id: 1, name: 'Mock Item' }]),
+              });
+            });
+            """
+        )
+    ]
+
+    public static func snippets(for framework: TestFrameworkKind) -> [CodeSnippetItem] {
+        switch framework {
+        case .codeceptJS: return builtInSnippets
+        case .playwright: return playwrightSnippets
+        }
+    }
 }

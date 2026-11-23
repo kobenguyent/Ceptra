@@ -6,6 +6,18 @@ import WebKit
 struct CodeceptUIInspectorView: View {
     @EnvironmentObject var appState: AppState
 
+    private var isPlaywright: Bool {
+        appState.isPlaywrightWorkspace
+    }
+
+    private var toolName: String {
+        isPlaywright ? "Playwright UI" : "@codeceptjs/ui"
+    }
+
+    private var packageName: String {
+        appState.activeFramework.uiPackageName
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Compact Control Bar
@@ -32,7 +44,7 @@ struct CodeceptUIInspectorView: View {
                             .frame(width: 22, height: 22)
                     }
                     .buttonStyle(.plain)
-                    .help("Open @codeceptjs/ui in Default Browser")
+                    .help("Open \(toolName) in Default Browser")
                 }
 
                 if appState.codeceptUIStatus.isActive {
@@ -45,7 +57,7 @@ struct CodeceptUIInspectorView: View {
                             .frame(width: 22, height: 22)
                     }
                     .buttonStyle(.plain)
-                    .help("Restart @codeceptjs/ui")
+                    .help("Restart \(toolName)")
 
                     Button("Stop") {
                         appState.stopCodeceptUIServer()
@@ -84,7 +96,7 @@ struct CodeceptUIInspectorView: View {
                 VStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.regular)
-                    Text("Starting @codeceptjs/ui on 127.0.0.1:\(port)…")
+                    Text("Starting \(toolName) on 127.0.0.1:\(port)…")
                         .font(.system(size: 11.5, design: .monospaced))
                         .foregroundStyle(CeptraTheme.textSecondary)
                     recentLogsBox
@@ -121,17 +133,21 @@ struct CodeceptUIInspectorView: View {
                         Image(systemName: "macwindow")
                             .font(.system(size: 26, weight: .light))
                             .foregroundStyle(CeptraTheme.violet)
-                        Text("CodeceptUI Live")
+                        Text(isPlaywright ? "Playwright UI Mode" : "CodeceptUI Live")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(CeptraTheme.textPrimary)
-                        Text("Launch @codeceptjs/ui on a private loopback port (127.0.0.1) right inside Ceptra.")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(CeptraTheme.textSecondary)
-                            .multilineTextAlignment(.center)
+                        Text(
+                            isPlaywright
+                                ? "Launch official `playwright test --ui` with watch mode, locator picker, and time-travel trace viewer on a private loopback port (127.0.0.1)."
+                                : "Launch @codeceptjs/ui on a private loopback port (127.0.0.1) right inside Ceptra."
+                        )
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                        .multilineTextAlignment(.center)
                         Button {
                             appState.startCodeceptUIServer()
                         } label: {
-                            Label("Start @codeceptjs/ui", systemImage: "play.fill")
+                            Label("Start \(toolName)", systemImage: "play.fill")
                                 .font(.system(size: 11.5, weight: .semibold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 12)
@@ -153,10 +169,10 @@ struct CodeceptUIInspectorView: View {
         let pm = appState.workspace?.packageManager ?? .npm
         let preview: String = {
             switch pm {
-            case .npm: return "npm install -D @codeceptjs/ui"
-            case .pnpm: return "pnpm add -D @codeceptjs/ui"
-            case .yarn: return "yarn add -D @codeceptjs/ui"
-            case .bun: return "bun add -d @codeceptjs/ui"
+            case .npm: return "npm install -D \(packageName)"
+            case .pnpm: return "pnpm add -D \(packageName)"
+            case .yarn: return "yarn add -D \(packageName)"
+            case .bun: return "bun add -d \(packageName)"
             }
         }()
 
@@ -164,13 +180,17 @@ struct CodeceptUIInspectorView: View {
             Image(systemName: "shippingbox")
                 .font(.system(size: 26, weight: .light))
                 .foregroundStyle(CeptraTheme.textMuted)
-            Text("@codeceptjs/ui Not Installed")
+            Text("\(packageName) Not Installed")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(CeptraTheme.textPrimary)
-            Text("Install the official CodeceptJS interactive web UI in this workspace to run live browser visual tests inside Ceptra.")
-                .font(.system(size: 11.5))
-                .foregroundStyle(CeptraTheme.textSecondary)
-                .multilineTextAlignment(.center)
+            Text(
+                isPlaywright
+                    ? "Install @playwright/test in this workspace to launch Playwright UI Mode and run tests inside Ceptra."
+                    : "Install the official CodeceptJS interactive web UI in this workspace to run live browser visual tests inside Ceptra."
+            )
+            .font(.system(size: 11.5))
+            .foregroundStyle(CeptraTheme.textSecondary)
+            .multilineTextAlignment(.center)
             Text(preview)
                 .font(.system(size: 10.5, design: .monospaced))
                 .foregroundStyle(CeptraTheme.cyan)
@@ -181,7 +201,7 @@ struct CodeceptUIInspectorView: View {
             Button {
                 appState.installCodeceptUIPackage()
             } label: {
-                Label("Install @codeceptjs/ui", systemImage: "arrow.down.circle.fill")
+                Label("Install \(packageName)", systemImage: "arrow.down.circle.fill")
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
@@ -226,10 +246,10 @@ struct CodeceptUIInspectorView: View {
 
     private var statusTitle: String {
         switch appState.codeceptUIStatus {
-        case .running(_, let port): return "@codeceptjs/ui :\(port)"
+        case .running(_, let port): return "\(toolName) :\(port)"
         case .starting(let port): return "Starting :\(port)…"
-        case .failed: return "@codeceptjs/ui (error)"
-        case .stopped: return "@codeceptjs/ui"
+        case .failed: return "\(toolName) (error)"
+        case .stopped: return toolName
         }
     }
 }

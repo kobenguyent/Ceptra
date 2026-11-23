@@ -24,6 +24,7 @@ public enum DependencyAction: Equatable, Hashable, Sendable {
     case cleanInstall
     case outdated
     case upgradeCodeceptJS
+    case upgradePlaywright
     case installPlaywrightBrowsers
     case runScript(name: String)
     case customShell(command: String)
@@ -35,6 +36,7 @@ public enum DependencyAction: Equatable, Hashable, Sendable {
         case .cleanInstall: return "Clean Install (Lockfile)"
         case .outdated: return "Check Outdated Packages"
         case .upgradeCodeceptJS: return "Update CodeceptJS (@latest)"
+        case .upgradePlaywright: return "Update @playwright/test (@latest)"
         case .installPlaywrightBrowsers: return "Install Playwright Browsers"
         case .runScript(let name): return "Script: \(name)"
         case .customShell(let cmd):
@@ -168,6 +170,14 @@ public enum PackageManagerSupport {
             case .bun: args = ["add", "-d", "codeceptjs@latest"]
             }
 
+        case .upgradePlaywright:
+            pmExecName = packageManager.executableName
+            switch packageManager {
+            case .npm: args = ["install", "-D", "@playwright/test@latest"]
+            case .pnpm, .yarn: args = ["add", "-D", "@playwright/test@latest"]
+            case .bun: args = ["add", "-d", "@playwright/test@latest"]
+            }
+
         case .installPlaywrightBrowsers:
             pmExecName = packageManager.execRunnerName
             switch packageManager {
@@ -213,6 +223,12 @@ public enum PackageManagerSupport {
             case .npm: return "npm install -D codeceptjs@latest"
             case .pnpm, .yarn: return "\(packageManager.rawValue) add -D codeceptjs@latest"
             case .bun: return "bun add -d codeceptjs@latest"
+            }
+        case .upgradePlaywright:
+            switch packageManager {
+            case .npm: return "npm install -D @playwright/test@latest"
+            case .pnpm, .yarn: return "\(packageManager.rawValue) add -D @playwright/test@latest"
+            case .bun: return "bun add -d @playwright/test@latest"
             }
         case .installPlaywrightBrowsers:
             switch packageManager {

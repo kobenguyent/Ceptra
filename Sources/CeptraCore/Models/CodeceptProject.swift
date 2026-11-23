@@ -1,5 +1,40 @@
 import Foundation
 
+public enum TestFrameworkKind: String, Codable, CaseIterable, Identifiable, Equatable, Hashable, Sendable {
+    case codeceptJS
+    case playwright
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .codeceptJS: return "CodeceptJS 4.x"
+        case .playwright: return "Playwright Test"
+        }
+    }
+
+    public var shortName: String {
+        switch self {
+        case .codeceptJS: return "CodeceptJS"
+        case .playwright: return "Playwright"
+        }
+    }
+
+    public var uiToolDisplayName: String {
+        switch self {
+        case .codeceptJS: return "CodeceptUI"
+        case .playwright: return "Playwright UI"
+        }
+    }
+
+    public var uiPackageName: String {
+        switch self {
+        case .codeceptJS: return "@codeceptjs/ui"
+        case .playwright: return "@playwright/test"
+        }
+    }
+}
+
 public struct CodeceptHelperInfo: Identifiable, Codable, Equatable, Hashable, Sendable {
     public var id: String { name }
     public let name: String
@@ -67,51 +102,63 @@ public struct CodeceptMultipleSuiteInfo: Identifiable, Codable, Equatable, Hasha
 }
 
 public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
+    public let framework: TestFrameworkKind
     public let configFilePath: String?
     public let isCustomConfigOverride: Bool
     public let projectName: String
     public let testsPattern: String
     public let hasExplicitTestsPattern: Bool
     public let outputDirectory: String
+    public let htmlReportDirectory: String?
+    public let baseURL: String?
     public let gherkinFeaturesPattern: String?
     public let gherkinStepsPaths: [String]
     public let helpers: [CodeceptHelperInfo]
     public let plugins: [CodeceptPluginInfo]
     public let includes: [CodeceptIncludeEntry]
     public let multipleSuites: [CodeceptMultipleSuiteInfo]
+    public let playwrightProjects: [String]
     public let packageCodeceptVersion: String?
     public let isESM: Bool
     public let isTypeScript: Bool
 
     public init(
+        framework: TestFrameworkKind = .codeceptJS,
         configFilePath: String? = nil,
         isCustomConfigOverride: Bool = false,
         projectName: String,
         testsPattern: String = "./*_test.js",
         hasExplicitTestsPattern: Bool = false,
         outputDirectory: String = "./output",
+        htmlReportDirectory: String? = nil,
+        baseURL: String? = nil,
         gherkinFeaturesPattern: String? = nil,
         gherkinStepsPaths: [String] = [],
         helpers: [CodeceptHelperInfo] = [],
         plugins: [CodeceptPluginInfo] = [],
         includes: [CodeceptIncludeEntry] = [],
         multipleSuites: [CodeceptMultipleSuiteInfo] = [],
+        playwrightProjects: [String] = [],
         packageCodeceptVersion: String? = nil,
         isESM: Bool = false,
         isTypeScript: Bool = false
     ) {
+        self.framework = framework
         self.configFilePath = configFilePath
         self.isCustomConfigOverride = isCustomConfigOverride
         self.projectName = projectName
         self.testsPattern = testsPattern
         self.hasExplicitTestsPattern = hasExplicitTestsPattern
         self.outputDirectory = outputDirectory
+        self.htmlReportDirectory = htmlReportDirectory
+        self.baseURL = baseURL
         self.gherkinFeaturesPattern = gherkinFeaturesPattern
         self.gherkinStepsPaths = gherkinStepsPaths
         self.helpers = helpers
         self.plugins = plugins
         self.includes = includes
         self.multipleSuites = multipleSuites
+        self.playwrightProjects = playwrightProjects
         self.packageCodeceptVersion = packageCodeceptVersion
         self.isESM = isESM
         self.isTypeScript = isTypeScript
@@ -119,18 +166,22 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.framework = try c.decodeIfPresent(TestFrameworkKind.self, forKey: .framework) ?? .codeceptJS
         self.configFilePath = try c.decodeIfPresent(String.self, forKey: .configFilePath)
         self.isCustomConfigOverride = try c.decodeIfPresent(Bool.self, forKey: .isCustomConfigOverride) ?? false
         self.projectName = try c.decode(String.self, forKey: .projectName)
         self.testsPattern = try c.decodeIfPresent(String.self, forKey: .testsPattern) ?? "./*_test.js"
         self.hasExplicitTestsPattern = try c.decodeIfPresent(Bool.self, forKey: .hasExplicitTestsPattern) ?? false
         self.outputDirectory = try c.decodeIfPresent(String.self, forKey: .outputDirectory) ?? "./output"
+        self.htmlReportDirectory = try c.decodeIfPresent(String.self, forKey: .htmlReportDirectory)
+        self.baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL)
         self.gherkinFeaturesPattern = try c.decodeIfPresent(String.self, forKey: .gherkinFeaturesPattern)
         self.gherkinStepsPaths = try c.decodeIfPresent([String].self, forKey: .gherkinStepsPaths) ?? []
         self.helpers = try c.decodeIfPresent([CodeceptHelperInfo].self, forKey: .helpers) ?? []
         self.plugins = try c.decodeIfPresent([CodeceptPluginInfo].self, forKey: .plugins) ?? []
         self.includes = try c.decodeIfPresent([CodeceptIncludeEntry].self, forKey: .includes) ?? []
         self.multipleSuites = try c.decodeIfPresent([CodeceptMultipleSuiteInfo].self, forKey: .multipleSuites) ?? []
+        self.playwrightProjects = try c.decodeIfPresent([String].self, forKey: .playwrightProjects) ?? []
         self.packageCodeceptVersion = try c.decodeIfPresent(String.self, forKey: .packageCodeceptVersion)
         self.isESM = try c.decodeIfPresent(Bool.self, forKey: .isESM) ?? false
         self.isTypeScript = try c.decodeIfPresent(Bool.self, forKey: .isTypeScript) ?? false
@@ -147,14 +198,27 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
             .standardizedFileURL
     }
 
-    /// Matches CodeceptJS `createOutputDir(config, testRoot)`: resolves relative `output` against the
-    /// active config file's directory (`testRoot`).
+    /// Matches CodeceptJS `createOutputDir(config, testRoot)` / Playwright `outputDir`: resolves relative
+    /// output path against the active config file's directory (`testRoot`).
     public func resolvedOutputURL(rootURL: URL) -> URL {
         let baseURL = resolvedTestRootURL(workspaceRoot: rootURL)
         let trimmed = outputDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            return baseURL.appendingPathComponent("output", isDirectory: true)
+            let fallbackDir = framework == .playwright ? "test-results" : "output"
+            return baseURL.appendingPathComponent(fallbackDir, isDirectory: true)
         }
+        if trimmed.hasPrefix("/") {
+            return URL(fileURLWithPath: trimmed, isDirectory: true).standardizedFileURL
+        }
+        return baseURL.appendingPathComponent(trimmed, isDirectory: true).standardizedFileURL
+    }
+
+    /// Resolves Playwright's HTML report directory (defaults to `playwright-report` when `framework == .playwright`).
+    public func resolvedHTMLReportURL(rootURL: URL) -> URL? {
+        guard framework == .playwright || htmlReportDirectory != nil else { return nil }
+        let baseURL = resolvedTestRootURL(workspaceRoot: rootURL)
+        let trimmed = (htmlReportDirectory ?? "./playwright-report").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
         if trimmed.hasPrefix("/") {
             return URL(fileURLWithPath: trimmed, isDirectory: true).standardizedFileURL
         }

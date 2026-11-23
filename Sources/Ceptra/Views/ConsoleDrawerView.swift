@@ -199,7 +199,15 @@ struct ConsoleDrawerView: View {
                         }
 
                         CeptraDropdownDivider()
-                        CeptraDropdownSectionHeader(title: "CodeceptJS & Browsers")
+                        CeptraDropdownSectionHeader(title: "Frameworks & Browsers")
+                        CeptraDropdownItem(
+                            title: "Update @playwright/test",
+                            subtitle: PackageManagerSupport.commandPreview(for: .upgradePlaywright, packageManager: pm),
+                            systemImage: "theatermasks",
+                            iconColor: CeptraTheme.success
+                        ) {
+                            appState.runDependencyAction(.upgradePlaywright)
+                        }
                         CeptraDropdownItem(
                             title: "Update CodeceptJS",
                             subtitle: PackageManagerSupport.commandPreview(for: .upgradeCodeceptJS, packageManager: pm),

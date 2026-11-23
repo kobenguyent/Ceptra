@@ -62,17 +62,21 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
         lock.withLock { activePortValue }
     }
 
-    /// Returns `true` if `@codeceptjs/ui` is declared in `package.json` or its binary exists in `node_modules/.bin`.
-    public static func isInstalled(in workspaceRoot: URL) -> Bool {
+    /// Returns `true` if `@codeceptjs/ui` (CodeceptJS) or `@playwright/test` (Playwright) is declared
+    /// in `package.json` or its binary exists in `node_modules/.bin`.
+    public static func isInstalled(in workspaceRoot: URL, framework: TestFrameworkKind = .codeceptJS) -> Bool {
         let fm = FileManager.default
         var dir = workspaceRoot.standardizedFileURL
 
+        let binName = framework == .playwright ? "playwright" : "codecept-ui"
+        let pkgName = framework == .playwright ? "@playwright/test" : "@codeceptjs/ui"
+
         for _ in 0...4 {
-            let localBin = dir.appendingPathComponent("node_modules/.bin/codecept-ui").path
+            let localBin = dir.appendingPathComponent("node_modules/.bin/\(binName)").path
             if fm.isExecutableFile(atPath: localBin) {
                 return true
             }
-            let localPkg = dir.appendingPathComponent("node_modules/@codeceptjs/ui/package.json").path
+            let localPkg = dir.appendingPathComponent("node_modules/\(pkgName)/package.json").path
             if fm.fileExists(atPath: localPkg) {
                 return true
             }
@@ -81,7 +85,7 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 let deps = json["dependencies"] as? [String: Any]
                 let devDeps = json["devDependencies"] as? [String: Any]
-                if deps?["@codeceptjs/ui"] != nil || devDeps?["@codeceptjs/ui"] != nil {
+                if deps?[pkgName] != nil || devDeps?[pkgName] != nil {
                     return true
                 }
             }
@@ -137,12 +141,13 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
         return url.port == port
     }
 
-    /// Builds a loopback-bound launch command for `@codeceptjs/ui`.
+    /// Builds a loopback-bound launch command for `@codeceptjs/ui` or `playwright test --ui-host=127.0.0.1 --ui-port=<port>`.
     public static func buildStartCommand(
         workspaceRoot: URL,
         port: Int,
         customConfigPath: String? = nil,
-        toolchain: ResolvedToolchain
+        toolchain: ResolvedToolchain,
+        framework: TestFrameworkKind = .codeceptJS
     ) -> BuiltCommand {
         let fm = FileManager.default
         var env = ProcessInfo.processInfo.environment
@@ -151,6 +156,47 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
         env["PORT"] = String(port)
         env["FORCE_COLOR"] = "0"
         env["NO_COLOR"] = "1"
+
+        if framework == .playwright {
+            var tailArgs: [String] = ["test", "--ui-host=127.0.0.1", "--ui-port=\(port)"]
+            if let custom = customConfigPath?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
+                tailArgs.append(contentsOf: ["-c", custom])
+            }
+            var searchDir = workspaceRoot.standardizedFileURL
+            for _ in 0...4 {
+                let localBin = searchDir.appendingPathComponent("node_modules/.bin/playwright").path
+                if fm.isExecutableFile(atPath: localBin) {
+                    return BuiltCommand(
+                        executablePath: localBin,
+                        arguments: tailArgs,
+                        workingDirectory: workspaceRoot,
+                        environment: env,
+                        displayCommand: (["playwright"] + tailArgs).joined(separator: " ")
+                    )
+                }
+                let parent = searchDir.deletingLastPathComponent()
+                if parent.path == searchDir.path { break }
+                searchDir = parent
+            }
+            if let globalBin = NodeToolchainResolver.findExecutable(named: "playwright", in: toolchain.searchPath) {
+                return BuiltCommand(
+                    executablePath: globalBin,
+                    arguments: tailArgs,
+                    workingDirectory: workspaceRoot,
+                    environment: env,
+                    displayCommand: (["playwright"] + tailArgs).joined(separator: " ")
+                )
+            }
+            let npx = NodeToolchainResolver.findExecutable(named: "npx", in: toolchain.searchPath) ?? "/usr/bin/env"
+            let prefix = npx.hasSuffix("/env") ? ["npx", "--no-install", "playwright"] : ["--no-install", "playwright"]
+            return BuiltCommand(
+                executablePath: npx,
+                arguments: prefix + tailArgs,
+                workingDirectory: workspaceRoot,
+                environment: env,
+                displayCommand: (["npx", "--no-install", "playwright"] + tailArgs).joined(separator: " ")
+            )
+        }
 
         var tailArgs: [String] = ["--port", String(port)]
         if let custom = customConfigPath?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
@@ -198,26 +244,28 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
         )
     }
 
-    /// Builds a devDependency install command for `@codeceptjs/ui` matching the project's package manager.
+    /// Builds a devDependency install command for `@codeceptjs/ui` or `@playwright/test` matching the project's package manager.
     public static func buildInstallCommand(
         packageManager: PackageManagerKind,
         workspaceRoot: URL,
-        toolchain: ResolvedToolchain
+        toolchain: ResolvedToolchain,
+        framework: TestFrameworkKind = .codeceptJS
     ) -> BuiltCommand {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = toolchain.searchPath
         env["FORCE_COLOR"] = "0"
         env["NO_COLOR"] = "1"
 
+        let pkg = framework.uiPackageName
         let pmExecName = packageManager.executableName
         let args: [String]
         switch packageManager {
         case .npm:
-            args = ["install", "-D", "@codeceptjs/ui"]
+            args = ["install", "-D", pkg]
         case .pnpm, .yarn:
-            args = ["add", "-D", "@codeceptjs/ui"]
+            args = ["add", "-D", pkg]
         case .bun:
-            args = ["add", "-d", "@codeceptjs/ui"]
+            args = ["add", "-d", pkg]
         }
 
         let resolvedExec = NodeToolchainResolver.findExecutable(named: pmExecName, in: toolchain.searchPath) ?? "/usr/bin/env"
@@ -231,12 +279,13 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
         )
     }
 
-    /// Starts `@codeceptjs/ui` on a fresh `127.0.0.1` loopback port.
+    /// Starts `@codeceptjs/ui` or `playwright test --ui-host=127.0.0.1` on a fresh `127.0.0.1` loopback port.
     @discardableResult
     public func start(
         workspaceRoot: URL,
         customConfigPath: String? = nil,
         toolchain: ResolvedToolchain,
+        framework: TestFrameworkKind = .codeceptJS,
         onOutput: @escaping @Sendable (String) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
     ) throws -> (port: Int, url: URL) {
@@ -251,7 +300,8 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
             workspaceRoot: workspaceRoot,
             port: port,
             customConfigPath: customConfigPath,
-            toolchain: toolchain
+            toolchain: toolchain,
+            framework: framework
         )
 
         let process = Process()

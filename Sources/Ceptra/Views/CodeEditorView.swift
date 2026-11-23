@@ -2893,8 +2893,8 @@ final class CeptraCodeTextView: NSTextView {
             apply(#"^[A-Z0-9_]+(?==)"#, color: dslColor, options: [.anchorsMatchLines])
         } else {
             apply(#"\b(?:import|export|from|const|let|var|async|await|return|if|else|for|while|try|catch|finally|throw|new|class|extends|default|function|type|interface|true|false|null|undefined)\b"#, color: keywordColor)
-            apply(#"\b(?:Feature|Scenario|xScenario|BeforeSuite|AfterSuite|Before|After|Data|DataTable|within|session|tryTo|retryTo|locate|secret|inject|pause|eachElement)\b"#, color: dslColor, useBold: true)
-            apply(#"\bI(?:\.retry\([^)]*\))?\.[A-Za-z_$][\w$]*"#, color: actorColor)
+            apply(#"\b(?:Feature|Scenario|xScenario|BeforeSuite|AfterSuite|Before|After|Data|DataTable|within|session|tryTo|retryTo|locate|secret|inject|pause|eachElement|test|expect|defineConfig|devices)\b"#, color: dslColor, useBold: true)
+            apply(#"\b(?:I(?:\.retry\([^)]*\))?|page|request|context|browser|frame|locator)\.[A-Za-z_$][\w$]*"#, color: actorColor)
             apply(#"\b\d+(?:_\d+)*(?:\.\d+)?\b"#, color: numberColor)
             apply(#"'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`"#, color: stringColor)
             apply(#"@[A-Za-z0-9_:-]+"#, color: tagColor, useBold: true)

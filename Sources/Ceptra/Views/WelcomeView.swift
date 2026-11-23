@@ -41,7 +41,7 @@ struct WelcomeView: View {
                     .font(.system(size: 30, weight: .bold, design: .rounded))
                     .foregroundStyle(CeptraTheme.textPrimary)
 
-                Text("Minimalist Native macOS IDE for CodeceptJS 4.x")
+                Text("Minimalist Native macOS IDE for CodeceptJS 4.x & Playwright Test")
                     .font(.system(size: 13.5))
                     .foregroundStyle(CeptraTheme.textSecondary)
 
@@ -57,7 +57,7 @@ struct WelcomeView: View {
                 Button {
                     appState.openWorkspacePanel()
                 } label: {
-                    Label("Open CodeceptJS Workspace…", systemImage: "folder.badge.plus")
+                    Label("Open Test Workspace…", systemImage: "folder.badge.plus")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 18)
@@ -89,16 +89,27 @@ struct WelcomeView: View {
                     isPrimaryHovered = hovering
                 }
 
-                Button {
-                    appState.createSampleWorkspacePanel()
+                Menu {
+                    Button {
+                        appState.createSamplePlaywrightWorkspacePanel()
+                    } label: {
+                        Label("Playwright Test Project (TypeScript)…", systemImage: "theatermasks")
+                    }
+                    Button {
+                        appState.createSampleWorkspacePanel()
+                    } label: {
+                        Label("CodeceptJS 4.x Project…", systemImage: "sparkles")
+                    }
                 } label: {
-                    Label("Create Sample 4.x Project…", systemImage: "sparkles")
+                    Label("Create Sample Project…", systemImage: "sparkles")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(CeptraTheme.textPrimary)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
+                        .ceptraGlassSurface(cornerRadius: 10, tint: CeptraTheme.panelBG, tintOpacity: 0.62)
                 }
-                .buttonStyle(CeptraGlassButtonStyle(cornerRadius: 10, tint: CeptraTheme.panelBG, tintOpacity: 0.62))
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
             .opacity(appeared ? 1 : 0)
             .offset(y: appeared || reduceMotion ? 0 : 12)

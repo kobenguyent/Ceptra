@@ -14,17 +14,29 @@ public enum ConfigParser {
         "codecept.json"
     ]
 
+    public static let playwrightConfigFileNames: [String] = [
+        "playwright.config.ts",
+        "playwright.config.js",
+        "playwright.config.mjs",
+        "playwright.config.cjs",
+        "playwright.config.mts",
+        "playwright.config.cts"
+    ]
+
+    public static let allStandardConfigFileNames: [String] = configFileNames + playwrightConfigFileNames
+
     public static let supportedConfigExtensions: Set<String> = [
         "js", "ts", "cjs", "mjs", "mts", "cts", "json"
     ]
 
     private static let ignoredScanDirectories: Set<String> = [
         "node_modules", ".git", ".idea", ".vscode", "dist", "build",
-        "output", "_output", "coverage", ".build", ".next", "allure-report", "allure-results"
+        "output", "_output", "test-results", "playwright-report", ".playwright",
+        "coverage", ".build", ".next", "allure-report", "allure-results"
     ]
 
     private static let excludedToolConfigPrefixes: [String] = [
-        "eslint.", "prettier.", "vite.", "vitest.", "jest.", "playwright.",
+        "eslint.", "prettier.", "vite.", "vitest.", "jest.",
         "webpack.", "babel.", "postcss.", "tailwind.", "next.", "nuxt.",
         "rollup.", "tsup.", "metro.", "commitlint.", "stylelint.", "tsconfig.",
         "jsconfig.", "package.", "package-lock."
@@ -58,7 +70,7 @@ public enum ConfigParser {
 
     public static func locateStandardConfigFile(in directoryURL: URL) -> URL? {
         let fm = FileManager.default
-        for name in configFileNames {
+        for name in allStandardConfigFileNames {
             let candidate = directoryURL.appendingPathComponent(name).standardizedFileURL
             if fm.fileExists(atPath: candidate.path) {
                 return candidate
@@ -67,11 +79,11 @@ public enum ConfigParser {
         return nil
     }
 
-    /// Discovers standard AND custom-named / nested CodeceptJS config files inside `rootURL`:
-    /// 1. Standard root config names (`codecept.conf.ts`, `codecept.config.js`, etc.)
+    /// Discovers standard AND custom-named / nested CodeceptJS and Playwright Test config files inside `rootURL`:
+    /// 1. Standard root config names (`codecept.conf.ts`, `playwright.config.ts`, etc.)
     /// 2. Explicit `-c` / `--config` paths declared in `package.json` scripts
-    /// 3. Custom `codecept*.{ts,js,cjs,mjs,json}` or `*codecept*.conf*.{ts,js,cjs,mjs}` files at root or nested dirs (up to depth 4)
-    /// 4. Custom-named `*.conf.*` / `*.config.*` files whose content declares a CodeceptJS config (`helpers:` + config export)
+    /// 3. Custom `codecept*.{ts,js,cjs,mjs,json}` or `playwright*.{ts,js,cjs,mjs}` files at root or nested dirs (up to depth 4)
+    /// 4. Custom-named `*.conf.*` / `*.config.*` files whose content declares a CodeceptJS or Playwright Test config
     public static func discoverConfigFiles(in rootURL: URL) -> [URL] {
         let standardizedRoot = rootURL.standardizedFileURL
         let fm = FileManager.default
@@ -96,13 +108,19 @@ public enum ConfigParser {
                 register(candidate, priority: 10 + idx)
             }
         }
+        for (idx, name) in playwrightConfigFileNames.enumerated() {
+            let candidate = standardizedRoot.appendingPathComponent(name)
+            if fm.fileExists(atPath: candidate.path) {
+                register(candidate, priority: 20 + idx)
+            }
+        }
 
         // 2. Explicit `-c` / `--config` targets referenced in package.json scripts
         for scriptConfigURL in extractConfigPathsFromPackageScripts(rootURL: standardizedRoot) {
-            register(scriptConfigURL, priority: 25)
+            register(scriptConfigURL, priority: 28)
         }
 
-        // 3. Walk workspace up to depth 4 for custom-named & nested CodeceptJS configs
+        // 3. Walk workspace up to depth 4 for custom-named & nested CodeceptJS / Playwright configs
         let rootPrefix = standardizedRoot.path.hasSuffix("/") ? standardizedRoot.path : standardizedRoot.path + "/"
         if let enumerator = fm.enumerator(
             at: standardizedRoot,
@@ -148,19 +166,32 @@ public enum ConfigParser {
                     continue
                 }
 
+                if playwrightConfigFileNames.contains(fileName) {
+                    register(fileURL, priority: 34 + depth * 5)
+                    continue
+                }
+
                 if lower.contains("codecept") {
                     register(fileURL, priority: 40 + depth * 5)
                     continue
                 }
 
-                // Custom name without "codecept" (e.g. configs/e2e.conf.ts, staging.config.js):
+                if lower.contains("playwright") && (lower.contains(".config.") || lower.contains(".conf.") || lower.hasPrefix("playwright.")) {
+                    register(fileURL, priority: 44 + depth * 5)
+                    continue
+                }
+
+                // Custom name without "codecept"/"playwright" (e.g. configs/e2e.conf.ts, staging.config.js):
                 // inspect file contents safely (skip huge files > 128 KB)
                 let size = values.fileSize ?? 0
                 if size > 0 && size <= 131_072,
                    (lower.contains(".conf.") || lower.contains(".config.") || relPath.lowercased().contains("config")),
-                   let content = try? String(contentsOf: fileURL, encoding: .utf8),
-                   looksLikeCodeceptConfig(content: content, ext: ext) {
-                    register(fileURL, priority: 60 + depth * 5)
+                   let content = try? String(contentsOf: fileURL, encoding: .utf8) {
+                    if looksLikeCodeceptConfig(content: content, ext: ext) {
+                        register(fileURL, priority: 60 + depth * 5)
+                    } else if looksLikePlaywrightConfig(content: content, ext: ext) {
+                        register(fileURL, priority: 64 + depth * 5)
+                    }
                 }
             }
         }
@@ -234,13 +265,31 @@ public enum ConfigParser {
 
         guard let configURL,
               let rawContent = try? String(contentsOf: configURL, encoding: .utf8) else {
+            let isPlaywrightOnly = packageInfo.playwrightVersion != nil && packageInfo.codeceptVersion == nil
+            let isTS = FileManager.default.fileExists(atPath: standardizedRoot.appendingPathComponent("tsconfig.json").path)
+            if isPlaywrightOnly {
+                return CodeceptConfigSummary(
+                    framework: .playwright,
+                    configFilePath: nil,
+                    isCustomConfigOverride: false,
+                    projectName: fallbackName,
+                    testsPattern: "./**/*.{spec,test}.{ts,tsx,js,jsx,mjs,cjs}",
+                    hasExplicitTestsPattern: false,
+                    outputDirectory: "./test-results",
+                    htmlReportDirectory: "./playwright-report",
+                    helpers: [CodeceptHelperInfo(name: "Playwright", isBuiltIn: true, summary: "@playwright/test")],
+                    packageCodeceptVersion: packageInfo.playwrightVersion,
+                    isESM: packageInfo.isESM,
+                    isTypeScript: isTS
+                )
+            }
             return CodeceptConfigSummary(
                 configFilePath: nil,
                 isCustomConfigOverride: false,
                 projectName: fallbackName,
                 packageCodeceptVersion: packageInfo.codeceptVersion,
                 isESM: packageInfo.isESM,
-                isTypeScript: FileManager.default.fileExists(atPath: standardizedRoot.appendingPathComponent("tsconfig.json").path)
+                isTypeScript: isTS
             )
         }
 
@@ -249,6 +298,17 @@ public enum ConfigParser {
             return parseJSONConfig(
                 rawContent: rawContent,
                 configURL: configURL,
+                isCustomOverride: isCustomOverride,
+                fallbackName: fallbackName,
+                packageInfo: packageInfo
+            )
+        }
+
+        if isPlaywrightConfig(url: configURL, content: rawContent, ext: ext) {
+            return parsePlaywrightConfig(
+                rawContent: rawContent,
+                configURL: configURL,
+                standardizedRoot: standardizedRoot,
                 isCustomOverride: isCustomOverride,
                 fallbackName: fallbackName,
                 packageInfo: packageInfo
@@ -418,6 +478,277 @@ public enum ConfigParser {
         )
     }
 
+    // MARK: - Playwright Test Config Parsing
+
+    private static func isPlaywrightConfig(url: URL, content: String, ext: String) -> Bool {
+        let lowerName = url.lastPathComponent.lowercased()
+        if playwrightConfigFileNames.contains(lowerName) {
+            return true
+        }
+        if lowerName.contains("codecept") {
+            return false
+        }
+        if lowerName.contains("playwright") && !looksLikeCodeceptConfig(content: content, ext: ext) {
+            return true
+        }
+        return looksLikePlaywrightConfig(content: content, ext: ext) && !looksLikeCodeceptConfig(content: content, ext: ext)
+    }
+
+    private static func looksLikePlaywrightConfig(content: String, ext: String) -> Bool {
+        guard ext != "json" else { return false }
+        let hasPlaywrightImport = content.contains("@playwright/test")
+            || content.contains("@playwright/experimental-ct")
+            || content.contains("defineConfig")
+        let hasPlaywrightKeys = content.range(
+            of: #"(?:^|[\s,{])["']?(?:testDir|testMatch|projects|webServer|fullyParallel|forbidOnly|use)["']?\s*:"#,
+            options: .regularExpression
+        ) != nil
+        let mentionsPlaywright = content.contains("@playwright/") || content.contains("PlaywrightTestConfig") || content.contains("devices[")
+        return (hasPlaywrightImport && hasPlaywrightKeys) || (mentionsPlaywright && hasPlaywrightKeys)
+    }
+
+    private static func parsePlaywrightConfig(
+        rawContent: String,
+        configURL: URL,
+        standardizedRoot: URL,
+        isCustomOverride: Bool,
+        fallbackName: String,
+        packageInfo: PackageInfo
+    ) -> CodeceptConfigSummary {
+        let cleaned = stripJSComments(from: rawContent)
+        let configBody = extractDefineConfigObject(in: cleaned)
+            ?? extractDefaultExportObject(in: cleaned)
+            ?? extractModuleExportsObject(in: cleaned)
+            ?? extractNamedObjectBlock(named: "config", in: cleaned)
+            ?? cleaned
+
+        let testDirRaw = extractStringProperty(named: "testDir", in: configBody)
+        let testMatchSingle = extractStringProperty(named: "testMatch", in: configBody)
+        let testMatchArray = extractStringArrayProperty(named: "testMatch", in: configBody)
+        let outputDir = extractStringProperty(named: "outputDir", in: configBody) ?? "./test-results"
+
+        let useBlock = extractNamedObjectBlock(named: "use", in: configBody) ?? ""
+        let baseURL = extractStringProperty(named: "baseURL", in: useBlock)
+        let defaultBrowser = extractStringProperty(named: "browserName", in: useBlock)
+
+        let parsedProjects = parsePlaywrightProjects(in: configBody)
+        let projectNames = parsedProjects.map(\.name)
+
+        // Build glob pattern matching Playwright's `testDir` + `testMatch` resolution
+        let cleanTestDir: String = {
+            var dir = (testDirRaw ?? ".").trimmingCharacters(in: .whitespacesAndNewlines)
+            while dir.hasSuffix("/") && dir.count > 1 { dir.removeLast() }
+            if dir.isEmpty { dir = "." }
+            return dir
+        }()
+
+        let testMatches: [String] = {
+            if !testMatchArray.isEmpty { return testMatchArray }
+            if let s = testMatchSingle, !s.isEmpty { return [s] }
+            return []
+        }()
+
+        let testsPattern: String
+        if !testMatches.isEmpty {
+            let expanded = testMatches.map { pat -> String in
+                let trimmed = pat.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.hasPrefix("/") || trimmed.hasPrefix("./") || trimmed.hasPrefix("../") {
+                    return trimmed
+                }
+                let prefix = cleanTestDir == "." ? "." : cleanTestDir
+                return trimmed.contains("/") ? "\(prefix)/\(trimmed)" : "\(prefix)/**/\(trimmed)"
+            }
+            testsPattern = expanded.count == 1 ? expanded[0] : "{\(expanded.joined(separator: ","))}"
+        } else {
+            let prefix = cleanTestDir == "." ? "." : cleanTestDir
+            testsPattern = "\(prefix)/**/*.{spec,test}.{ts,tsx,js,jsx,mjs,cjs}"
+        }
+
+        // Derive friendly Helpers & MultipleSuites (Projects)
+        var helperSummaryParts: [String] = []
+        if !projectNames.isEmpty {
+            helperSummaryParts.append(projectNames.prefix(3).joined(separator: ", "))
+        } else if let defaultBrowser {
+            helperSummaryParts.append(defaultBrowser)
+        } else {
+            helperSummaryParts.append("chromium")
+        }
+        if let baseURL {
+            helperSummaryParts.append(baseURL)
+        }
+
+        var helpers: [CodeceptHelperInfo] = [
+            CodeceptHelperInfo(
+                name: "Playwright",
+                isBuiltIn: true,
+                summary: helperSummaryParts.joined(separator: " · ")
+            )
+        ]
+        for proj in parsedProjects {
+            if let detail = proj.browserOrDevice, !detail.isEmpty {
+                helpers.append(CodeceptHelperInfo(
+                    name: proj.name,
+                    isBuiltIn: true,
+                    summary: detail
+                ))
+            }
+        }
+
+        let multipleSuites: [CodeceptMultipleSuiteInfo] = parsedProjects.map { proj in
+            CodeceptMultipleSuiteInfo(
+                name: proj.name,
+                browsers: proj.browserOrDevice.map { [$0] } ?? [],
+                chunks: nil,
+                grep: proj.grep
+            )
+        }
+
+        let reporterInfo = parsePlaywrightReporters(in: configBody)
+        let ext = configURL.pathExtension.lowercased()
+        let isTS = ext == "ts" || ext == "mts" || ext == "cts"
+            || FileManager.default.fileExists(atPath: standardizedRoot.appendingPathComponent("tsconfig.json").path)
+        let isESM = packageInfo.isESM || ext == "mjs" || rawContent.contains("export default") || rawContent.contains("import ")
+
+        let configDirName = configURL.deletingLastPathComponent().lastPathComponent
+        let isNestedConfig = configURL.deletingLastPathComponent().standardizedFileURL.path != standardizedRoot.path
+        let projectName = isNestedConfig ? "\(fallbackName) (\(configDirName))" : fallbackName
+
+        return CodeceptConfigSummary(
+            framework: .playwright,
+            configFilePath: configURL.standardizedFileURL.path,
+            isCustomConfigOverride: isCustomOverride,
+            projectName: projectName,
+            testsPattern: testsPattern,
+            hasExplicitTestsPattern: testDirRaw != nil || !testMatches.isEmpty,
+            outputDirectory: outputDir,
+            htmlReportDirectory: reporterInfo.htmlOutputFolder ?? "./playwright-report",
+            baseURL: baseURL,
+            helpers: helpers,
+            plugins: reporterInfo.reporters,
+            includes: [],
+            multipleSuites: multipleSuites,
+            playwrightProjects: projectNames,
+            packageCodeceptVersion: packageInfo.playwrightVersion ?? packageInfo.codeceptVersion,
+            isESM: isESM,
+            isTypeScript: isTS
+        )
+    }
+
+    private struct ParsedPlaywrightProject {
+        let name: String
+        let browserOrDevice: String?
+        let grep: String?
+    }
+
+    private static func parsePlaywrightProjects(in configBody: String) -> [ParsedPlaywrightProject] {
+        guard let arrayBody = extractBracketArrayBody(named: "projects", in: configBody) else {
+            return []
+        }
+        let chars = Array(arrayBody)
+        var projects: [ParsedPlaywrightProject] = []
+        var seen = Set<String>()
+        var i = 0
+        var inString: Character? = nil
+        var escaped = false
+
+        while i < chars.count {
+            let c = chars[i]
+            if let quote = inString {
+                if escaped { escaped = false }
+                else if c == "\\" { escaped = true }
+                else if c == quote { inString = nil }
+                i += 1
+                continue
+            }
+            if c == "'" || c == "\"" || c == "`" {
+                inString = c
+                i += 1
+                continue
+            }
+            if c == "{", let closeIdx = matchingBraceIndex(chars: chars, openIndex: i) {
+                let objBody = String(chars[(i + 1)..<closeIdx])
+                if let name = extractStringProperty(named: "name", in: objBody),
+                   !name.isEmpty,
+                   seen.insert(name).inserted {
+                    let useBlock = extractNamedObjectBlock(named: "use", in: objBody) ?? objBody
+                    let browser = extractStringProperty(named: "browserName", in: useBlock)
+                        ?? extractStringProperty(named: "channel", in: useBlock)
+                        ?? extractPlaywrightDeviceName(in: useBlock)
+                    let grep = extractStringProperty(named: "grep", in: objBody)
+                    projects.append(ParsedPlaywrightProject(name: name, browserOrDevice: browser, grep: grep))
+                }
+                i = closeIdx + 1
+                continue
+            }
+            i += 1
+        }
+        return projects
+    }
+
+    private static func extractPlaywrightDeviceName(in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: #"devices\s*\[\s*['"]([^'"]+)['"]\s*\]"#) else {
+            return nil
+        }
+        let ns = text as NSString
+        guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        return ns.substring(with: match.range(at: 1))
+    }
+
+    private static func parsePlaywrightReporters(in configBody: String) -> (reporters: [CodeceptPluginInfo], htmlOutputFolder: String?) {
+        var names: [String] = []
+        var htmlFolder: String? = nil
+
+        if let single = extractStringProperty(named: "reporter", in: configBody), !single.isEmpty {
+            names.append(single)
+        } else if let arrayBody = extractBracketArrayBody(named: "reporter", in: configBody) {
+            if let regex = try? NSRegularExpression(pattern: #"\[\s*['"`]([^'"`]+)['"`]"#) {
+                let ns = arrayBody as NSString
+                for m in regex.matches(in: arrayBody, range: NSRange(location: 0, length: ns.length)) {
+                    let rep = ns.substring(with: m.range(at: 1))
+                    if !names.contains(rep) { names.append(rep) }
+                }
+            }
+            if let folder = extractStringProperty(named: "outputFolder", in: arrayBody) {
+                htmlFolder = folder
+            }
+        }
+
+        let plugins = names.map { CodeceptPluginInfo(name: $0, enabled: true) }
+        return (plugins, htmlFolder)
+    }
+
+    private static func extractDefineConfigObject(in text: String) -> String? {
+        let pattern = #"defineConfig\s*(?:<[^>]+>)?\s*\(\s*\{"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = text as NSString
+        guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        let openUTF16 = match.range.location + match.range.length - 1
+        guard let range = Range(NSRange(location: openUTF16, length: 1), in: text) else { return nil }
+        let prefixCount = text.distance(from: text.startIndex, to: range.lowerBound)
+        let chars = Array(text)
+        guard let closeIdx = matchingBraceIndex(chars: chars, openIndex: prefixCount) else { return nil }
+        return String(chars[(prefixCount + 1)..<closeIdx])
+    }
+
+    private static func extractModuleExportsObject(in text: String) -> String? {
+        let pattern = #"module\.exports\s*=\s*\{"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = text as NSString
+        guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        let openUTF16 = match.range.location + match.range.length - 1
+        guard let range = Range(NSRange(location: openUTF16, length: 1), in: text) else { return nil }
+        let prefixCount = text.distance(from: text.startIndex, to: range.lowerBound)
+        let chars = Array(text)
+        guard let closeIdx = matchingBraceIndex(chars: chars, openIndex: prefixCount) else { return nil }
+        return String(chars[(prefixCount + 1)..<closeIdx])
+    }
+
     // MARK: - Heuristic & Script Discovery
 
     private static func looksLikeCodeceptConfig(content: String, ext: String) -> Bool {
@@ -450,7 +781,8 @@ public enum ConfigParser {
 
         var results: [URL] = []
         for (_, scriptValue) in scripts.sorted(by: { $0.key < $1.key }) {
-            guard scriptValue.lowercased().contains("codecept") else { continue }
+            let lowerScript = scriptValue.lowercased()
+            guard lowerScript.contains("codecept") || lowerScript.contains("playwright") else { continue }
             let ns = scriptValue as NSString
             let matches = flagRegex.matches(in: scriptValue, range: NSRange(location: 0, length: ns.length))
             for match in matches {
@@ -478,6 +810,7 @@ public enum ConfigParser {
     private struct PackageInfo {
         let name: String?
         let codeceptVersion: String?
+        let playwrightVersion: String?
         let isESM: Bool
     }
 
@@ -485,15 +818,22 @@ public enum ConfigParser {
         let pkgURL = rootURL.appendingPathComponent("package.json")
         guard let data = try? Data(contentsOf: pkgURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return PackageInfo(name: nil, codeceptVersion: nil, isESM: false)
+            return PackageInfo(name: nil, codeceptVersion: nil, playwrightVersion: nil, isESM: false)
         }
         let name = json["name"] as? String
         let isESM = (json["type"] as? String)?.lowercased() == "module"
         let deps = json["dependencies"] as? [String: String] ?? [:]
         let devDeps = json["devDependencies"] as? [String: String] ?? [:]
-        let version = devDeps["codeceptjs"] ?? deps["codeceptjs"]
+        let codeceptVersion = devDeps["codeceptjs"] ?? deps["codeceptjs"]
             ?? ((name == "codeceptjs") ? (json["version"] as? String) : nil)
-        return PackageInfo(name: name, codeceptVersion: version, isESM: isESM)
+        let playwrightVersion = devDeps["@playwright/test"] ?? deps["@playwright/test"]
+            ?? ((name == "@playwright/test") ? (json["version"] as? String) : nil)
+        return PackageInfo(
+            name: name,
+            codeceptVersion: codeceptVersion,
+            playwrightVersion: playwrightVersion,
+            isESM: isESM
+        )
     }
 
     // MARK: - Block Extraction

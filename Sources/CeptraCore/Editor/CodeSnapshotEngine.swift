@@ -430,6 +430,7 @@ public enum CodeSnapshotEngine {
         let prefixes = [
             "Scenario(", "Scenario.", "xScenario(", "Feature(",
             "Before(", "After(", "BeforeSuite(", "AfterSuite(", "Data(",
+            "test(", "test.", "it(", "describe(",
             "Scenario:", "Scenario Outline:", "Background:",
             "async function ", "function ", "export function ", "export async function ",
             "export default ", "export const ", "class ", "export class "
@@ -438,7 +439,10 @@ public enum CodeSnapshotEngine {
     }
 
     private static func extractBlockLabel(from trimmedLine: String) -> String? {
-        if let match = trimmedLine.range(of: #"(?:Scenario|xScenario|Feature)\s*\(\s*['"`]([^'"`]+)['"`]"#, options: .regularExpression) {
+        if let match = trimmedLine.range(
+            of: #"(?:Scenario|xScenario|Feature|test(?:\.(?:describe|only|skip|fixme|fail|slow|step))?|describe|it)\s*\(\s*['"`]([^'"`]+)['"`]"#,
+            options: .regularExpression
+        ) {
             let sub = String(trimmedLine[match])
             if let qStart = sub.firstIndex(where: { $0 == "'" || $0 == "\"" || $0 == "`" }),
                let qEnd = sub.lastIndex(where: { $0 == "'" || $0 == "\"" || $0 == "`" }),
@@ -588,12 +592,12 @@ public enum CodeSnapshotEngine {
             collect(#"^\s*#.*$"#, kind: .comment, options: [.anchorsMatchLines])
 
         default:
-            // TypeScript / JavaScript / CodeceptJS 4.x
+            // TypeScript / JavaScript / CodeceptJS 4.x / Playwright Test
             collect(#"\b(?:import|export|from|const|let|var|async|await|return|if|else|for|while|switch|case|break|continue|try|catch|finally|throw|new|class|extends|implements|default|function|type|interface|enum|as|typeof|keyof|readonly|public|private|protected|static|true|false|null|undefined|void)\b"#, kind: .keyword)
-            collect(#"\b(?:CodeceptJS|Promise|Array|Record|Partial|Pick|Omit|Map|Set|URL|Error|Buffer|string|number|boolean|unknown|any|never)\b"#, kind: .typeName)
+            collect(#"\b(?:CodeceptJS|Page|Locator|Browser|BrowserContext|APIRequestContext|APIResponse|TestInfo|Promise|Array|Record|Partial|Pick|Omit|Map|Set|URL|Error|Buffer|string|number|boolean|unknown|any|never)\b"#, kind: .typeName)
             collect(#"\b[A-Za-z_$][\w$]*(?=\s*:(?!:))"#, kind: .property)
-            collect(#"\b(?:Feature|Scenario|xScenario|BeforeSuite|AfterSuite|Before|After|Data|DataTable|within|session|tryTo|retryTo|locate|secret|inject|pause|eachElement|actor|Helper)\b"#, kind: .dsl, isBold: true)
-            collect(#"\bI(?:\.retry\([^)]*\))?\.[A-Za-z_$][\w$]*"#, kind: .actor)
+            collect(#"\b(?:Feature|Scenario|xScenario|BeforeSuite|AfterSuite|Before|After|Data|DataTable|within|session|tryTo|retryTo|locate|secret|inject|pause|eachElement|actor|Helper|test|expect|defineConfig|devices)\b"#, kind: .dsl, isBold: true)
+            collect(#"\b(?:I(?:\.retry\([^)]*\))?|page|request|context|browser|frame|locator)\.[A-Za-z_$][\w$]*"#, kind: .actor)
             collect(#"\b\d+(?:_\d+)*(?:\.\d+)?\b"#, kind: .number)
             // Strings & comments applied last so they win over keywords/properties inside literals
             collect(#"'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`"#, kind: .string)

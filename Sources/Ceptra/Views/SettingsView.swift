@@ -105,7 +105,7 @@ struct SettingsView: View {
                 }
             }
 
-            Section("JavaScript Runtime & CodeceptJS Toolchain") {
+            Section("JavaScript Runtime & Test Framework Toolchain") {
                 Picker("JavaScript Runtime", selection: $appState.settings.jsRuntime) {
                     ForEach(JSRuntimeKind.allCases) { rt in
                         Text(rt.displayName).tag(rt)
@@ -119,13 +119,15 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                 TextField("Custom CodeceptJS Binary or bin/codecept.js (optional)", text: $appState.settings.customCodeceptPath)
                     .textFieldStyle(.roundedBorder)
+                TextField("Custom Playwright Binary or cli.js (optional)", text: $appState.settings.customPlaywrightPath)
+                    .textFieldStyle(.roundedBorder)
 
                 if let tc = appState.resolvedToolchain {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Node: \(tc.nodePath ?? "Not found")  •  Bun: \(tc.bunPath ?? "Not found")")
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(tc.isActiveRuntimeAvailable ? Color.secondary : Color.orange)
-                        Text("Resolved (\(tc.runtime.displayName)): \(tc.codeceptExecutable) (\(tc.resolutionSource))")
+                        Text("Resolved (\(tc.framework.shortName) · \(tc.runtime.displayName)): \(tc.runnerExecutable) (\(tc.resolutionSource))")
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)

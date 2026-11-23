@@ -141,7 +141,7 @@ extension AppState {
 
     func debugActiveFile() {
         guard isActiveTabExecutableTestFile, let tab = activeTab else {
-            showBanner("Select a CodeceptJS test file containing Feature() or Scenario() to debug.", isError: true)
+            showBanner("Select a test file containing Feature()/Scenario() or Playwright test() to debug.", isError: true)
             return
         }
         let targetRel = activeWorkspaceFile?.relativePath ?? tab.relativePath
@@ -215,7 +215,11 @@ extension AppState {
         case .paused(let reason, let callFrames, let hitBreakpointIDs):
             // Auto-continue past Node's initial `--inspect-brk` bootstrap pause
             if !hasHandledInitialBreakOnStart && hitBreakpointIDs.isEmpty && (reason == "Break on start" || reason == "other") {
-                if let top = callFrames.first, top.isInternal || top.location.filePath.contains("/codeceptjs/") {
+                if let top = callFrames.first,
+                   top.isInternal
+                    || top.location.filePath.contains("/codeceptjs/")
+                    || top.location.filePath.contains("/playwright/")
+                    || top.location.filePath.contains("/@playwright/") {
                     hasHandledInitialBreakOnStart = true
                     debugContinue()
                     return

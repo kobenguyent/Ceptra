@@ -23,6 +23,17 @@ public final class LiveOutputParser {
     private static let scenarioOKRegex = try! NSRegularExpression(pattern: #"^\s*[✔✓]\s+OK\s+in\s+(\d+)ms\s*$"#)
     private static let scenarioFailRegex = try! NSRegularExpression(pattern: #"^\s*[✖✘×]\s+FAILED\s+in\s+(\d+)ms\s*$"#)
     private static let summaryRegex = try! NSRegularExpression(pattern: #"(?:OK|FAIL)\s*\|\s*(.+?)\s*//\s*(.+)$"#)
+    // Playwright Test `list` reporter patterns:
+    //   "  ✓  1 [chromium] › tests/example.spec.ts:3:5 › Suite › has title (1.2s)"
+    //   "  ok 1 [chromium] › tests/example.spec.ts:3:5 › has title (450ms)"
+    //   "  ✘  2 [chromium] › tests/example.spec.ts:10:5 › fails (2.1s)"
+    //   "  -  3 [chromium] › tests/example.spec.ts:20:5 › skipped test"
+    private static let pwListResultRegex = try! NSRegularExpression(
+        pattern: #"^\s*(ok|[✓✔✘✖×xF\-±])\s+\d+\s+(.+?)(?:\s+\((\d+(?:\.\d+)?(?:ms|s|m))\))?\s*$"#
+    )
+    private static let pwSummaryLineRegex = try! NSRegularExpression(
+        pattern: #"^\s*(\d+)\s+(passed|failed|skipped|flaky|interrupted|did not run)(?:\s+\(([^)]+)\))?\s*$"#
+    )
 
     private var currentSuiteTitle: String = "Default"
     private var currentSuiteFile: String? = nil
@@ -30,6 +41,11 @@ public final class LiveOutputParser {
     private var currentSteps: [ExecutedStepRecord] = []
     private var inFailuresSection = false
     private var lastFailedIndex: Int? = nil
+    private var sawPlaywrightListOutput = false
+    private var pwPassedCount = 0
+    private var pwFailedCount = 0
+    private var pwSkippedCount = 0
+    private var pwDurationLabel = ""
 
     public private(set) var scenarios: [ExecutedScenarioRecord] = []
     public private(set) var summaryPassed: Int? = nil
@@ -91,6 +107,69 @@ public final class LiveOutputParser {
             summaryFailed = failed
             summarySkipped = skipped
             events.append(.summary(passed: passed, failed: failed, skipped: skipped, durationLabel: durationLabel))
+            return events
+        }
+
+        // 1b. Playwright Test `list` reporter result lines & multi-line summary counts
+        if trimmed.hasPrefix("Running ") && trimmed.contains(" using ") && trimmed.contains(" worker") {
+            sawPlaywrightListOutput = true
+            return events
+        }
+        if let pwMatch = match(Self.pwListResultRegex, in: cleanLine),
+           let body = capture(pwMatch, at: 2, in: cleanLine),
+           body.contains("›") {
+            sawPlaywrightListOutput = true
+            let symbol = capture(pwMatch, at: 1, in: cleanLine) ?? "✓"
+            let durationToken = capture(pwMatch, at: 3, in: cleanLine)
+            let durationMs = parseDurationMs(durationToken)
+
+            let status: ExecutionStatus
+            switch symbol {
+            case "✓", "✔", "ok", "±": status = .passed
+            case "-": status = .skipped
+            default: status = .failed
+            }
+
+            let parsed = parsePlaywrightBreadcrumb(body)
+            let record = ExecutedScenarioRecord(
+                featureTitle: parsed.featureTitle,
+                scenarioTitle: parsed.scenarioTitle,
+                filePath: parsed.filePath,
+                status: status,
+                durationMs: durationMs,
+                tags: extractInlineTags(from: parsed.scenarioTitle),
+                steps: []
+            )
+            scenarios.append(record)
+            if status == .failed {
+                lastFailedIndex = scenarios.count - 1
+            }
+            events.append(.scenarioFinished(record))
+            return events
+        }
+        if sawPlaywrightListOutput,
+           let pwSum = match(Self.pwSummaryLineRegex, in: trimmed),
+           let countStr = capture(pwSum, at: 1, in: trimmed),
+           let kind = capture(pwSum, at: 2, in: trimmed),
+           let count = Int(countStr) {
+            if let dur = capture(pwSum, at: 3, in: trimmed), !dur.isEmpty {
+                pwDurationLabel = dur
+            }
+            switch kind {
+            case "passed", "flaky": pwPassedCount += count
+            case "failed", "interrupted": pwFailedCount += count
+            case "skipped", "did not run": pwSkippedCount += count
+            default: break
+            }
+            summaryPassed = pwPassedCount
+            summaryFailed = pwFailedCount
+            summarySkipped = pwSkippedCount
+            events.append(.summary(
+                passed: pwPassedCount,
+                failed: pwFailedCount,
+                skipped: pwSkippedCount,
+                durationLabel: pwDurationLabel
+            ))
             return events
         }
 
@@ -295,5 +374,67 @@ public final class LiveOutputParser {
 
     private func extractInlineTags(from text: String) -> [String] {
         text.split(separator: " ").map(String.init).filter { $0.hasPrefix("@") }
+    }
+
+    private func parseDurationMs(_ token: String?) -> Int {
+        guard let token = token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
+            return 0
+        }
+        if token.hasSuffix("ms"), let val = Double(token.dropLast(2)) {
+            return max(0, Int(val.rounded()))
+        }
+        if token.hasSuffix("s"), let val = Double(token.dropLast(1)) {
+            return max(0, Int((val * 1000.0).rounded()))
+        }
+        if token.hasSuffix("m"), let val = Double(token.dropLast(1)) {
+            return max(0, Int((val * 60_000.0).rounded()))
+        }
+        return 0
+    }
+
+    /// Parses Playwright list line body like:
+    /// `[chromium] › tests/login.spec.ts:5:5 › Login › User signs in`
+    /// or `tests/login.spec.ts:5:5 › User signs in`.
+    private func parsePlaywrightBreadcrumb(_ body: String) -> (featureTitle: String, scenarioTitle: String, filePath: String?) {
+        var parts = body
+            .components(separatedBy: "›")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        guard !parts.isEmpty else {
+            return ("Playwright", body, nil)
+        }
+
+        if parts.first?.hasPrefix("[") == true && parts.first?.hasSuffix("]") == true {
+            parts.removeFirst()
+        }
+
+        var filePath: String? = nil
+        if let first = parts.first, first.contains(".spec.") || first.contains(".test.") || first.contains(".ts:") || first.contains(".js:") {
+            // Strip trailing `:line:col`
+            let filePart = first.replacingOccurrences(of: #":\d+(?::\d+)?$"#, with: "", options: .regularExpression)
+            filePath = filePart
+            parts.removeFirst()
+        }
+
+        guard let scenarioTitle = parts.last else {
+            let fallback = filePath.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? "Test"
+            return ("Playwright", fallback, filePath)
+        }
+
+        let describeParts = parts.dropLast()
+        let featureTitle: String
+        if !describeParts.isEmpty {
+            featureTitle = describeParts.joined(separator: " › ")
+        } else if let filePath {
+            let stem = URL(fileURLWithPath: filePath).deletingPathExtension().lastPathComponent
+                .replacingOccurrences(of: ".spec", with: "")
+                .replacingOccurrences(of: ".test", with: "")
+            featureTitle = stem.isEmpty ? "Playwright" : stem
+        } else {
+            featureTitle = "Playwright"
+        }
+
+        return (featureTitle, scenarioTitle, filePath)
     }
 }

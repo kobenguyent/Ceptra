@@ -24,6 +24,7 @@ public enum JSRuntimeKind: String, Codable, CaseIterable, Equatable, Hashable, I
 }
 
 public struct ResolvedToolchain: Equatable, Sendable {
+    public let framework: TestFrameworkKind
     public let runtime: JSRuntimeKind
     public let nodePath: String?
     public let bunPath: String?
@@ -31,6 +32,8 @@ public struct ResolvedToolchain: Equatable, Sendable {
     public let prefixArguments: [String]
     public let searchPath: String
     public let resolutionSource: String
+
+    public var runnerExecutable: String { codeceptExecutable }
 
     public var activeRuntimePath: String? {
         switch runtime {
@@ -44,6 +47,7 @@ public struct ResolvedToolchain: Equatable, Sendable {
     }
 
     public init(
+        framework: TestFrameworkKind = .codeceptJS,
         runtime: JSRuntimeKind = .node,
         nodePath: String?,
         bunPath: String? = nil,
@@ -52,6 +56,7 @@ public struct ResolvedToolchain: Equatable, Sendable {
         searchPath: String,
         resolutionSource: String
     ) {
+        self.framework = framework
         self.runtime = runtime
         self.nodePath = nodePath
         self.bunPath = bunPath
@@ -108,15 +113,18 @@ public enum NodeToolchainResolver {
 
     public static func resolve(
         workspaceRoot: URL,
+        framework: TestFrameworkKind = .codeceptJS,
         runtime: JSRuntimeKind = .node,
         customNodePath: String = "",
         customBunPath: String = "",
-        customCodeceptPath: String = ""
+        customCodeceptPath: String = "",
+        customPlaywrightPath: String = ""
     ) -> ResolvedToolchain {
         let fm = FileManager.default
         let trimmedNode = customNodePath.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedBun = customBunPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCodecept = customCodeceptPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPlaywright = customPlaywrightPath.trimmingCharacters(in: .whitespacesAndNewlines)
 
         var extraDirs: [String] = [
             workspaceRoot.appendingPathComponent("node_modules/.bin").path
@@ -144,6 +152,7 @@ public enum NodeToolchainResolver {
             let target = resolvedEntryScriptPath(scriptPath)
             if let bunPath {
                 return ResolvedToolchain(
+                    framework: framework,
                     runtime: .bun,
                     nodePath: nodePath,
                     bunPath: bunPath,
@@ -154,6 +163,7 @@ public enum NodeToolchainResolver {
                 )
             }
             return ResolvedToolchain(
+                framework: framework,
                 runtime: .bun,
                 nodePath: nodePath,
                 bunPath: nil,
@@ -161,6 +171,19 @@ public enum NodeToolchainResolver {
                 prefixArguments: ["bun", target],
                 searchPath: searchPath,
                 resolutionSource: "\(source) via Bun (bun not found in PATH)"
+            )
+        }
+
+        if framework == .playwright {
+            return resolvePlaywrightToolchain(
+                workspaceRoot: workspaceRoot,
+                runtime: runtime,
+                trimmedNode: trimmedNode,
+                trimmedPlaywright: trimmedPlaywright,
+                nodePath: nodePath,
+                bunPath: bunPath,
+                searchPath: searchPath,
+                makeBunInvocation: makeBunInvocation
             )
         }
 
@@ -306,6 +329,158 @@ public enum NodeToolchainResolver {
         let npx = findExecutable(named: "npx", in: searchPath) ?? "/usr/bin/env"
         let prefix = npx.hasSuffix("/env") ? ["npx", "--no-install", "codeceptjs"] : ["--no-install", "codeceptjs"]
         return ResolvedToolchain(
+            framework: .codeceptJS,
+            runtime: .node,
+            nodePath: nodePath,
+            bunPath: bunPath,
+            codeceptExecutable: npx,
+            prefixArguments: prefix,
+            searchPath: searchPath,
+            resolutionSource: "npx fallback"
+        )
+    }
+
+    private static func resolvePlaywrightToolchain(
+        workspaceRoot: URL,
+        runtime: JSRuntimeKind,
+        trimmedNode: String,
+        trimmedPlaywright: String,
+        nodePath: String?,
+        bunPath: String?,
+        searchPath: String,
+        makeBunInvocation: (String, String) -> ResolvedToolchain
+    ) -> ResolvedToolchain {
+        let fm = FileManager.default
+
+        // 1. User-specified Playwright binary or CLI script
+        if !trimmedPlaywright.isEmpty, fm.fileExists(atPath: trimmedPlaywright) {
+            if runtime == .bun {
+                if isJavaScriptEntry(trimmedPlaywright) {
+                    return makeBunInvocation(trimmedPlaywright, "Custom Playwright")
+                }
+                return ResolvedToolchain(
+                    framework: .playwright,
+                    runtime: .bun,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
+                    codeceptExecutable: trimmedPlaywright,
+                    prefixArguments: [],
+                    searchPath: searchPath,
+                    resolutionSource: "Custom Playwright binary"
+                )
+            }
+            if (trimmedPlaywright.hasSuffix(".js") || trimmedPlaywright.hasSuffix(".mjs") || trimmedPlaywright.hasSuffix(".cjs")),
+               let nodePath {
+                return ResolvedToolchain(
+                    framework: .playwright,
+                    runtime: .node,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
+                    codeceptExecutable: nodePath,
+                    prefixArguments: [trimmedPlaywright],
+                    searchPath: searchPath,
+                    resolutionSource: "Custom Playwright script"
+                )
+            }
+            return ResolvedToolchain(
+                framework: .playwright,
+                runtime: .node,
+                nodePath: nodePath,
+                bunPath: bunPath,
+                codeceptExecutable: trimmedPlaywright,
+                prefixArguments: [],
+                searchPath: searchPath,
+                resolutionSource: "Custom Playwright binary"
+            )
+        }
+
+        // 2. Local project or parent monorepo ./node_modules/.bin/playwright (walks up to 4 levels)
+        var searchDir = workspaceRoot.standardizedFileURL
+        for level in 0...4 {
+            let localBin = searchDir.appendingPathComponent("node_modules/.bin/playwright").path
+            if fm.isExecutableFile(atPath: localBin) {
+                let sourceBase = level == 0 ? "Project node_modules" : "Workspace parent node_modules"
+                if runtime == .bun {
+                    return makeBunInvocation(localBin, sourceBase)
+                }
+                if !trimmedNode.isEmpty,
+                   let nodePath,
+                   URL(fileURLWithPath: nodePath).lastPathComponent != "node",
+                   isJavaScriptEntry(localBin) {
+                    return ResolvedToolchain(
+                        framework: .playwright,
+                        runtime: .node,
+                        nodePath: nodePath,
+                        bunPath: bunPath,
+                        codeceptExecutable: nodePath,
+                        prefixArguments: [resolvedEntryScriptPath(localBin)],
+                        searchPath: searchPath,
+                        resolutionSource: sourceBase
+                    )
+                }
+                return ResolvedToolchain(
+                    framework: .playwright,
+                    runtime: .node,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
+                    codeceptExecutable: localBin,
+                    prefixArguments: [],
+                    searchPath: searchPath,
+                    resolutionSource: sourceBase
+                )
+            }
+            let parent = searchDir.deletingLastPathComponent()
+            if parent.path == searchDir.path { break }
+            searchDir = parent
+        }
+
+        // 3. Global `playwright` binary
+        if let globalPW = findExecutable(named: "playwright", in: searchPath) {
+            if runtime == .bun && isJavaScriptEntry(globalPW) {
+                return makeBunInvocation(globalPW, "Global PATH")
+            }
+            return ResolvedToolchain(
+                framework: .playwright,
+                runtime: runtime,
+                nodePath: nodePath,
+                bunPath: bunPath,
+                codeceptExecutable: globalPW,
+                prefixArguments: [],
+                searchPath: searchPath,
+                resolutionSource: "Global PATH"
+            )
+        }
+
+        // 4. Fallback to bun x playwright (Bun) or npx --no-install playwright (Node)
+        if runtime == .bun {
+            if let bunPath {
+                return ResolvedToolchain(
+                    framework: .playwright,
+                    runtime: .bun,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
+                    codeceptExecutable: bunPath,
+                    prefixArguments: ["x", "playwright"],
+                    searchPath: searchPath,
+                    resolutionSource: "bunx fallback"
+                )
+            }
+            return ResolvedToolchain(
+                framework: .playwright,
+                runtime: .bun,
+                nodePath: nodePath,
+                bunPath: nil,
+                codeceptExecutable: "/usr/bin/env",
+                prefixArguments: ["bun", "x", "playwright"],
+                searchPath: searchPath,
+                resolutionSource: "bunx fallback (bun not found in PATH)"
+            )
+        }
+
+        let npx = findExecutable(named: "npx", in: searchPath) ?? "/usr/bin/env"
+        let prefix = npx.hasSuffix("/env") ? ["npx", "--no-install", "playwright"] : ["--no-install", "playwright"]
+        return ResolvedToolchain(
+            framework: .playwright,
             runtime: .node,
             nodePath: nodePath,
             bunPath: bunPath,

@@ -485,6 +485,13 @@ private struct TopStudioBar: View {
                         appState.openWorkspacePanel()
                     }
                     CeptraDropdownItem(
+                        title: "Create Sample Playwright Test Workspace…",
+                        systemImage: "theatermasks",
+                        iconColor: CeptraTheme.success
+                    ) {
+                        appState.createSamplePlaywrightWorkspacePanel()
+                    }
+                    CeptraDropdownItem(
                         title: "Create Sample CodeceptJS 4.x Workspace…",
                         systemImage: "sparkles",
                         iconColor: CeptraTheme.accent
@@ -725,12 +732,16 @@ private struct RunSplitMenuPopover: View {
                 menuRow("Re-run Last Failed", icon: "arrow.counterclockwise.circle", color: CeptraTheme.warning) {
                     appState.run(mode: .runLastFailed)
                 }
-                menuRow("Dry Run (Validate & List)", icon: "checklist", shortcut: "⌘⇧D") {
+                menuRow(
+                    appState.isPlaywrightWorkspace ? "List Tests (playwright test --list)" : "Dry Run (Validate & List)",
+                    icon: "checklist",
+                    shortcut: "⌘⇧D"
+                ) {
                     appState.run(mode: .dryRun(relativePath: nil))
                 }
 
                 CeptraDropdownDivider()
-                CeptraDropdownSectionHeader(title: "Debug & Parallel")
+                CeptraDropdownSectionHeader(title: appState.isPlaywrightWorkspace ? "Debug, Workers & Projects" : "Debug & Parallel")
                 menuRow(
                     appState.isActiveTabExecutableTestFile ? "Debug Active Test File" : "Debug All Tests",
                     icon: "ladybug.fill",
@@ -744,7 +755,9 @@ private struct RunSplitMenuPopover: View {
                     }
                 }
                 menuRow(
-                    "Run Workers (\(appState.runOptions.workerCount)× \(appState.runOptions.workerStrategy.rawValue))",
+                    appState.isPlaywrightWorkspace
+                        ? "Run Workers (--workers=\(appState.runOptions.workerCount))"
+                        : "Run Workers (\(appState.runOptions.workerCount)× \(appState.runOptions.workerStrategy.rawValue))",
                     icon: "cpu",
                     color: CeptraTheme.cyan,
                     shortcut: "⌘⇧W"
@@ -754,17 +767,29 @@ private struct RunSplitMenuPopover: View {
                 menuRow("Configure Workers…", icon: "slider.horizontal.3") {
                     appState.presentParallelRunSheet(tab: .workers)
                 }
-                menuRow("Run Multiple — All Suites", icon: "square.stack.3d.up", color: CeptraTheme.success, shortcut: "⌘⇧M") {
+                menuRow(
+                    appState.isPlaywrightWorkspace ? "Run All Projects" : "Run Multiple — All Suites",
+                    icon: "square.stack.3d.up",
+                    color: CeptraTheme.success,
+                    shortcut: "⌘⇧M"
+                ) {
                     appState.run(mode: .runMultiple(suites: [], runAll: true))
                 }
                 if let suites = appState.workspace?.config.multipleSuites, !suites.isEmpty {
                     ForEach(suites) { suite in
-                        menuRow("Multiple: \(suite.name)", icon: "play.square.stack", color: CeptraTheme.accent) {
+                        menuRow(
+                            appState.isPlaywrightWorkspace ? "Project: \(suite.name)" : "Multiple: \(suite.name)",
+                            icon: "play.square.stack",
+                            color: CeptraTheme.accent
+                        ) {
                             appState.run(mode: .runMultiple(suites: [suite.name], runAll: false))
                         }
                     }
                 }
-                menuRow("Configure Multiple Run…", icon: "square.stack.3d.up.fill") {
+                menuRow(
+                    appState.isPlaywrightWorkspace ? "Configure Projects Run…" : "Configure Multiple Run…",
+                    icon: "square.stack.3d.up.fill"
+                ) {
                     appState.presentParallelRunSheet(tab: .multiple)
                 }
 
@@ -828,13 +853,22 @@ private struct RunSplitMenuPopover: View {
                 .padding(.vertical, 5)
 
                 Toggle(isOn: Binding(
-                    get: { appState.runOptions.debugLaunchOptions.headedBrowser },
+                    get: {
+                        appState.isPlaywrightWorkspace
+                            ? appState.runOptions.playwrightHeaded
+                            : appState.runOptions.debugLaunchOptions.headedBrowser
+                    },
                     set: {
-                        appState.runOptions.debugLaunchOptions.headedBrowser = $0
+                        if appState.isPlaywrightWorkspace {
+                            appState.runOptions.playwrightHeaded = $0
+                            appState.runOptions.debugLaunchOptions.headedBrowser = $0
+                        } else {
+                            appState.runOptions.debugLaunchOptions.headedBrowser = $0
+                        }
                         appState.saveSettings()
                     }
                 )) {
-                    Text("Headed Browser")
+                    Text(appState.isPlaywrightWorkspace ? "Headed Browser (--headed)" : "Headed Browser")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .toggleStyle(.switch)
@@ -842,20 +876,40 @@ private struct RunSplitMenuPopover: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
 
-                menuRow("CodeceptJS Run Options…", icon: "slider.horizontal.3", color: CeptraTheme.accent) {
+                menuRow(
+                    appState.isPlaywrightWorkspace ? "Playwright Run Options…" : "CodeceptJS Run Options…",
+                    icon: "slider.horizontal.3",
+                    color: CeptraTheme.accent
+                ) {
                     appState.showingRunOptionsPopover = true
                 }
 
                 CeptraDropdownDivider()
-                CeptraDropdownSectionHeader(title: "CodeceptJS CLI Tools")
-                menuRow("Check Environment (codeceptjs check)", icon: "stethoscope") {
-                    appState.run(mode: .checkEnvironment)
-                }
-                menuRow("Generate Type Defs (codeceptjs def)", icon: "curlybraces") {
-                    appState.run(mode: .generateDefinitions)
-                }
-                menuRow("List I.* Actions (codeceptjs list)", icon: "list.bullet.rectangle") {
-                    appState.run(mode: .listActions)
+                if appState.isPlaywrightWorkspace {
+                    CeptraDropdownSectionHeader(title: "Playwright CLI Tools")
+                    menuRow("Record with Codegen (playwright codegen)", icon: "record.circle", color: CeptraTheme.failure) {
+                        appState.launchPlaywrightCodegen()
+                    }
+                    menuRow("Open Playwright HTML Report", icon: "doc.richtext", color: CeptraTheme.accent) {
+                        appState.openPlaywrightHTMLReport()
+                    }
+                    menuRow("Check Playwright Version", icon: "stethoscope") {
+                        appState.run(mode: .checkEnvironment)
+                    }
+                    menuRow("List Discovered Tests (--list)", icon: "list.bullet.rectangle") {
+                        appState.run(mode: .listActions)
+                    }
+                } else {
+                    CeptraDropdownSectionHeader(title: "CodeceptJS CLI Tools")
+                    menuRow("Check Environment (codeceptjs check)", icon: "stethoscope") {
+                        appState.run(mode: .checkEnvironment)
+                    }
+                    menuRow("Generate Type Defs (codeceptjs def)", icon: "curlybraces") {
+                        appState.run(mode: .generateDefinitions)
+                    }
+                    menuRow("List I.* Actions (codeceptjs list)", icon: "list.bullet.rectangle") {
+                        appState.run(mode: .listActions)
+                    }
                 }
             }
             .padding(8)
@@ -929,10 +983,17 @@ private struct ToolsControlPopover: View {
                         get: { appState.isRightSidebarVisible && appState.activeRightTab == .replay },
                         set: { _ in appState.toggleRightTab(.replay) }
                     ))
-                    moduleSwitchRow("CodeceptUI Live", subtitle: "Embedded @codeceptjs/ui dashboard", shortcut: "⌘⌥U", isOn: Binding(
-                        get: { appState.isRightSidebarVisible && appState.activeRightTab == .codeceptUI },
-                        set: { _ in appState.toggleRightTab(.codeceptUI) }
-                    ))
+                    moduleSwitchRow(
+                        appState.isPlaywrightWorkspace ? "Playwright UI Live" : "CodeceptUI Live",
+                        subtitle: appState.isPlaywrightWorkspace
+                            ? "Embedded playwright test --ui runner"
+                            : "Embedded @codeceptjs/ui dashboard",
+                        shortcut: "⌘⌥U",
+                        isOn: Binding(
+                            get: { appState.isRightSidebarVisible && appState.activeRightTab == .codeceptUI },
+                            set: { _ in appState.toggleRightTab(.codeceptUI) }
+                        )
+                    )
                     moduleSwitchRow("Flow Outline", subtitle: "Flat hooks & scenario pipeline", shortcut: "⌘⌥O", isOn: Binding(
                         get: { appState.isRightSidebarVisible && appState.activeRightTab == .outline },
                         set: { _ in appState.toggleRightTab(.outline) }
@@ -972,7 +1033,10 @@ private struct ToolsControlPopover: View {
                         appState.showingToolsPopover = false
                         appState.showingReportsSheet = true
                     }
-                    quickActionRow("CodeceptJS Run Options…", icon: "slider.horizontal.3") {
+                    quickActionRow(
+                        appState.isPlaywrightWorkspace ? "Playwright Run Options…" : "CodeceptJS Run Options…",
+                        icon: "slider.horizontal.3"
+                    ) {
                         appState.showingToolsPopover = false
                         appState.showingRunOptionsPopover = true
                     }
@@ -1014,7 +1078,7 @@ private struct ToolsControlPopover: View {
                         .padding(.top, 2)
 
                         Menu {
-                            ForEach(CodeSnippetItem.builtInSnippets) { snippet in
+                            ForEach(CodeSnippetItem.snippets(for: appState.activeFramework)) { snippet in
                                 Button(snippet.title) {
                                     appState.insertSnippet(snippet)
                                     appState.showingToolsPopover = false
@@ -1025,7 +1089,7 @@ private struct ToolsControlPopover: View {
                                 Image(systemName: "curlybraces.square")
                                     .font(.system(size: 11))
                                     .foregroundStyle(CeptraTheme.textSecondary)
-                                Text("Insert CodeceptJS Snippet…")
+                                Text(appState.isPlaywrightWorkspace ? "Insert Playwright Snippet…" : "Insert CodeceptJS Snippet…")
                                     .font(.system(size: 11.5, weight: .medium))
                                     .foregroundStyle(CeptraTheme.textPrimary)
                                 Spacer()
@@ -1213,7 +1277,7 @@ private struct BottomModuleStatusStrip: View {
                             appState.toggleRightTab(.replay)
                         }
                     }
-                    dockPill("CodeceptUI", isOn: appState.isRightSidebarVisible && appState.activeRightTab == .codeceptUI) {
+                    dockPill(appState.activeFramework.uiToolDisplayName, isOn: appState.isRightSidebarVisible && appState.activeRightTab == .codeceptUI) {
                         withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
                             appState.toggleRightTab(.codeceptUI)
                         }
@@ -1262,8 +1326,11 @@ private struct BottomModuleStatusStrip: View {
                                     let label = displayPath(path, relativeTo: ws.rootURL)
                                     let cfgSummary = ws.discoveredConfigs.first(where: { $0.configFilePath == path })
                                     let helperSubtitle = cfgSummary.flatMap { cfg -> String? in
-                                        let names = cfg.helpers.map(\.name)
-                                        return names.isEmpty ? nil : names.joined(separator: ", ")
+                                        let prefix = cfg.framework == .playwright ? "Playwright" : "CodeceptJS"
+                                        let names = cfg.framework == .playwright
+                                            ? cfg.playwrightProjects
+                                            : cfg.helpers.map(\.name)
+                                        return names.isEmpty ? prefix : "\(prefix) · \(names.joined(separator: ", "))"
                                     }
                                     CeptraDropdownItem(
                                         title: label,
@@ -1875,7 +1942,7 @@ private struct RunOptionsPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("CodeceptJS 4.x Run Options")
+            Text(appState.isPlaywrightWorkspace ? "Playwright Test Run Options" : "CodeceptJS 4.x Run Options")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(CeptraTheme.textPrimary)
 
@@ -1922,102 +1989,10 @@ private struct RunOptionsPopover: View {
 
             Divider().overlay(CeptraTheme.border)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle("Show Steps (--steps)", isOn: $appState.runOptions.showSteps)
-                Toggle("Debug Output (--debug)", isOn: $appState.runOptions.debug)
-                Toggle("Verbose Logging (--verbose)", isOn: $appState.runOptions.verbose)
-                Toggle("Enable AI Assistant (--ai)", isOn: $appState.runOptions.aiEnabled)
-                Toggle("Bail on First Failure (--bail)", isOn: $appState.runOptions.bailOnFail)
-                Toggle("Disable Timeouts (--no-timeouts)", isOn: $appState.runOptions.noTimeouts)
-                Toggle("Capture Replay Trace (Web DOM/Shots & API HTTP)", isOn: $appState.runOptions.timeTravelTrace)
-                    .disabled(appState.isSystemConsoleMode)
-                Toggle(
-                    appState.settings.jsRuntime == .bun
-                        ? "ESM/CJS Compat (Node.js only — native in Bun)"
-                        : "ESM/CJS Named-Export Compat (uuid, etc.)",
-                    isOn: $appState.runOptions.esmCjsCompat
-                )
-                .disabled(appState.settings.jsRuntime == .bun)
-            }
-            .toggleStyle(.checkbox)
-            .font(.system(size: 12))
-
-            Divider().overlay(CeptraTheme.border)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Plugins (-p)")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(CeptraTheme.textSecondary)
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
-                    ForEach(RunOptions.availableQuickPlugins, id: \.self) { plugin in
-                        let isEnabled = appState.runOptions.enabledPlugins.contains(plugin)
-                        Toggle(plugin, isOn: Binding(
-                            get: { isEnabled },
-                            set: { checked in
-                                if checked {
-                                    if !appState.runOptions.enabledPlugins.contains(plugin) {
-                                        appState.runOptions.enabledPlugins.append(plugin)
-                                    }
-                                } else {
-                                    appState.runOptions.enabledPlugins.removeAll { $0 == plugin }
-                                }
-                            }
-                        ))
-                        .toggleStyle(.checkbox)
-                        .font(.system(size: 11.5, design: .monospaced))
-                    }
-                }
-            }
-
-            Divider().overlay(CeptraTheme.border)
-
-            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
-                GridRow {
-                    Text("Profile:")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(CeptraTheme.textSecondary)
-                    TextField("e.g. chromium", text: $appState.runOptions.profile)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11.5))
-                }
-                GridRow {
-                    Text("Grep:")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(CeptraTheme.textSecondary)
-                    HStack(spacing: 6) {
-                        TextField("Regex or @tag", text: $appState.runOptions.grepPattern)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11.5))
-                        Toggle("Invert", isOn: $appState.runOptions.invertGrep)
-                            .toggleStyle(.checkbox)
-                            .font(.system(size: 10.5))
-                            .help("Invert --grep matches (--invert)")
-                    }
-                }
-                GridRow {
-                    Text("Workers:")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(CeptraTheme.textSecondary)
-                    HStack {
-                        Stepper("\(appState.runOptions.workerCount)", value: $appState.runOptions.workerCount, in: 1...16)
-                            .font(.system(size: 11.5))
-                        Picker("", selection: $appState.runOptions.workerStrategy) {
-                            ForEach(WorkerStrategy.allCases, id: \.self) { strat in
-                                Text(strat.rawValue).tag(strat)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 82)
-                    }
-                }
-                GridRow {
-                    Text("Serial:")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(CeptraTheme.textSecondary)
-                    TextField("Optional --serial pattern", text: $appState.runOptions.workerSerialPattern)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11.5))
-                }
+            if appState.isPlaywrightWorkspace {
+                playwrightRunOptionsSection
+            } else {
+                codeceptRunOptionsSection
             }
 
             Divider().overlay(CeptraTheme.border)
@@ -2027,9 +2002,12 @@ private struct RunOptionsPopover: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(CeptraTheme.accentWarm)
 
-                Toggle("Headed Browser (HEADLESS=false)", isOn: $appState.runOptions.debugLaunchOptions.headedBrowser)
-                    .toggleStyle(.checkbox)
-                    .font(.system(size: 12))
+                Toggle(
+                    appState.isPlaywrightWorkspace ? "Headed Browser (--headed)" : "Headed Browser (HEADLESS=false)",
+                    isOn: $appState.runOptions.debugLaunchOptions.headedBrowser
+                )
+                .toggleStyle(.checkbox)
+                .font(.system(size: 12))
 
                 HStack(spacing: 8) {
                     Text("Exceptions:")
@@ -2058,7 +2036,7 @@ private struct RunOptionsPopover: View {
                     appState.showingRunOptionsPopover = false
                     appState.presentParallelRunSheet(tab: .workers)
                 } label: {
-                    Label("run-workers…", systemImage: "cpu")
+                    Label(appState.isPlaywrightWorkspace ? "Workers…" : "run-workers…", systemImage: "cpu")
                         .font(.system(size: 11, weight: .medium))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
@@ -2069,7 +2047,7 @@ private struct RunOptionsPopover: View {
                     appState.showingRunOptionsPopover = false
                     appState.presentParallelRunSheet(tab: .multiple)
                 } label: {
-                    Label("run-multiple…", systemImage: "square.stack.3d.up")
+                    Label(appState.isPlaywrightWorkspace ? "Projects…" : "run-multiple…", systemImage: "square.stack.3d.up")
                         .font(.system(size: 11, weight: .medium))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
@@ -2078,9 +2056,191 @@ private struct RunOptionsPopover: View {
             }
         }
         .padding(16)
-        .frame(width: 340)
+        .frame(width: 348)
         .background(CeptraTheme.panelBG)
         .onDisappear { appState.saveSettings() }
+    }
+
+    @ViewBuilder
+    private var playwrightRunOptionsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Headed Browser (--headed)", isOn: $appState.runOptions.playwrightHeaded)
+            Toggle("Playwright Inspector (PWDEBUG=1)", isOn: $appState.runOptions.debug)
+            Toggle("Bail on First Failure (--max-failures=1)", isOn: $appState.runOptions.bailOnFail)
+            Toggle("Disable Timeouts (--timeout=0)", isOn: $appState.runOptions.noTimeouts)
+            Toggle("Update Visual Snapshots (-u)", isOn: $appState.runOptions.playwrightUpdateSnapshots)
+            Toggle("Capture Replay Trace (Steps, Shots & Console)", isOn: $appState.runOptions.timeTravelTrace)
+                .disabled(appState.isSystemConsoleMode)
+        }
+        .toggleStyle(.checkbox)
+        .font(.system(size: 12))
+
+        if let projects = appState.workspace?.config.playwrightProjects, !projects.isEmpty {
+            Divider().overlay(CeptraTheme.border)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Projects (--project)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(CeptraTheme.textSecondary)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
+                    ForEach(projects, id: \.self) { proj in
+                        let isSelected = appState.runOptions.playwrightSelectedProjects.contains(proj)
+                        Toggle(proj, isOn: Binding(
+                            get: { isSelected },
+                            set: { checked in
+                                if checked {
+                                    if !appState.runOptions.playwrightSelectedProjects.contains(proj) {
+                                        appState.runOptions.playwrightSelectedProjects.append(proj)
+                                    }
+                                } else {
+                                    appState.runOptions.playwrightSelectedProjects.removeAll { $0 == proj }
+                                }
+                            }
+                        ))
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 11.5, design: .monospaced))
+                    }
+                }
+            }
+        }
+
+        Divider().overlay(CeptraTheme.border)
+
+        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+            GridRow {
+                Text("Trace:")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(CeptraTheme.textSecondary)
+                Picker("", selection: $appState.runOptions.playwrightTraceMode) {
+                    ForEach(PlaywrightTraceMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+            }
+            GridRow {
+                Text("Grep:")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(CeptraTheme.textSecondary)
+                HStack(spacing: 6) {
+                    TextField("Regex or @tag", text: $appState.runOptions.grepPattern)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11.5))
+                    Toggle("Invert", isOn: $appState.runOptions.invertGrep)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 10.5))
+                        .help("Invert --grep matches (--grep-invert)")
+                }
+            }
+            GridRow {
+                Text("Workers:")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(CeptraTheme.textSecondary)
+                Stepper("\(appState.runOptions.workerCount)", value: $appState.runOptions.workerCount, in: 1...16)
+                    .font(.system(size: 11.5))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var codeceptRunOptionsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Show Steps (--steps)", isOn: $appState.runOptions.showSteps)
+            Toggle("Debug Output (--debug)", isOn: $appState.runOptions.debug)
+            Toggle("Verbose Logging (--verbose)", isOn: $appState.runOptions.verbose)
+            Toggle("Enable AI Assistant (--ai)", isOn: $appState.runOptions.aiEnabled)
+            Toggle("Bail on First Failure (--bail)", isOn: $appState.runOptions.bailOnFail)
+            Toggle("Disable Timeouts (--no-timeouts)", isOn: $appState.runOptions.noTimeouts)
+            Toggle("Capture Replay Trace (Web DOM/Shots & API HTTP)", isOn: $appState.runOptions.timeTravelTrace)
+                .disabled(appState.isSystemConsoleMode)
+            Toggle(
+                appState.settings.jsRuntime == .bun
+                    ? "ESM/CJS Compat (Node.js only — native in Bun)"
+                    : "ESM/CJS Named-Export Compat (uuid, etc.)",
+                isOn: $appState.runOptions.esmCjsCompat
+            )
+            .disabled(appState.settings.jsRuntime == .bun)
+        }
+        .toggleStyle(.checkbox)
+        .font(.system(size: 12))
+
+        Divider().overlay(CeptraTheme.border)
+
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Plugins (-p)")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(CeptraTheme.textSecondary)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
+                ForEach(RunOptions.availableQuickPlugins, id: \.self) { plugin in
+                    let isEnabled = appState.runOptions.enabledPlugins.contains(plugin)
+                    Toggle(plugin, isOn: Binding(
+                        get: { isEnabled },
+                        set: { checked in
+                            if checked {
+                                if !appState.runOptions.enabledPlugins.contains(plugin) {
+                                    appState.runOptions.enabledPlugins.append(plugin)
+                                }
+                            } else {
+                                appState.runOptions.enabledPlugins.removeAll { $0 == plugin }
+                            }
+                        }
+                    ))
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 11.5, design: .monospaced))
+                }
+            }
+        }
+
+        Divider().overlay(CeptraTheme.border)
+
+        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+            GridRow {
+                Text("Profile:")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(CeptraTheme.textSecondary)
+                TextField("e.g. chromium", text: $appState.runOptions.profile)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11.5))
+            }
+            GridRow {
+                Text("Grep:")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(CeptraTheme.textSecondary)
+                HStack(spacing: 6) {
+                    TextField("Regex or @tag", text: $appState.runOptions.grepPattern)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11.5))
+                    Toggle("Invert", isOn: $appState.runOptions.invertGrep)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 10.5))
+                        .help("Invert --grep matches (--invert)")
+                }
+            }
+            GridRow {
+                Text("Workers:")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(CeptraTheme.textSecondary)
+                HStack {
+                    Stepper("\(appState.runOptions.workerCount)", value: $appState.runOptions.workerCount, in: 1...16)
+                        .font(.system(size: 11.5))
+                    Picker("", selection: $appState.runOptions.workerStrategy) {
+                        ForEach(WorkerStrategy.allCases, id: \.self) { strat in
+                            Text(strat.rawValue).tag(strat)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 82)
+                }
+            }
+            GridRow {
+                Text("Serial:")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(CeptraTheme.textSecondary)
+                TextField("Optional --serial pattern", text: $appState.runOptions.workerSerialPattern)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11.5))
+            }
+        }
     }
 }
 

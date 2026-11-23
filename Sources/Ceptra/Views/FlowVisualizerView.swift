@@ -423,10 +423,11 @@ private struct ProjectArchitectureView: View {
     let workspace: CodeceptWorkspace
 
     var body: some View {
+        let isPW = workspace.config.framework == .playwright
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("CODECEPTJS 4.X ARCHITECTURE")
+                    Text(isPW ? "PLAYWRIGHT TEST ARCHITECTURE" : "CODECEPTJS 4.X ARCHITECTURE")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundStyle(CeptraTheme.accent)
                     Text(workspace.config.projectName)
@@ -448,7 +449,7 @@ private struct ProjectArchitectureView: View {
                     if workspace.config.isTypeScript { CeptraBadge(text: "TypeScript", color: CeptraTheme.accent) }
                     if workspace.config.isESM { CeptraBadge(text: "ESM", color: CeptraTheme.success) }
                     if let v = workspace.config.packageCodeceptVersion {
-                        CeptraBadge(text: "codeceptjs \(v)", color: CeptraTheme.accentWarm)
+                        CeptraBadge(text: isPW ? "@playwright/test \(v)" : "codeceptjs \(v)", color: CeptraTheme.accentWarm)
                     }
                 }
             }
@@ -514,10 +515,14 @@ private struct ProjectArchitectureView: View {
                 }
             }
 
-            // Plugins
-            architectureCard(title: "PLUGINS (\(workspace.config.plugins.count))", icon: "puzzlepiece.extension", color: CeptraTheme.violet) {
+            // Plugins / Reporters
+            architectureCard(
+                title: isPW ? "REPORTERS (\(workspace.config.plugins.count))" : "PLUGINS (\(workspace.config.plugins.count))",
+                icon: "puzzlepiece.extension",
+                color: CeptraTheme.violet
+            ) {
                 if workspace.config.plugins.isEmpty {
-                    Text("Using CodeceptJS 4.x default plugins (screenshot on fail).")
+                    Text(isPW ? "Using Playwright Test default list reporter." : "Using CodeceptJS 4.x default plugins (screenshot on fail).")
                         .font(.system(size: 12))
                         .foregroundStyle(CeptraTheme.textMuted)
                 } else {
@@ -533,19 +538,23 @@ private struct ProjectArchitectureView: View {
                 }
             }
 
-            // Multiple Suites (run-multiple)
+            // Multiple Suites / Playwright Projects
             if !workspace.config.multipleSuites.isEmpty {
-                architectureCard(title: "MULTIPLE SUITES (\(workspace.config.multipleSuites.count))", icon: "square.stack.3d.up", color: CeptraTheme.success) {
+                architectureCard(
+                    title: isPW ? "PROJECTS (\(workspace.config.multipleSuites.count))" : "MULTIPLE SUITES (\(workspace.config.multipleSuites.count))",
+                    icon: "square.stack.3d.up",
+                    color: CeptraTheme.success
+                ) {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Configured for `codeceptjs run-multiple`")
+                            Text(isPW ? "Configured for `playwright test --project=<name>`" : "Configured for `codeceptjs run-multiple`")
                                 .font(.system(size: 11))
                                 .foregroundStyle(CeptraTheme.textMuted)
                             Spacer()
                             Button {
                                 appState.run(mode: .runMultiple(suites: [], runAll: true))
                             } label: {
-                                Label("Run All (--all)", systemImage: "play.fill")
+                                Label(isPW ? "Run All Projects" : "Run All (--all)", systemImage: "play.fill")
                                     .font(.system(size: 10.5, weight: .semibold))
                                     .foregroundStyle(.white)
                                     .padding(.horizontal, 9)
