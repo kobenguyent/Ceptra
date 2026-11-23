@@ -225,6 +225,7 @@ struct CodeEditorView: NSViewRepresentable {
         var lastFoldActionTrigger: Int = 0
         var lastEditorMutationTrigger: Int = 0
         var lastPausedLine: Int? = nil
+        var lastObservedScrollOrigin: CGPoint = .zero
         let completionController = CompletionPopupController()
         let navigationPopupController = NavigationTargetsPopupController()
         private var observers: [NSObjectProtocol] = []
@@ -392,15 +393,23 @@ struct CodeEditorView: NSViewRepresentable {
 
         func observe(container: CeptraEditorContainerView) {
             container.scrollView.contentView.postsBoundsChangedNotifications = true
+            lastObservedScrollOrigin = container.scrollView.documentVisibleRect.origin
             let boundsObserver = NotificationCenter.default.addObserver(
                 forName: NSView.boundsDidChangeNotification,
                 object: container.scrollView.contentView,
-                queue: .main
+                queue: nil
             ) { [weak self] _ in
-                self?.container?.gutterView.needsDisplay = true
-                self?.container?.textView.clearHoverLink()
-                self?.completionController.dismiss()
-                self?.navigationPopupController.dismiss()
+                guard let self, let container = self.container else { return }
+                container.gutterView.needsDisplay = true
+                let newOrigin = container.scrollView.documentVisibleRect.origin
+                let moved = abs(newOrigin.x - self.lastObservedScrollOrigin.x) > 0.5
+                    || abs(newOrigin.y - self.lastObservedScrollOrigin.y) > 0.5
+                self.lastObservedScrollOrigin = newOrigin
+                if moved {
+                    container.textView.clearHoverLink()
+                    self.completionController.dismiss()
+                    self.navigationPopupController.dismiss()
+                }
             }
             let frameObserver = NotificationCenter.default.addObserver(
                 forName: NSView.frameDidChangeNotification,
@@ -594,7 +603,7 @@ struct CodeEditorView: NSViewRepresentable {
                 }
             }
 
-            completionController.present(result: result, in: tv)
+            completionController.present(result: result, in: tv, isDarkMode: container?.isDarkMode ?? true)
         }
 
         private func shouldAutoTriggerCompletion(in source: String, at utf16Offset: Int) -> Bool {
@@ -603,6 +612,12 @@ struct CodeEditorView: NSViewRepresentable {
             let prevChar = ns.character(at: utf16Offset - 1)
             // Always trigger immediately on '.', '@', or '/' (import path)
             if prevChar == 46 || prevChar == 64 || prevChar == 47 { // '.', '@', '/'
+                return true
+            }
+            // Trigger inside callback fixture destructuring: `async ({ `, `async ({ page, `, `async ({ r`
+            let lineRange = ns.lineRange(for: NSRange(location: utf16Offset, length: 0))
+            let linePrefix = ns.substring(with: NSRange(location: lineRange.location, length: utf16Offset - lineRange.location))
+            if IntelliSenseEngine.isInsideCallbackArgList(linePrefix) {
                 return true
             }
             // Otherwise trigger once at least 2 contiguous identifier chars have been typed
@@ -2918,6 +2933,7 @@ final class CompletionPopupController: NSObject, NSTableViewDataSource, NSTableV
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
     private var currentResult: CompletionResult?
+    private var isDarkMode: Bool = true
     var onAccept: ((CompletionItem, NSRange) -> Void)?
 
     var isVisible: Bool {
@@ -2989,8 +3005,17 @@ final class CompletionPopupController: NSObject, NSTableViewDataSource, NSTableV
         self.panel = p
     }
 
-    func present(result: CompletionResult, in textView: NSTextView) {
+    func present(result: CompletionResult, in textView: NSTextView, isDarkMode: Bool = true) {
         guard let panel, let hostWindow = textView.window else { return }
+        self.isDarkMode = isDarkMode
+        let appearance = NSAppearance(named: isDarkMode ? .darkAqua : .aqua)
+        panel.appearance = appearance
+        if let effectView = panel.contentView as? NSVisualEffectView {
+            effectView.appearance = appearance
+            effectView.layer?.borderColor = (isDarkMode
+                ? NSColor.white.withAlphaComponent(0.16)
+                : NSColor.black.withAlphaComponent(0.14)).cgColor
+        }
         currentResult = result
         tableView.reloadData()
 
@@ -3003,9 +3028,31 @@ final class CompletionPopupController: NSObject, NSTableViewDataSource, NSTableV
         let popupHeight = CGFloat(visibleRows) * 27.0 + 10.0
         let popupWidth: CGFloat = 400
 
-        // Compute screen position immediately below caret
-        let caretRange = NSRange(location: result.replacementRange.location, length: 0)
-        let screenRect = textView.firstRect(forCharacterRange: caretRange, actualRange: nil)
+        // Compute screen position immediately below caret, with robust EOF / trailing-dot fallback
+        let nsLen = (textView.string as NSString).length
+        let anchorLoc = min(max(0, result.replacementRange.location), nsLen)
+        var screenRect = textView.firstRect(forCharacterRange: NSRange(location: anchorLoc, length: 0), actualRange: nil)
+        if screenRect == .zero || (screenRect.width == 0 && screenRect.height == 0) {
+            if anchorLoc > 0 {
+                let prevRect = textView.firstRect(forCharacterRange: NSRange(location: anchorLoc - 1, length: 1), actualRange: nil)
+                if prevRect != .zero {
+                    screenRect = NSRect(x: prevRect.maxX, y: prevRect.minY, width: 1, height: max(16, prevRect.height))
+                }
+            }
+            if screenRect == .zero, let lm = textView.layoutManager {
+                let extra = lm.extraLineFragmentRect
+                if extra.height > 0 {
+                    let localRect = NSRect(
+                        x: extra.minX + textView.textContainerOrigin.x,
+                        y: extra.minY + textView.textContainerOrigin.y,
+                        width: 1,
+                        height: extra.height
+                    )
+                    let winRect = textView.convert(localRect, to: nil)
+                    screenRect = hostWindow.convertToScreen(winRect)
+                }
+            }
+        }
         var originX = screenRect.minX
         var originY = screenRect.minY - popupHeight - 4
 
@@ -3095,13 +3142,17 @@ final class CompletionPopupController: NSObject, NSTableViewDataSource, NSTableV
 
         let title = NSTextField(labelWithString: item.label + item.signature)
         title.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
-        title.textColor = NSColor(red: 0.93, green: 0.95, blue: 0.99, alpha: 1.0)
+        title.textColor = isDarkMode
+            ? NSColor(red: 0.93, green: 0.95, blue: 0.99, alpha: 1.0)
+            : NSColor(red: 0.10, green: 0.13, blue: 0.18, alpha: 1.0)
         title.lineBreakMode = .byTruncatingTail
         title.translatesAutoresizingMaskIntoConstraints = false
 
         let detail = NSTextField(labelWithString: item.detail)
         detail.font = NSFont.systemFont(ofSize: 10.5)
-        detail.textColor = NSColor(red: 0.56, green: 0.61, blue: 0.70, alpha: 1.0)
+        detail.textColor = isDarkMode
+            ? NSColor(red: 0.56, green: 0.61, blue: 0.70, alpha: 1.0)
+            : NSColor(red: 0.40, green: 0.45, blue: 0.54, alpha: 1.0)
         detail.alignment = .right
         detail.lineBreakMode = .byTruncatingMiddle
         detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)

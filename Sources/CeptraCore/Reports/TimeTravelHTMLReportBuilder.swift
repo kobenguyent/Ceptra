@@ -441,19 +441,19 @@ public enum TimeTravelHTMLReportBuilder {
                   </div>
 
                   <div class="tabpanels">
-                    <div role="tabpanel" id="panel-api" aria-labelledby="tab-api" hidden="until-found">
+                    <div role="tabpanel" id="panel-api" aria-labelledby="tab-api" hidden>
                       <div class="panel-inner" id="api-content"></div>
                     </div>
-                    <div role="tabpanel" id="panel-waterfall" aria-labelledby="tab-waterfall" hidden="until-found">
+                    <div role="tabpanel" id="panel-waterfall" aria-labelledby="tab-waterfall" hidden>
                       <div class="panel-inner" id="waterfall-content"></div>
                     </div>
                     <div role="tabpanel" id="panel-visual" aria-labelledby="tab-visual" tabindex="0">
                       <div class="panel-inner" id="visual-content"></div>
                     </div>
-                    <div role="tabpanel" id="panel-dom" aria-labelledby="tab-dom" hidden="until-found">
+                    <div role="tabpanel" id="panel-dom" aria-labelledby="tab-dom" hidden>
                       <div class="panel-inner" id="dom-content"></div>
                     </div>
-                    <div role="tabpanel" id="panel-network" aria-labelledby="tab-network" hidden="until-found">
+                    <div role="tabpanel" id="panel-network" aria-labelledby="tab-network" hidden>
                       <div class="panel-inner" id="network-content"></div>
                     </div>
                   </div>
@@ -461,6 +461,7 @@ public enum TimeTravelHTMLReportBuilder {
               </section>
             </main>
           </div>
+          <div id="copy-toast" class="copy-toast" role="status" aria-live="polite" hidden></div>
 
           <dialog id="shot-lightbox" class="lightbox" aria-label="Screenshot zoom view">
             <div class="lightbox-head">
@@ -662,9 +663,13 @@ public enum TimeTravelHTMLReportBuilder {
     .tab-badge { font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); }
     .tab-badge:empty { display: none; }
 
-    .tabpanels { display: grid; }
-    .tabpanels > [role="tabpanel"] { grid-area: 1 / 1; min-width: 0; }
+    .tabpanels { display: block; }
+    .tabpanels > [role="tabpanel"] { min-width: 0; }
+    .tabpanels > [role="tabpanel"][hidden] { display: none !important; }
     .panel-inner { padding-top: 14px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+    .copy-toast { position: fixed; right: 20px; bottom: 20px; z-index: 60; padding: 8px 14px; border-radius: 8px; background: var(--surface-3); border: 1px solid var(--accent); color: var(--text); font-family: var(--mono); font-size: 11.5px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); pointer-events: none; }
+    .copy-toast[hidden] { display: none !important; }
 
     .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
     .card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
@@ -1129,13 +1134,40 @@ public enum TimeTravelHTMLReportBuilder {
         return node;
       }
 
+      let toastTimer = null;
+      function showToast(msg) {
+        const toast = document.getElementById('copy-toast');
+        if (!toast) return;
+        toast.textContent = msg;
+        toast.hidden = false;
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { toast.hidden = true; }, 1900);
+      }
+
       async function copyText(text, label) {
-        try {
-          await navigator.clipboard.writeText(text);
-          announce(`${label} copied`);
-        } catch {
-          announce(`Copy failed for ${label}`);
+        let ok = false;
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          try {
+            await navigator.clipboard.writeText(text);
+            ok = true;
+          } catch {}
         }
+        if (!ok) {
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = String(text ?? '');
+            ta.setAttribute('readonly', '');
+            ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            ok = document.execCommand('copy');
+            document.body.removeChild(ta);
+          } catch {}
+        }
+        const msg = ok ? `Copied ${label}` : `Copy failed for ${label}`;
+        announce(msg);
+        showToast(msg);
       }
 
       // Reusable interactive JSON tree renderer with JSONPath click-to-copy & live search
@@ -1926,10 +1958,12 @@ public enum TimeTravelHTMLReportBuilder {
 
             wfList.appendChild(el('div', {
               class: `wf-row${isActiveStep ? ' active' : ''}`,
-              title: `${r.method} ${r.url} (${stLabel}, ${fmtDur(r.durationMs)}) — click to jump to Step #${item.stepIndex + 1}`,
+              title: `${r.method} ${r.url} (${stLabel}, ${fmtDur(r.durationMs)}) — click to inspect in API Exchange (Step #${item.stepIndex + 1})`,
               onClick: () => {
                 selectStep(item.stepIndex);
                 state.selectedApiExId = r.id;
+                renderApiExchange(STEPS[item.stepIndex]);
+                selectTab('api');
               }
             }, [
               el('span', { class: `method-badge ${methodCls(r.method)}`, text: r.method || 'GET' }),
@@ -2462,31 +2496,25 @@ public enum TimeTravelHTMLReportBuilder {
           }, lbl));
         }
 
-        const filtered = allReqs.filter((r) => {
-          if (state.netFilter === 'xhr' && r.resourceType !== 'fetch' && r.resourceType !== 'xhr' && r.resourceType !== 'api') return false;
-          if (state.netFilter === 'errors' && !r.errorText && (r.status == null || r.status < 400)) return false;
-          const q = state.netSearch.trim().toLowerCase();
-          if (q && !(r.url || '').toLowerCase().includes(q) && !(r.method || '').toLowerCase().includes(q)) return false;
-          return true;
-        });
-
         const body = el('div', { class: 'card-body' });
         if (allReqs.length === 0) {
           body.appendChild(el('div', { class: 'empty-state', text: 'No HTTP/XHR network traffic was triggered during this step.' }));
         } else {
-          body.appendChild(el('input', {
-            type: 'search',
-            class: 'search-input',
-            style: 'margin-bottom:10px',
-            value: state.netSearch,
-            placeholder: 'Filter requests by URL or method…',
-            'aria-label': 'Filter network requests',
-            onInput: (e) => { state.netSearch = e.target.value; renderNetwork(step); }
-          }));
+          const resultsHost = el('div');
+          const renderNetworkResults = () => {
+            resultsHost.replaceChildren();
+            const filtered = allReqs.filter((r) => {
+              if (state.netFilter === 'xhr' && r.resourceType !== 'fetch' && r.resourceType !== 'xhr' && r.resourceType !== 'api') return false;
+              if (state.netFilter === 'errors' && !r.errorText && (r.status == null || r.status < 400)) return false;
+              const q = state.netSearch.trim().toLowerCase();
+              if (q && !(r.url || '').toLowerCase().includes(q) && !(r.method || '').toLowerCase().includes(q)) return false;
+              return true;
+            });
 
-          if (filtered.length === 0) {
-            body.appendChild(el('div', { class: 'empty-state', text: 'No requests match this filter.' }));
-          } else {
+            if (filtered.length === 0) {
+              resultsHost.appendChild(el('div', { class: 'empty-state', text: 'No requests match this filter.' }));
+              return;
+            }
             if (!filtered.some((r) => r.id === state.selectedNetId)) {
               state.selectedNetId = filtered[0].id;
             }
@@ -2496,7 +2524,7 @@ public enum TimeTravelHTMLReportBuilder {
               const statusLabel = req.errorText ? 'FAILED' : (req.status != null ? String(req.status) : '…');
               tbody.appendChild(el('tr', {
                 class: `net-row${sel ? ' selected' : ''}`,
-                onClick: () => { state.selectedNetId = req.id; renderNetwork(step); }
+                onClick: () => { state.selectedNetId = req.id; renderNetworkResults(); }
               }, [
                 el('td', null, el('span', { class: `method-badge ${methodCls(req.method)}`, text: req.method || 'GET' })),
                 el('td', null, el('span', { class: `status-code ${statusBucket(req)}`, text: statusLabel })),
@@ -2506,7 +2534,7 @@ public enum TimeTravelHTMLReportBuilder {
               ]));
             }
 
-            body.appendChild(el('div', { class: 'net-table-wrap' }, [
+            resultsHost.appendChild(el('div', { class: 'net-table-wrap' }, [
               el('table', { class: 'net-table' }, [
                 el('thead', null, el('tr', null, [
                   el('th', { text: 'Method' }),
@@ -2541,14 +2569,26 @@ public enum TimeTravelHTMLReportBuilder {
               if (reqH) detail.appendChild(reqH);
               if (resH) detail.appendChild(resH);
               if (chosen.requestBody) {
-                detail.appendChild(buildPayloadViewer(chosen.requestBody, 'apiReqBodyMode', 'apiReqSearch', 'Request Payload', () => renderNetwork(step)));
+                detail.appendChild(buildPayloadViewer(chosen.requestBody, 'apiReqBodyMode', 'apiReqSearch', 'Request Payload', renderNetworkResults));
               }
               if (chosen.responseBody) {
-                detail.appendChild(buildPayloadViewer(chosen.responseBody, 'apiResBodyMode', 'apiResSearch', 'Response Payload', () => renderNetwork(step)));
+                detail.appendChild(buildPayloadViewer(chosen.responseBody, 'apiResBodyMode', 'apiResSearch', 'Response Payload', renderNetworkResults));
               }
-              body.appendChild(detail);
+              resultsHost.appendChild(detail);
             }
-          }
+          };
+
+          body.appendChild(el('input', {
+            type: 'search',
+            class: 'search-input',
+            style: 'margin-bottom:10px',
+            value: state.netSearch,
+            placeholder: 'Filter requests by URL or method…',
+            'aria-label': 'Filter network requests',
+            onInput: (e) => { state.netSearch = e.target.value; renderNetworkResults(); }
+          }));
+          renderNetworkResults();
+          body.appendChild(resultsHost);
         }
 
         els.networkContent.appendChild(el('div', { class: 'card' }, [
@@ -2591,11 +2631,10 @@ public enum TimeTravelHTMLReportBuilder {
         }
         for (const panel of els.panels) {
           const active = panel.id === panelMap[tabKey];
+          panel.hidden = !active;
           if (active) {
-            panel.removeAttribute('hidden');
             panel.tabIndex = 0;
           } else {
-            panel.setAttribute('hidden', 'until-found');
             panel.removeAttribute('tabindex');
           }
         }

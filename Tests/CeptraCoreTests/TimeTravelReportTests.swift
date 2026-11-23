@@ -467,6 +467,10 @@ final class TimeTravelReportTests: XCTestCase {
         XCTAssertTrue(html.contains("Network"))
         XCTAssertTrue(html.contains("Visual &amp; Console"))
         XCTAssertTrue(html.contains(#"sandbox="""#))
+        // Regression guard: inactive tabpanels must use display:none `hidden` (never `until-found` + grid overlay that blocks clicks)
+        XCTAssertFalse(html.contains(#"hidden="until-found""#))
+        XCTAssertFalse(html.contains("grid-area: 1 / 1"))
+        XCTAssertTrue(html.contains(#".tabpanels > [role="tabpanel"][hidden] { display: none !important; }"#))
 
         // 3. XSS breakout prevention: raw `</script>` inside embedded JSON must be escaped
         let jsonStart = try XCTUnwrap(html.range(of: #"<script id="ceptra-report-data" type="application/json">"#))

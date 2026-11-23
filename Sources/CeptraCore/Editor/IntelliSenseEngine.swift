@@ -204,11 +204,59 @@ public enum IntelliSenseEngine {
             return matches.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: matches)
         }
 
-        // 4. Member access after `I.` / `page.` / `request.` / `test.` / `expect(...).` / `<alias>.`
+        // 3.5. Callback argument / fixture destructuring completion:
+        //      - `test('...', async ({ req` / `test.beforeEach(async ({ page, `
+        //      - `Scenario('...', async ({ I, `
+        //      - `test('...', async ({ request }, te` (2nd param: testInfo)
+        if let argCtx = matchCallbackArgContext(linePrefix) {
+            let typed = argCtx.prefix
+            let replaceRange = NSRange(location: cursorUTF16Offset - (typed as NSString).length, length: (typed as NSString).length)
+            let isPW = isPlaywrightContext(source: source, sourceFileURL: sourceFileURL, workspace: workspace)
+            var pool: [CompletionItem] = []
+
+            if argCtx.isSecondParam {
+                if isPW {
+                    pool = [
+                        CompletionItem(label: "testInfo", insertText: "testInfo", signature: ": TestInfo", detail: "Playwright TestInfo metadata", kind: .symbol)
+                    ]
+                }
+            } else if isPW {
+                pool = builtInPlaywrightFixtureArgs
+                let existing = Set(pool.map(\.label))
+                for custom in extractPlaywrightExtendedFixtures(from: source) where !existing.contains(custom) {
+                    pool.append(CompletionItem(label: custom, insertText: custom, signature: "", detail: "Custom Playwright fixture", kind: .symbol))
+                }
+            } else {
+                pool = [
+                    CompletionItem(label: "I", insertText: "I", signature: ": CodeceptJS.I", detail: "CodeceptJS primary actor", kind: .symbol),
+                    CompletionItem(label: "current", insertText: "current", signature: "", detail: "DataTable row object", kind: .symbol)
+                ]
+                let existing = Set(pool.map(\.label))
+                if let includes = workspace?.config.includes {
+                    for inc in includes where !existing.contains(inc.alias) {
+                        pool.append(CompletionItem(
+                            label: inc.alias,
+                            insertText: inc.alias,
+                            signature: "",
+                            detail: "include: \(inc.relativePath)",
+                            kind: .symbol
+                        ))
+                    }
+                }
+            }
+
+            let existingInObj = argCtx.existingNames
+            let filteredPool = pool.filter { !existingInObj.contains($0.label) || $0.label == typed }
+            let ranked = rankAndFilter(filteredPool, prefix: typed)
+            return ranked.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: ranked)
+        }
+
+        // 4. Member access after `I.` / `page.` / `request.` / `response.` / `context.` / `browser.` / `testInfo.` / `route.` / `test.` / `expect(...).` / `<arg>.`
         if let memberMatch = matchMemberAccess(linePrefix) {
             let receiver = memberMatch.receiver
             let typed = memberMatch.memberPrefix
             let replaceRange = NSRange(location: cursorUTF16Offset - (typed as NSString).length, length: (typed as NSString).length)
+            let inferredTypes = inferLocalReceiverTypes(in: source, upToUTF16Offset: cursorUTF16Offset)
 
             var pool: [CompletionItem] = []
             if receiver == "I" {
@@ -224,16 +272,22 @@ public enum IntelliSenseEngine {
                 ]
             } else if receiver == "test" {
                 pool = builtInPlaywrightTestMembers
-            } else if receiver == "page" || receiver == "frame" {
-                pool = builtInPlaywrightPageActions
-            } else if receiver == "request" {
-                pool = builtInPlaywrightRequestActions
             } else if receiver == "expect" {
                 pool = builtInPlaywrightExpectMatchers
-            } else if receiver == "locator" || receiver.hasSuffix("Locator") {
-                pool = builtInPlaywrightLocatorActions
+            } else if let directPool = builtInMembers(forReceiverKind: receiverKind(forName: receiver, inferredTypes: inferredTypes)) {
+                pool = directPool
             } else if let aliasMembers = index.memberMethodsByAlias[receiver] {
                 pool = aliasMembers
+            } else if let constructedClass = inferredTypes.constructedClassByVar[receiver],
+                      let sourceFileURL, let workspace {
+                if let classPool = resolveImportedClassMembers(
+                    className: constructedClass,
+                    in: source,
+                    sourceFileURL: sourceFileURL,
+                    workspace: workspace
+                ) {
+                    pool = classPool
+                }
             } else if let sourceFileURL, let workspace {
                 // Dynamically inspect an imported file for `receiver.<member>`
                 if let span = ImportNavigator.resolveTarget(
@@ -251,7 +305,7 @@ public enum IntelliSenseEngine {
             return ranked.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: ranked)
         }
 
-        // 5. General identifier / CodeceptJS or Playwright DSL / Keywords / Local symbols
+        // 5. General identifier / CodeceptJS or Playwright DSL / Keywords / Callback args & Local symbols
         guard let wordPrefix = matchTrailingRegex(#"([A-Za-z_$][\w$]*)$"#, in: linePrefix), !wordPrefix.isEmpty else {
             return nil
         }
@@ -260,9 +314,24 @@ public enum IntelliSenseEngine {
         let isPW = isPlaywrightContext(source: source, sourceFileURL: sourceFileURL, workspace: workspace)
         var pool: [CompletionItem] = (isPW ? builtInPlaywrightDSLItems : builtInDSLItems) + jsKeywordItems
 
+        // Callback parameters & destructured fixture args in current file (`async ({ request, page }, testInfo) =>`)
+        var seenLabels = Set(pool.map(\.label))
+        let argParams = extractCallbackParameterIdentifiers(from: source)
+        for param in argParams where !seenLabels.contains(param.name) {
+            seenLabels.insert(param.name)
+            pool.append(CompletionItem(
+                label: param.name,
+                insertText: param.name,
+                signature: param.signature,
+                detail: param.detail,
+                kind: .symbol
+            ))
+        }
+
         // Configured include aliases (`I`, `homePage`, `loginPage`, etc.)
         if let includes = workspace?.config.includes {
-            for inc in includes {
+            for inc in includes where !seenLabels.contains(inc.alias) {
+                seenLabels.insert(inc.alias)
                 pool.append(CompletionItem(
                     label: inc.alias,
                     insertText: inc.alias,
@@ -274,8 +343,8 @@ public enum IntelliSenseEngine {
         }
 
         // Local identifiers in current file
-        let existingLabels = Set(pool.map(\.label))
-        for local in extractLocalIdentifiers(from: source) where !existingLabels.contains(local) && local != wordPrefix {
+        for local in extractLocalIdentifiers(from: source) where !seenLabels.contains(local) && local != wordPrefix {
+            seenLabels.insert(local)
             pool.append(CompletionItem(label: local, insertText: local, signature: "", detail: "local symbol", kind: .symbol))
         }
 
@@ -436,23 +505,371 @@ public enum IntelliSenseEngine {
         return workspace?.config.framework == .playwright
     }
 
+    /// True when the caret on `linePrefix` sits inside a callback parameter destructuring list
+    /// such as `test('...', async ({ `, `async ({ page, `, or `async ({ request }, `.
+    public static func isInsideCallbackArgList(_ linePrefix: String) -> Bool {
+        matchCallbackArgContext(linePrefix) != nil
+    }
+
+    private static func matchCallbackArgContext(_ linePrefix: String) -> (prefix: String, existingNames: Set<String>, isSecondParam: Bool)? {
+        let ns = linePrefix as NSString
+        let fullRange = NSRange(location: 0, length: ns.length)
+
+        // 1. 2nd callback parameter after destructuring: `async ({ request }, te` / `({ page }, `
+        let secondPattern = #"(?:(?:^|[,=(\s])(?:async\s+|function(?:\s+[A-Za-z_$][\w$]*)?\s*)?)\(\s*\{([^}\n]*)\}\s*,\s*([A-Za-z_$][\w$]*)?$"#
+        if let regex = try? NSRegularExpression(pattern: secondPattern),
+           let m = regex.firstMatch(in: linePrefix, range: fullRange) {
+            let prefix = m.range(at: 2).location != NSNotFound ? ns.substring(with: m.range(at: 2)) : ""
+            return (prefix, [], true)
+        }
+
+        // 2. Inside destructuring object parameter: `async ({ `, `async ({ req`, `({ page, con`
+        let destructPattern = #"(?:^|[,=(\s])(?:async\s+|function(?:\s+[A-Za-z_$][\w$]*)?\s*)?\(\s*\{([^}\n]*)$"#
+        guard let regex = try? NSRegularExpression(pattern: destructPattern),
+              let m = regex.firstMatch(in: linePrefix, range: fullRange) else {
+            return nil
+        }
+
+        // Reject regular function calls like `toMatchObject({ id` where an identifier other than async/function precedes `(`
+        if m.range.location > 0 {
+            let before = ns.substring(to: m.range.location)
+            if let last = before.last, (last.isLetter || last.isNumber || last == "_" || last == "$") {
+                return nil
+            }
+        }
+
+        let inside = ns.substring(with: m.range(at: 1))
+        let segments = inside.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        guard let currentSeg = segments.last else { return nil }
+        // Don't offer fixture names while typing an alias after `:` or default value after `=`
+        if currentSeg.contains(":") || currentSeg.contains("=") {
+            return nil
+        }
+
+        let trimmedCurrent = currentSeg.trimmingCharacters(in: .whitespaces)
+        // Ensure the current token is empty or a valid identifier prefix
+        if !trimmedCurrent.isEmpty {
+            let valid = trimmedCurrent.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "$" }
+            if !valid { return nil }
+        }
+
+        var existing = Set<String>()
+        for seg in segments.dropLast() {
+            let keyPart = seg.split(separator: ":", maxSplits: 1).first ?? Substring(seg)
+            let cleanKey = keyPart.split(separator: "=", maxSplits: 1).first ?? keyPart
+            let trimmed = cleanKey.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { existing.insert(trimmed) }
+        }
+
+        return (trimmedCurrent, existing, false)
+    }
+
+    private enum BuiltInReceiverKind {
+        case playwrightPage
+        case playwrightLocator
+        case playwrightRequest
+        case playwrightResponse
+        case playwrightContext
+        case playwrightBrowser
+        case playwrightTestInfo
+        case playwrightRoute
+        case playwrightKeyboard
+        case playwrightMouse
+    }
+
+    private struct InferredLocalTypes {
+        var receiverKindByVar: [String: BuiltInReceiverKind] = [:]
+        var constructedClassByVar: [String: String] = [:]
+    }
+
+    private static func builtInReceiverKind(forTypeName rawType: String) -> BuiltInReceiverKind? {
+        let clean = rawType
+            .replacingOccurrences(of: "Promise<", with: "")
+            .replacingOccurrences(of: ">", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        switch clean {
+        case "Page", "Frame": return .playwrightPage
+        case "Locator", "FrameLocator": return .playwrightLocator
+        case "APIRequestContext": return .playwrightRequest
+        case "APIResponse", "Response": return .playwrightResponse
+        case "BrowserContext": return .playwrightContext
+        case "Browser": return .playwrightBrowser
+        case "TestInfo": return .playwrightTestInfo
+        case "Route": return .playwrightRoute
+        case "Keyboard": return .playwrightKeyboard
+        case "Mouse": return .playwrightMouse
+        default: return nil
+        }
+    }
+
+    private static func builtInReceiverKind(forFixtureName name: String) -> BuiltInReceiverKind? {
+        switch name {
+        case "page", "frame": return .playwrightPage
+        case "request": return .playwrightRequest
+        case "context": return .playwrightContext
+        case "browser": return .playwrightBrowser
+        case "testInfo": return .playwrightTestInfo
+        case "route": return .playwrightRoute
+        case "response": return .playwrightResponse
+        case "keyboard": return .playwrightKeyboard
+        case "mouse": return .playwrightMouse
+        case "locator": return .playwrightLocator
+        default:
+            if name.hasSuffix("Locator") { return .playwrightLocator }
+            return nil
+        }
+    }
+
+    private static func receiverKind(forName receiver: String, inferredTypes: InferredLocalTypes) -> BuiltInReceiverKind? {
+        if let inferred = inferredTypes.receiverKindByVar[receiver] {
+            return inferred
+        }
+        return builtInReceiverKind(forFixtureName: receiver)
+    }
+
+    private static func builtInMembers(forReceiverKind kind: BuiltInReceiverKind?) -> [CompletionItem]? {
+        guard let kind else { return nil }
+        switch kind {
+        case .playwrightPage: return builtInPlaywrightPageActions
+        case .playwrightLocator: return builtInPlaywrightLocatorActions
+        case .playwrightRequest: return builtInPlaywrightRequestActions
+        case .playwrightResponse: return builtInPlaywrightResponseActions
+        case .playwrightContext: return builtInPlaywrightContextActions
+        case .playwrightBrowser: return builtInPlaywrightBrowserActions
+        case .playwrightTestInfo: return builtInPlaywrightTestInfoMembers
+        case .playwrightRoute: return builtInPlaywrightRouteActions
+        case .playwrightKeyboard: return builtInPlaywrightKeyboardActions
+        case .playwrightMouse: return builtInPlaywrightMouseActions
+        }
+    }
+
+    private static func inferLocalReceiverTypes(in source: String, upToUTF16Offset: Int) -> InferredLocalTypes {
+        var result = InferredLocalTypes()
+        let nsFull = source as NSString
+        let limit = min(max(0, upToUTF16Offset), nsFull.length)
+        let prefixText = nsFull.substring(to: limit)
+        let ns = prefixText as NSString
+        let range = NSRange(location: 0, length: ns.length)
+
+        // 1. Destructured callback args (including aliases like `async ({ request: api, page: p }, info) =>`)
+        if let regex = try? NSRegularExpression(pattern: #"\(\s*\{([^}\n]+)\}(?:\s*,\s*([A-Za-z_$][\w$]*))?"#) {
+            for m in regex.matches(in: prefixText, range: range) {
+                let inside = ns.substring(with: m.range(at: 1))
+                for rawSeg in inside.split(separator: ",") {
+                    let seg = rawSeg.trimmingCharacters(in: .whitespaces)
+                    if seg.isEmpty { continue }
+                    let parts = seg.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                    let key = parts[0].split(separator: "=", maxSplits: 1).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+                    let aliasRaw = parts.count > 1 ? parts[1] : key
+                    let alias = aliasRaw.split(separator: "=", maxSplits: 1).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? key
+                    if let kind = builtInReceiverKind(forFixtureName: key), !alias.isEmpty {
+                        result.receiverKindByVar[alias] = kind
+                    }
+                }
+                if m.range(at: 2).location != NSNotFound {
+                    let secondParam = ns.substring(with: m.range(at: 2))
+                    if !secondParam.isEmpty {
+                        result.receiverKindByVar[secondParam] = .playwrightTestInfo
+                    }
+                }
+            }
+        }
+
+        // 2. Callback parameter in `page.route(..., (r) =>` / `context.route(..., async (r) =>`
+        if let regex = try? NSRegularExpression(pattern: #"\.route\s*\([^,\n]+,\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)"#) {
+            for m in regex.matches(in: prefixText, range: range) {
+                let name = ns.substring(with: m.range(at: 1))
+                result.receiverKindByVar[name] = .playwrightRoute
+            }
+        }
+
+        // 3. Explicit TypeScript type annotations: `req: APIRequestContext`, `const res: APIResponse =`
+        if let regex = try? NSRegularExpression(pattern: #"\b([A-Za-z_$][\w$]*)\s*:\s*(Page|Frame|Locator|FrameLocator|APIRequestContext|APIResponse|BrowserContext|Browser|TestInfo|Route|Keyboard|Mouse)\b"#) {
+            for m in regex.matches(in: prefixText, range: range) {
+                let name = ns.substring(with: m.range(at: 1))
+                let typeName = ns.substring(with: m.range(at: 2))
+                if let kind = builtInReceiverKind(forTypeName: typeName) {
+                    result.receiverKindByVar[name] = kind
+                }
+            }
+        }
+
+        // 4. Local variable initializers: `const res = await request.get(...)`, `const btn = page.getByRole(...)`, `const hp = new HomePage(page)`
+        if let regex = try? NSRegularExpression(pattern: #"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?([^\n;]+)"#) {
+            for m in regex.matches(in: prefixText, range: range) {
+                let varName = ns.substring(with: m.range(at: 1))
+                let rhs = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespaces)
+
+                if rhs.range(of: #"\.(?:get|post|put|patch|delete|head|fetch|waitForResponse)\s*\("#, options: .regularExpression) != nil {
+                    result.receiverKindByVar[varName] = .playwrightResponse
+                } else if rhs.range(of: #"\.(?:locator|frameLocator|getByRole|getByTestId|getByText|getByLabel|getByPlaceholder|getByAltText|getByTitle|first|last|nth|filter)\s*\("#, options: .regularExpression) != nil {
+                    result.receiverKindByVar[varName] = .playwrightLocator
+                } else if rhs.range(of: #"\.newPage\s*\("#, options: .regularExpression) != nil {
+                    result.receiverKindByVar[varName] = .playwrightPage
+                } else if rhs.range(of: #"(?:request\.newContext\s*\(|\.(?:request)\b)"#, options: .regularExpression) != nil {
+                    result.receiverKindByVar[varName] = .playwrightRequest
+                } else if rhs.range(of: #"\.(?:newContext|context)\s*\("#, options: .regularExpression) != nil {
+                    result.receiverKindByVar[varName] = .playwrightContext
+                } else if let newMatch = try? NSRegularExpression(pattern: #"^new\s+([A-Za-z_$][\w$]*)\s*\("#)
+                    .firstMatch(in: rhs, range: NSRange(location: 0, length: (rhs as NSString).length)) {
+                    let cls = (rhs as NSString).substring(with: newMatch.range(at: 1))
+                    result.constructedClassByVar[varName] = cls
+                }
+            }
+        }
+
+        return result
+    }
+
+    private static func extractPlaywrightExtendedFixtures(from source: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"test\.extend\s*(?:<[^>]+>)?\s*\(\s*\{([\s\S]{0,1200}?)\}\s*\)"#) else {
+            return []
+        }
+        let ns = source as NSString
+        var out: [String] = []
+        var seen = Set<String>()
+        let propRegex = try? NSRegularExpression(pattern: #"^\s*([A-Za-z_$][\w$]*)\s*:"#, options: [.anchorsMatchLines])
+        for m in regex.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
+            let body = ns.substring(with: m.range(at: 1))
+            let bns = body as NSString
+            if let propRegex {
+                for pm in propRegex.matches(in: body, range: NSRange(location: 0, length: bns.length)) {
+                    let name = bns.substring(with: pm.range(at: 1))
+                    if seen.insert(name).inserted { out.append(name) }
+                }
+            }
+        }
+        return out
+    }
+
+    private static func extractCallbackParameterIdentifiers(from source: String) -> [(name: String, signature: String, detail: String)] {
+        let ns = source as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        var results: [(name: String, signature: String, detail: String)] = []
+        var seen = Set<String>()
+
+        func addParam(_ name: String, fixtureKey: String? = nil, explicitType: String? = nil) {
+            let clean = name.trimmingCharacters(in: .whitespaces)
+            guard !clean.isEmpty, clean.first?.isLetter == true || clean.first == "_" || clean.first == "$" else { return }
+            guard seen.insert(clean).inserted else { return }
+            if let fk = fixtureKey, let fixtureItem = builtInPlaywrightFixtureArgs.first(where: { $0.label == fk }) {
+                results.append((clean, fixtureItem.signature, fixtureItem.detail))
+            } else if let explicitType, !explicitType.isEmpty {
+                results.append((clean, ": \(explicitType)", "parameter"))
+            } else if clean == "testInfo" {
+                results.append((clean, ": TestInfo", "Playwright TestInfo"))
+            } else if clean == "I" {
+                results.append((clean, ": CodeceptJS.I", "CodeceptJS actor"))
+            } else {
+                results.append((clean, "", "callback arg"))
+            }
+        }
+
+        // 1. Destructured callback params: `async ({ request, page: p }, testInfo) =>`
+        if let regex = try? NSRegularExpression(pattern: #"\(\s*\{([^}\n]+)\}(?:\s*,\s*([A-Za-z_$][\w$]*))?"#) {
+            for m in regex.matches(in: source, range: range) {
+                let inside = ns.substring(with: m.range(at: 1))
+                for rawSeg in inside.split(separator: ",") {
+                    let seg = rawSeg.trimmingCharacters(in: .whitespaces)
+                    if seg.isEmpty { continue }
+                    let parts = seg.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                    let key = parts[0].split(separator: "=", maxSplits: 1).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+                    let aliasRaw = parts.count > 1 ? parts[1] : key
+                    let alias = aliasRaw.split(separator: "=", maxSplits: 1).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? key
+                    addParam(alias, fixtureKey: key)
+                }
+                if m.range(at: 2).location != NSNotFound {
+                    addParam(ns.substring(with: m.range(at: 2)))
+                }
+            }
+        }
+
+        // 2. Simple positional arrow/function parameters: `async (route) =>` / `function login(page: Page, email: string)`
+        if let regex = try? NSRegularExpression(pattern: #"(?:async\s+)?\(\s*([A-Za-z_$][\w$]*(?:\s*:\s*[A-Za-z_$][\w$.<>| ]*)?(?:\s*,\s*[A-Za-z_$][\w$]*(?:\s*:\s*[A-Za-z_$][\w$.<>| ]*)?)*)\s*\)\s*(?:=>|\{)"#) {
+            for m in regex.matches(in: source, range: range) {
+                let paramsStr = ns.substring(with: m.range(at: 1))
+                for rawP in paramsStr.split(separator: ",") {
+                    let parts = rawP.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                    let name = parts[0]
+                    let typeStr = parts.count > 1 ? parts[1] : nil
+                    addParam(name, explicitType: typeStr)
+                }
+            }
+        }
+
+        return results
+    }
+
+    private static func resolveImportedClassMembers(
+        className: String,
+        in source: String,
+        sourceFileURL: URL,
+        workspace: CodeceptWorkspace
+    ) -> [CompletionItem]? {
+        let escaped = NSRegularExpression.escapedPattern(for: className)
+        let patterns = [
+            #"import\s+(?:\{[^}\n]*\b\#(escaped)\b[^}\n]*\}|\#(escaped))\s+from\s+['"`]([^'"`\n]+)['"`]"#,
+            #"require\s*\(\s*['"`]([^'"`\n]+)['"`]\s*\)"#
+        ]
+        let ns = source as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        if let regex = try? NSRegularExpression(pattern: patterns[0]),
+           let m = regex.firstMatch(in: source, range: range),
+           m.numberOfRanges >= 2 {
+            let spec = ns.substring(with: m.range(at: 1))
+            if let resolved = ImportNavigator.resolveImportPath(
+                specifier: spec,
+                fromFileURL: sourceFileURL,
+                workspaceRoot: workspace.rootURL,
+                config: workspace.config
+            ), let fileText = try? String(contentsOf: resolved.fileURL, encoding: .utf8) {
+                let methods = extractMethodSignatures(from: fileText, sourceLabel: resolved.fileURL.lastPathComponent, kind: .method)
+                if !methods.isEmpty { return methods }
+            }
+        }
+        return nil
+    }
+
     private static func matchMemberAccess(_ linePrefix: String) -> (receiver: String, memberPrefix: String)? {
-        // 1. Balanced-paren call chain ending in `.memberPrefix`:
+        // 1. Balanced-paren call chain & chained property access ending in `.memberPrefix`:
         //    - `expect(page.getByRole('button')).toBe` / `expect.soft(loc).not.toHave`
         //    - `page.getByRole('button', { name: 'Save' }).cli`
+        //    - `page.context().newPage` / `(await request.get('/x')).json`
+        //    - `page.request.get` / `context.request.post` / `page.keyboard.press` / `page.mouse.click`
         if let trailingDotMatch = matchTrailingMemberPrefix(linePrefix) {
             let member = trailingDotMatch.memberPrefix
             var beforeDot = trailingDotMatch.prefixBeforeDot
             if beforeDot.hasSuffix(".not") {
                 beforeDot = String(beforeDot.dropLast(4))
             }
+            if beforeDot.hasSuffix(".request") {
+                return ("request", member)
+            }
+            if beforeDot.hasSuffix(".keyboard") {
+                return ("keyboard", member)
+            }
+            if beforeDot.hasSuffix(".mouse") {
+                return ("mouse", member)
+            }
             if beforeDot.hasSuffix(")"),
                let callHead = receiverBeforeBalancedCall(beforeDot) {
                 if callHead == "expect" || callHead == "expect.soft" || callHead == "expect.poll" {
                     return ("expect", member)
                 }
+                if callHead.hasSuffix(".context") || callHead.hasSuffix(".newContext") {
+                    return ("context", member)
+                }
+                if callHead.hasSuffix(".newPage") {
+                    return ("page", member)
+                }
+                let responseMethods = [
+                    ".get", ".post", ".put", ".patch", ".delete", ".head", ".fetch", ".waitForResponse"
+                ]
+                if responseMethods.contains(where: { callHead.hasSuffix($0) }) {
+                    return ("response", member)
+                }
                 let locatorMethods = [
-                    ".locator", ".getByRole", ".getByTestId", ".getByText", ".getByLabel",
+                    ".locator", ".frameLocator", ".getByRole", ".getByTestId", ".getByText", ".getByLabel",
                     ".getByPlaceholder", ".getByAltText", ".getByTitle",
                     ".first", ".last", ".nth", ".filter"
                 ]
@@ -460,8 +877,14 @@ public enum IntelliSenseEngine {
                     return ("locator", member)
                 }
             }
+            // Handle parenthesized `(await request.get(...)).json`
+            if beforeDot.hasSuffix(")"),
+               beforeDot.contains(".get(") || beforeDot.contains(".post(") || beforeDot.contains(".put(") ||
+               beforeDot.contains(".patch(") || beforeDot.contains(".delete(") || beforeDot.contains(".fetch(") {
+                return ("response", member)
+            }
         }
-        // 2. Direct identifier member access: `I.click`, `I.retry(2).see`, `page.goto`, `request.get`, `test.describe`, `loginPage.sub`
+        // 2. Direct identifier member access: `I.click`, `I.retry(2).see`, `page.goto`, `request.get`, `response.json`, `test.describe`, `loginPage.sub`
         let pattern = #"([A-Za-z_$][\w$]*)(?:\.retry\s*\([^)]*\))?\.([A-Za-z_$][\w$]*)?$"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         let ns = linePrefix as NSString
@@ -777,7 +1200,26 @@ public enum IntelliSenseEngine {
         CompletionItem(label: "title", insertText: "title()", signature: "()", detail: "Return page title", kind: .action),
         CompletionItem(label: "url", insertText: "url()", signature: "()", detail: "Return current URL", kind: .action),
         CompletionItem(label: "content", insertText: "content()", signature: "()", detail: "Return full page HTML", kind: .action),
+        CompletionItem(label: "request", insertText: "request", signature: ": APIRequestContext", detail: "Page-scoped APIRequestContext", kind: .symbol),
+        CompletionItem(label: "context", insertText: "context()", signature: "()", detail: "Parent BrowserContext", kind: .action),
+        CompletionItem(label: "keyboard", insertText: "keyboard", signature: ": Keyboard", detail: "Low-level keyboard input", kind: .symbol),
+        CompletionItem(label: "mouse", insertText: "mouse", signature: ": Mouse", detail: "Low-level mouse input", kind: .symbol),
         CompletionItem(label: "close", insertText: "close()", signature: "()", detail: "Close page", kind: .action)
+    ]
+
+    public static let builtInPlaywrightFixtureArgs: [CompletionItem] = [
+        CompletionItem(label: "page", insertText: "page", signature: ": Page", detail: "Isolated Playwright browser page", kind: .symbol),
+        CompletionItem(label: "request", insertText: "request", signature: ": APIRequestContext", detail: "Playwright HTTP / API testing client", kind: .symbol),
+        CompletionItem(label: "context", insertText: "context", signature: ": BrowserContext", detail: "Isolated browser context", kind: .symbol),
+        CompletionItem(label: "browser", insertText: "browser", signature: ": Browser", detail: "Shared browser instance", kind: .symbol),
+        CompletionItem(label: "browserName", insertText: "browserName", signature: ": 'chromium' | 'firefox' | 'webkit'", detail: "Active browser engine name", kind: .symbol),
+        CompletionItem(label: "baseURL", insertText: "baseURL", signature: ": string | undefined", detail: "Configured project baseURL", kind: .symbol),
+        CompletionItem(label: "viewport", insertText: "viewport", signature: ": ViewportSize | null", detail: "Configured viewport size", kind: .symbol),
+        CompletionItem(label: "isMobile", insertText: "isMobile", signature: ": boolean", detail: "Whether mobile emulation is active", kind: .symbol),
+        CompletionItem(label: "hasTouch", insertText: "hasTouch", signature: ": boolean", detail: "Whether touch events are enabled", kind: .symbol),
+        CompletionItem(label: "locale", insertText: "locale", signature: ": string", detail: "Configured browser locale", kind: .symbol),
+        CompletionItem(label: "timezoneId", insertText: "timezoneId", signature: ": string", detail: "Configured timezone identifier", kind: .symbol),
+        CompletionItem(label: "storageState", insertText: "storageState", signature: ": StorageState", detail: "Configured cookies & localStorage", kind: .symbol)
     ]
 
     public static let builtInPlaywrightLocatorActions: [CompletionItem] = [
@@ -820,6 +1262,97 @@ public enum IntelliSenseEngine {
         CompletionItem(label: "fetch", insertText: "fetch('', { method: 'GET' })", signature: "(urlOrReq, opts?)", detail: "Generic HTTP request", kind: .action, cursorBackOffset: 21),
         CompletionItem(label: "storageState", insertText: "storageState()", signature: "(opts?)", detail: "Export cookies & storage", kind: .action),
         CompletionItem(label: "dispose", insertText: "dispose()", signature: "()", detail: "Dispose APIRequestContext", kind: .action)
+    ]
+
+    public static let builtInPlaywrightResponseActions: [CompletionItem] = [
+        CompletionItem(label: "ok", insertText: "ok()", signature: "()", detail: "True if HTTP status is 2xx", kind: .action),
+        CompletionItem(label: "status", insertText: "status()", signature: "()", detail: "HTTP status code (e.g. 200)", kind: .action),
+        CompletionItem(label: "statusText", insertText: "statusText()", signature: "()", detail: "HTTP status text (e.g. OK)", kind: .action),
+        CompletionItem(label: "json", insertText: "json()", signature: "()", detail: "Parse JSON response body", kind: .action),
+        CompletionItem(label: "text", insertText: "text()", signature: "()", detail: "Read response body as UTF-8 text", kind: .action),
+        CompletionItem(label: "body", insertText: "body()", signature: "()", detail: "Read raw response Buffer", kind: .action),
+        CompletionItem(label: "headers", insertText: "headers()", signature: "()", detail: "Response headers dictionary", kind: .action),
+        CompletionItem(label: "headersArray", insertText: "headersArray()", signature: "()", detail: "Raw response header pairs", kind: .action),
+        CompletionItem(label: "url", insertText: "url()", signature: "()", detail: "Final response URL", kind: .action),
+        CompletionItem(label: "dispose", insertText: "dispose()", signature: "()", detail: "Release response body buffer", kind: .action)
+    ]
+
+    public static let builtInPlaywrightContextActions: [CompletionItem] = [
+        CompletionItem(label: "newPage", insertText: "newPage()", signature: "()", detail: "Open a new page in context", kind: .action),
+        CompletionItem(label: "pages", insertText: "pages()", signature: "()", detail: "List open pages in context", kind: .action),
+        CompletionItem(label: "cookies", insertText: "cookies()", signature: "(urls?)", detail: "Read context cookies", kind: .action),
+        CompletionItem(label: "addCookies", insertText: "addCookies([])", signature: "(cookies)", detail: "Add cookies to context", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "clearCookies", insertText: "clearCookies()", signature: "(opts?)", detail: "Clear context cookies", kind: .action),
+        CompletionItem(label: "storageState", insertText: "storageState({ path: '' })", signature: "(opts?)", detail: "Export cookies & localStorage", kind: .action, cursorBackOffset: 4),
+        CompletionItem(label: "route", insertText: "route('**/*', (route) => route.continue())", signature: "(url, handler)", detail: "Intercept context requests", kind: .action),
+        CompletionItem(label: "unroute", insertText: "unroute('**/*')", signature: "(url, handler?)", detail: "Remove route interceptor", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "setExtraHTTPHeaders", insertText: "setExtraHTTPHeaders({})", signature: "(headers)", detail: "Add default HTTP headers", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "grantPermissions", insertText: "grantPermissions([''])", signature: "(permissions, opts?)", detail: "Grant browser permissions", kind: .action, cursorBackOffset: 3),
+        CompletionItem(label: "clearPermissions", insertText: "clearPermissions()", signature: "()", detail: "Reset browser permissions", kind: .action),
+        CompletionItem(label: "setGeolocation", insertText: "setGeolocation({ latitude: 0, longitude: 0 })", signature: "(geo)", detail: "Mock geolocation", kind: .action),
+        CompletionItem(label: "setOffline", insertText: "setOffline(true)", signature: "(offline)", detail: "Simulate offline network", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "waitForEvent", insertText: "waitForEvent('page')", signature: "(event, opts?)", detail: "Wait for context event", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "request", insertText: "request", signature: ": APIRequestContext", detail: "Context APIRequestContext", kind: .symbol),
+        CompletionItem(label: "browser", insertText: "browser()", signature: "()", detail: "Owning Browser instance", kind: .action),
+        CompletionItem(label: "close", insertText: "close()", signature: "()", detail: "Close browser context", kind: .action)
+    ]
+
+    public static let builtInPlaywrightBrowserActions: [CompletionItem] = [
+        CompletionItem(label: "newContext", insertText: "newContext()", signature: "(opts?)", detail: "Create isolated BrowserContext", kind: .action),
+        CompletionItem(label: "newPage", insertText: "newPage()", signature: "(opts?)", detail: "Create page in new context", kind: .action),
+        CompletionItem(label: "contexts", insertText: "contexts()", signature: "()", detail: "List open browser contexts", kind: .action),
+        CompletionItem(label: "version", insertText: "version()", signature: "()", detail: "Browser engine version", kind: .action),
+        CompletionItem(label: "isConnected", insertText: "isConnected()", signature: "()", detail: "Check browser connection", kind: .action),
+        CompletionItem(label: "browserType", insertText: "browserType()", signature: "()", detail: "BrowserType (chromium/firefox/webkit)", kind: .action),
+        CompletionItem(label: "close", insertText: "close()", signature: "()", detail: "Close browser instance", kind: .action)
+    ]
+
+    public static let builtInPlaywrightTestInfoMembers: [CompletionItem] = [
+        CompletionItem(label: "title", insertText: "title", signature: ": string", detail: "Current test title", kind: .symbol),
+        CompletionItem(label: "titlePath", insertText: "titlePath", signature: ": string[]", detail: "Full file & describe path", kind: .symbol),
+        CompletionItem(label: "project", insertText: "project", signature: ": FullProject", detail: "Active Playwright project config", kind: .symbol),
+        CompletionItem(label: "retry", insertText: "retry", signature: ": number", detail: "Current retry attempt index", kind: .symbol),
+        CompletionItem(label: "workerIndex", insertText: "workerIndex", signature: ": number", detail: "Unique worker index", kind: .symbol),
+        CompletionItem(label: "status", insertText: "status", signature: ": TestStatus", detail: "Actual execution status", kind: .symbol),
+        CompletionItem(label: "expectedStatus", insertText: "expectedStatus", signature: ": TestStatus", detail: "Expected test status", kind: .symbol),
+        CompletionItem(label: "duration", insertText: "duration", signature: ": number", detail: "Elapsed duration in ms", kind: .symbol),
+        CompletionItem(label: "annotations", insertText: "annotations", signature: ": Annotation[]", detail: "Test metadata annotations", kind: .symbol),
+        CompletionItem(label: "attachments", insertText: "attachments", signature: ": TestInfoAttachment[]", detail: "Attached files & artifacts", kind: .symbol),
+        CompletionItem(label: "outputDir", insertText: "outputDir", signature: ": string", detail: "Per-test artifact directory", kind: .symbol),
+        CompletionItem(label: "attach", insertText: "attach('', { body: '', contentType: 'text/plain' })", signature: "(name, opts)", detail: "Attach artifact to test report", kind: .action, cursorBackOffset: 43),
+        CompletionItem(label: "outputPath", insertText: "outputPath('')", signature: "(...segments)", detail: "Resolve test artifact path", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "snapshotPath", insertText: "snapshotPath('')", signature: "(...segments)", detail: "Resolve snapshot path", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "skip", insertText: "skip()", signature: "(condition?, description?)", detail: "Skip test dynamically", kind: .action),
+        CompletionItem(label: "fixme", insertText: "fixme()", signature: "(condition?, description?)", detail: "Mark test as fixme", kind: .action),
+        CompletionItem(label: "fail", insertText: "fail()", signature: "(condition?, description?)", detail: "Expect test to fail", kind: .action),
+        CompletionItem(label: "slow", insertText: "slow()", signature: "(condition?, description?)", detail: "Triple test timeout", kind: .action),
+        CompletionItem(label: "setTimeout", insertText: "setTimeout(60_000)", signature: "(ms)", detail: "Override test timeout", kind: .action, cursorBackOffset: 1)
+    ]
+
+    public static let builtInPlaywrightRouteActions: [CompletionItem] = [
+        CompletionItem(label: "continue", insertText: "continue()", signature: "(overrides?)", detail: "Continue request to network", kind: .action),
+        CompletionItem(label: "fulfill", insertText: "fulfill({ status: 200, json: {} })", signature: "(response)", detail: "Mock HTTP response", kind: .action, cursorBackOffset: 3),
+        CompletionItem(label: "abort", insertText: "abort()", signature: "(errorCode?)", detail: "Abort network request", kind: .action),
+        CompletionItem(label: "fetch", insertText: "fetch()", signature: "(overrides?)", detail: "Perform request & inspect response", kind: .action),
+        CompletionItem(label: "fallback", insertText: "fallback()", signature: "(overrides?)", detail: "Delegate to next route handler", kind: .action),
+        CompletionItem(label: "request", insertText: "request()", signature: "()", detail: "Intercepted Request object", kind: .action)
+    ]
+
+    public static let builtInPlaywrightKeyboardActions: [CompletionItem] = [
+        CompletionItem(label: "press", insertText: "press('Enter')", signature: "(key, opts?)", detail: "Press & release key", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "type", insertText: "type('')", signature: "(text, opts?)", detail: "Type text with key events", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "insertText", insertText: "insertText('')", signature: "(text)", detail: "Insert text directly", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "down", insertText: "down('')", signature: "(key)", detail: "Hold key down", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "up", insertText: "up('')", signature: "(key)", detail: "Release held key", kind: .action, cursorBackOffset: 2)
+    ]
+
+    public static let builtInPlaywrightMouseActions: [CompletionItem] = [
+        CompletionItem(label: "click", insertText: "click(0, 0)", signature: "(x, y, opts?)", detail: "Click at viewport coordinates", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "dblclick", insertText: "dblclick(0, 0)", signature: "(x, y, opts?)", detail: "Double-click at coordinates", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "move", insertText: "move(0, 0)", signature: "(x, y, opts?)", detail: "Move mouse cursor", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "down", insertText: "down()", signature: "(opts?)", detail: "Press mouse button", kind: .action),
+        CompletionItem(label: "up", insertText: "up()", signature: "(opts?)", detail: "Release mouse button", kind: .action),
+        CompletionItem(label: "wheel", insertText: "wheel(0, 100)", signature: "(deltaX, deltaY)", detail: "Dispatch scroll wheel event", kind: .action, cursorBackOffset: 1)
     ]
 
     public static let builtInPlaywrightExpectMatchers: [CompletionItem] = [

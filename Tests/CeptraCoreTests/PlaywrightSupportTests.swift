@@ -933,6 +933,150 @@ final class PlaywrightSupportTests: XCTestCase {
         XCTAssertTrue(r3?.items.contains(where: { $0.label == "post" }) == true)
     }
 
+    func testPlaywrightCallbackArgsAndMemberDotCompletions() {
+        // 1. Destructured Playwright fixture argument completion inside `async ({ ... })`
+        let fixtureSrc = "import { test, expect } from '@playwright/test';\ntest('fetches a todo resource', async ({ req"
+        XCTAssertTrue(IntelliSenseEngine.isInsideCallbackArgList("test('fetches a todo resource', async ({ req"))
+        XCTAssertTrue(IntelliSenseEngine.isInsideCallbackArgList("test('fetches a todo resource', async ({ "))
+        XCTAssertFalse(IntelliSenseEngine.isInsideCallbackArgList("expect(payload).toMatchObject({ id"))
+        let rFixture = IntelliSenseEngine.completions(
+            in: fixtureSrc,
+            cursorUTF16Offset: (fixtureSrc as NSString).length,
+            language: "typescript",
+            sourceFileURL: nil,
+            workspace: nil,
+            index: WorkspaceCompletionIndex()
+        )
+        XCTAssertEqual(rFixture?.items.first?.label, "request")
+
+        // 2. Empty `{ ` offers full Playwright fixture args (`page`, `request`, `context`, `browser`, ...)
+        let emptyFixtureSrc = "import { test } from '@playwright/test';\ntest('api', async ({ "
+        let rEmptyFixture = IntelliSenseEngine.completions(
+            in: emptyFixtureSrc,
+            cursorUTF16Offset: (emptyFixtureSrc as NSString).length,
+            language: "typescript",
+            sourceFileURL: nil,
+            workspace: nil,
+            index: WorkspaceCompletionIndex()
+        )
+        XCTAssertTrue(rEmptyFixture?.items.contains(where: { $0.label == "request" }) == true)
+        XCTAssertTrue(rEmptyFixture?.items.contains(where: { $0.label == "page" }) == true)
+        XCTAssertTrue(rEmptyFixture?.items.contains(where: { $0.label == "context" }) == true)
+        XCTAssertTrue(rEmptyFixture?.items.contains(where: { $0.label == "browser" }) == true)
+
+        // 3. 2nd callback argument suggests `testInfo`
+        let secondParamSrc = "import { test } from '@playwright/test';\ntest('api', async ({ request }, te"
+        let rSecond = IntelliSenseEngine.completions(
+            in: secondParamSrc,
+            cursorUTF16Offset: (secondParamSrc as NSString).length,
+            language: "typescript",
+            sourceFileURL: nil,
+            workspace: nil,
+            index: WorkspaceCompletionIndex()
+        )
+        XCTAssertEqual(rSecond?.items.first?.label, "testInfo")
+
+        // 4. Typing `req` in test body completes destructured `request` arg, and `request.` lists HTTP methods
+        let bodyIdentSrc = """
+        import { test, expect } from '@playwright/test';
+        test('fetches a todo resource', async ({ request }) => {
+          await req
+        """
+        let rBodyIdent = IntelliSenseEngine.completions(
+            in: bodyIdentSrc,
+            cursorUTF16Offset: (bodyIdentSrc as NSString).length,
+            language: "typescript",
+            sourceFileURL: nil,
+            workspace: nil,
+            index: WorkspaceCompletionIndex()
+        )
+        XCTAssertTrue(rBodyIdent?.items.contains(where: { $0.label == "request" }) == true)
+
+        let reqDotSrc = """
+        import { test, expect } from '@playwright/test';
+        test('fetches a todo resource', async ({ request }) => {
+          await request.
+        """
+        let rReqDot = IntelliSenseEngine.completions(
+            in: reqDotSrc,
+            cursorUTF16Offset: (reqDotSrc as NSString).length,
+            language: "typescript",
+            sourceFileURL: nil,
+            workspace: nil,
+            index: WorkspaceCompletionIndex()
+        )
+        XCTAssertTrue(rReqDot?.items.contains(where: { $0.label == "get" }) == true)
+        XCTAssertTrue(rReqDot?.items.contains(where: { $0.label == "post" }) == true)
+        XCTAssertTrue(rReqDot?.items.contains(where: { $0.label == "delete" }) == true)
+
+        // 5. Aliased destructured args (`{ request: api, context: ctx }, info`) + inferred APIResponse (`res.`)
+        let aliasSrc = """
+        import { test } from '@playwright/test';
+        test('aliased', async ({ request: api, context: ctx }, info) => {
+          const res = await api.get('/todos/1');
+          api.
+        """
+        let rAlias = IntelliSenseEngine.completions(
+            in: aliasSrc,
+            cursorUTF16Offset: (aliasSrc as NSString).length,
+            language: "typescript",
+            sourceFileURL: nil,
+            workspace: nil,
+            index: WorkspaceCompletionIndex()
+        )
+        XCTAssertTrue(rAlias?.items.contains(where: { $0.label == "get" }) == true)
+
+        let resSrc = """
+        import { test } from '@playwright/test';
+        test('aliased', async ({ request: api }, info) => {
+          const res = await api.get('/todos/1');
+          await res.
+        """
+        let rRes = IntelliSenseEngine.completions(
+            in: resSrc,
+            cursorUTF16Offset: (resSrc as NSString).length,
+            language: "typescript",
+            sourceFileURL: nil,
+            workspace: nil,
+            index: WorkspaceCompletionIndex()
+        )
+        XCTAssertTrue(rRes?.items.contains(where: { $0.label == "json" }) == true)
+        XCTAssertTrue(rRes?.items.contains(where: { $0.label == "status" }) == true)
+        XCTAssertTrue(rRes?.items.contains(where: { $0.label == "ok" }) == true)
+
+        let infoSrc = """
+        import { test } from '@playwright/test';
+        test('meta', async ({ context: ctx }, info) => {
+          info.
+        """
+        let rInfo = IntelliSenseEngine.completions(
+            in: infoSrc,
+            cursorUTF16Offset: (infoSrc as NSString).length,
+            language: "typescript",
+            sourceFileURL: nil,
+            workspace: nil,
+            index: WorkspaceCompletionIndex()
+        )
+        XCTAssertTrue(rInfo?.items.contains(where: { $0.label == "attach" }) == true)
+        XCTAssertTrue(rInfo?.items.contains(where: { $0.label == "title" }) == true)
+
+        let ctxSrc = """
+        import { test } from '@playwright/test';
+        test('meta', async ({ context: ctx }) => {
+          await ctx.
+        """
+        let rCtx = IntelliSenseEngine.completions(
+            in: ctxSrc,
+            cursorUTF16Offset: (ctxSrc as NSString).length,
+            language: "typescript",
+            sourceFileURL: nil,
+            workspace: nil,
+            index: WorkspaceCompletionIndex()
+        )
+        XCTAssertTrue(rCtx?.items.contains(where: { $0.label == "newPage" }) == true)
+        XCTAssertTrue(rCtx?.items.contains(where: { $0.label == "cookies" }) == true)
+    }
+
     func testAIContextAssemblerAdaptsToPlaywright() {
         let prompt = AIContextAssembler.buildSystemPrompt(
             helperDisplayName: "Playwright · chromium",
