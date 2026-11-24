@@ -426,16 +426,14 @@ extension AppState {
         }
         let strideStep = max(1, current.count / 64)
         var diffs = 0
-        previous.withUnsafeBytes { prevBuf in
-            current.withUnsafeBytes { currBuf in
-                var i = 64
-                while i < current.count {
-                    if prevBuf[i] != currBuf[i] {
-                        diffs += 1
-                    }
-                    i += strideStep
-                }
+        var offset = 64
+        while offset < current.count {
+            let prevByte = previous[previous.index(previous.startIndex, offsetBy: offset)]
+            let currByte = current[current.index(current.startIndex, offsetBy: offset)]
+            if prevByte != currByte {
+                diffs += 1
             }
+            offset += strideStep
         }
         return diffs >= 4
     }
