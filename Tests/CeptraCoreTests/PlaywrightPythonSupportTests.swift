@@ -635,6 +635,264 @@ final class PlaywrightPythonSupportTests: XCTestCase {
         XCTAssertFalse(html.contains("super-secret-token"))
     }
 
+    func testLivePythonPluginHydratesTeardownTraceZipWithPlaywright160DeltaDOMAndInProcessAPICapture() throws {
+        let pythonExec = "/usr/bin/python3"
+        guard FileManager.default.isExecutableFile(atPath: pythonExec) else {
+            throw XCTSkip("python3 not installed on host")
+        }
+
+        let root = try makeTempDir("pw-py-teardown")
+        let pluginDir = try XCTUnwrap(PlaywrightPythonTimeTravelLoader.ensurePluginDirectoryURL(baseDirectory: root))
+        let traceOutputDir = root.appendingPathComponent("ceptra-traces", isDirectory: true)
+        let pwResultsDir = root.appendingPathComponent("test-results", isDirectory: true)
+        try FileManager.default.createDirectory(at: traceOutputDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pwResultsDir, withIntermediateDirectories: true)
+
+        // Simulates REAL pytest-playwright 0.7 / Playwright 1.60 lifecycle:
+        // - `trace.zip` DOES NOT EXIST during `call`; it is written during `teardown` fixture cleanup!
+        // - Events use `class` + `method` (NO `apiName`), `BrowserContext.newPage` setup noise,
+        //   incremental delta DOM refs `[[offset, nodeIdx]]`, and `__playwright_target__` attribute.
+        // - Pure API test has NO `trace.zip`, only live in-process APIRequestContext + expect(res).to_be_ok() steps.
+        let driverScript = #"""
+        import json, os, sys, time, zipfile
+        from pathlib import Path
+
+        sys.path.insert(0, sys.argv[1])
+        import ceptra_pw_time_travel as mod
+
+        trace_out = sys.argv[2]
+        pw_out = sys.argv[3]
+        now_ms = int(time.time() * 1000)
+
+        class FakeMarker:
+            def __init__(self, name):
+                self.name = name
+
+        class FakeItem:
+            def __init__(self, nodeid, fspath, markers):
+                self.nodeid = nodeid
+                self.fspath = fspath
+                self._markers = [FakeMarker(m) for m in markers]
+            def iter_markers(self):
+                return self._markers
+
+        class FakeReport:
+            def __init__(self, nodeid, when, outcome, duration=0.35):
+                self.nodeid = nodeid
+                self.when = when
+                self.outcome = outcome
+                self.passed = (outcome == "passed")
+                self.failed = (outcome == "failed")
+                self.skipped = (outcome == "skipped")
+                self.duration = duration
+                self.longrepr = None
+                self.capstdout = ""
+                self.capstderr = ""
+                self.wasxfail = None
+
+        plugin = mod.CeptraPytestPlaywrightPlugin(trace_out, pw_out)
+
+        # 1. Web test: call happens BEFORE trace.zip exists on disk!
+        web_item = FakeItem("tests/test_example.py::test_has_title_and_opens_getting_started[chromium]", "tests/test_example.py", ["smoke", "web"])
+        plugin.pytest_runtest_setup(web_item)
+        plugin.pytest_runtest_logreport(FakeReport(web_item.nodeid, "call", "passed", 0.55))
+
+        # Now simulate pytest-playwright `context` fixture teardown writing trace.zip AFTER call!
+        web_dir = Path(pw_out) / "tests-test-example-py-test-has-title-and-opens-getting-started-chromium"
+        web_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(web_dir / "trace.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+            lines = [
+                json.dumps({"type": "context-options", "wallTime": now_ms, "monotonicTime": 1000.0, "options": {"baseURL": "https://playwright.dev", "viewport": {"width": 1280, "height": 720}}}),
+                json.dumps({"type": "before", "callId": "call@7", "class": "BrowserContext", "method": "newPage", "startTime": 1002.0, "params": {}}),
+                json.dumps({"type": "after", "callId": "call@7", "endTime": 1020.0}),
+                json.dumps({"type": "before", "callId": "call@9", "class": "Frame", "method": "goto", "startTime": 1025.0, "params": {"url": "/"}, "beforeSnapshot": "before@call@9"}),
+                json.dumps({"type": "frame-snapshot", "snapshot": {
+                    "snapshotName": "before@call@9", "frameId": "frame@main", "frameUrl": "about:blank", "timestamp": 1025.5,
+                    "html": ["HTML", {}, ["HEAD", {}], ["BODY", {}]]
+                }}),
+                json.dumps({"type": "after", "callId": "call@9", "endTime": 1200.0, "afterSnapshot": "after@call@9"}),
+                json.dumps({"type": "screencast-frame", "sha1": "shot_goto.jpeg", "timestamp": 1200.5, "frameSwapWallTime": now_ms + 199.0, "width": 1280, "height": 720}),
+                json.dumps({"type": "frame-snapshot", "snapshot": {
+                    "snapshotName": "after@call@9", "frameId": "frame@main", "frameUrl": "https://playwright.dev/", "timestamp": 1201.0,
+                    "html": ["HTML", {}, ["HEAD", {}, ["TITLE", {}, "Fast and reliable | Playwright"]], ["BODY", {}, ["A", {"href": "/docs/intro", "__playwright_target__": "call@13"}, "Get started"]]]
+                }}),
+                json.dumps({"type": "before", "callId": "call@11", "class": "Frame", "method": "expect", "title": "Expect \"to_have_title\"", "startTime": 1210.0, "params": {"expression": "to.have.title", "expectedText": [{"regexSource": "Playwright"}]}}),
+                json.dumps({"type": "after", "callId": "call@11", "endTime": 1225.0, "afterSnapshot": "after@call@11"}),
+                # Root-level delta reference pointing to `HTML` (last node index 6) in previous snapshot `after@call@9` (offset 1)
+                json.dumps({"type": "frame-snapshot", "snapshot": {
+                    "snapshotName": "after@call@11", "frameId": "frame@main", "frameUrl": "https://playwright.dev/", "timestamp": 1225.5,
+                    "html": [[1, 6]]
+                }}),
+                json.dumps({"type": "before", "callId": "call@13", "class": "Frame", "method": "click", "startTime": 1230.0, "params": {"selector": "internal:role=link[name=\"Get started\"i]"}}),
+                json.dumps({"type": "input", "callId": "call@13", "point": {"x": 152.9, "y": 509.0}, "inputSnapshot": "input@call@13"}),
+                # Subtree delta referencing `HEAD` (node index 2) from `after@call@9` (offset 2) while updating BODY
+                json.dumps({"type": "frame-snapshot", "snapshot": {
+                    "snapshotName": "input@call@13", "frameId": "frame@main", "frameUrl": "https://playwright.dev/", "timestamp": 1240.0,
+                    "html": ["HTML", {}, [[2, 2]], ["BODY", {}, ["A", {"href": "/docs/intro", "__playwright_target__": "call@13"}, "Get started"]]]
+                }}),
+                json.dumps({"type": "after", "callId": "call@13", "endTime": 1255.0, "afterSnapshot": "after@call@13"}),
+                json.dumps({"type": "screencast-frame", "sha1": "shot_click.jpeg", "timestamp": 1258.0, "frameSwapWallTime": now_ms + 258.0, "width": 1280, "height": 720}),
+                json.dumps({"type": "frame-snapshot", "snapshot": {
+                    "snapshotName": "after@call@13", "frameId": "frame@main", "frameUrl": "https://playwright.dev/docs/intro", "timestamp": 1260.0,
+                    "html": ["HTML", {}, ["HEAD", {}, ["TITLE", {}, "Installation | Playwright"]], ["BODY", {}, ["H1", {}, "Installation"]]]
+                }}),
+                json.dumps({"type": "before", "callId": "call@15", "class": "Frame", "method": "expect", "title": "Expect \"to_be_visible\"", "startTime": 1262.0, "params": {"selector": "internal:role=heading[name=\"Installation\"i]", "expression": "to.be.visible"}}),
+                json.dumps({"type": "after", "callId": "call@15", "endTime": 1290.0, "afterSnapshot": "after@call@15", "result": {"received": {"value": {"s": "visible"}, "ariaSnapshot": "- heading \"Installation\" [level=1]"}}}),
+                json.dumps({"type": "screencast-frame", "sha1": "shot_final.jpeg", "timestamp": 1295.0, "frameSwapWallTime": now_ms + 295.0, "width": 1280, "height": 720}),
+                json.dumps({"type": "frame-snapshot", "snapshot": {
+                    "snapshotName": "after@call@15", "frameId": "frame@main", "frameUrl": "https://playwright.dev/docs/intro", "timestamp": 1291.0,
+                    "html": [[1, 5]]
+                }})
+            ]
+            zf.writestr("trace.trace", "\n".join(lines))
+            zf.writestr("resources/shot_goto.jpeg", b"\xff\xd8\xff\xe0GOTO")
+            zf.writestr("resources/shot_click.jpeg", b"\xff\xd8\xff\xe0CLICK")
+            zf.writestr("resources/shot_final.jpeg", b"\xff\xd8\xff\xe0FINAL")
+
+        # Fire PASSING teardown — plugin MUST hydrate trace.zip now!
+        plugin.pytest_runtest_logreport(FakeReport(web_item.nodeid, "teardown", "passed", 0.05))
+
+        # 2. Pure API test with NO trace.zip: record live steps directly via plugin._record_live_step
+        api_item = FakeItem("tests/test_api.py::test_fetches_todo_resource", "tests/test_api.py", ["api"])
+        plugin.pytest_runtest_setup(api_item)
+        req_id = "live-api-req-1"
+        req_diag = mod._empty_diagnostics()
+        req_diag["networkRequests"].append({
+            "id": req_id,
+            "method": "GET",
+            "url": "https://jsonplaceholder.typicode.com/todos/1",
+            "resourceType": "api",
+            "source": "playwright-python-api",
+            "status": 200,
+            "statusText": "OK",
+            "startedAt": mod._iso_from_ms(now_ms + 400),
+            "durationMs": 82,
+            "requestSizeBytes": None,
+            "responseSizeBytes": 54,
+            "timings": {"dnsMs": None, "connectMs": None, "tlsMs": None, "ttfbMs": None, "downloadMs": None, "totalMs": 82},
+            "requestHeaders": mod._redact_headers({"Accept": "application/json", "Authorization": "Bearer secret-api-key"}),
+            "responseHeaders": {"content-type": "application/json"},
+            "requestBody": None,
+            "responseBody": json.dumps({"id": 1, "title": "delectus aut autem", "completed": False}),
+            "errorText": None,
+        })
+        plugin._record_live_step({
+            "text": "GET https://jsonplaceholder.typicode.com/todos/1",
+            "depth": 0,
+            "status": "passed",
+            "durationMs": 82,
+            "startedAt": mod._iso_from_ms(now_ms + 400),
+            "finishedAt": mod._iso_from_ms(now_ms + 482),
+            "targetSelector": None,
+            "errorMessage": None,
+            "diagnostics": req_diag,
+        })
+        assert_diag = mod._empty_diagnostics()
+        assert_diag["assertion"] = {
+            "method": "to_be_ok",
+            "passed": True,
+            "expected": "status in 200..299",
+            "actual": "HTTP 200",
+            "message": None,
+            "relatedRequestId": req_id,
+        }
+        plugin._record_live_step({
+            "text": "expect(response).to_be_ok()",
+            "depth": 0,
+            "status": "passed",
+            "durationMs": 1,
+            "startedAt": mod._iso_from_ms(now_ms + 483),
+            "finishedAt": mod._iso_from_ms(now_ms + 484),
+            "targetSelector": None,
+            "errorMessage": None,
+            "diagnostics": assert_diag,
+        })
+        plugin.pytest_runtest_logreport(FakeReport(api_item.nodeid, "call", "passed", 0.09))
+        plugin.pytest_runtest_logreport(FakeReport(api_item.nodeid, "teardown", "passed", 0.01))
+        plugin.pytest_sessionfinish(None, 0)
+        print("OK")
+        """#
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: pythonExec)
+        proc.arguments = ["-c", driverScript, pluginDir.path, traceOutputDir.path, pwResultsDir.path]
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+        try proc.run()
+        proc.waitUntilExit()
+
+        let errStr = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(proc.terminationStatus, 0, "Python teardown driver failed: \(errStr)")
+
+        let loaded = TimeTravelTraceMerger.loadWorkerTraces(from: traceOutputDir)
+        XCTAssertEqual(loaded.count, 2)
+
+        // Verify Web scenario hydrated DURING teardown has 4 clean steps (BrowserContext.newPage filtered out!)
+        let web = try XCTUnwrap(loaded.first(where: { $0.scenarioTitle == "test_has_title_and_opens_getting_started" }))
+        XCTAssertEqual(web.steps.count, 4)
+        XCTAssertEqual(web.steps[0].text, "page.goto(\"/\")")
+        XCTAssertEqual(web.steps[0].diagnostics?.pageURL, "https://playwright.dev/")
+        XCTAssertNotNil(web.steps[0].diagnostics?.afterScreenshotDataURI)
+        XCTAssertEqual(web.steps[0].diagnostics?.domSnapshot?.title, "Fast and reliable | Playwright")
+
+        // Step 2: delta root snapshot `[[1, 6]]` resolved completely!
+        XCTAssertTrue(web.steps[1].text.contains("Expect \"to_have_title\""))
+        XCTAssertEqual(web.steps[1].diagnostics?.assertion?.method, "to_have_title")
+        XCTAssertEqual(web.steps[1].diagnostics?.assertion?.isApiAssertion, false)
+        XCTAssertEqual(web.steps[1].diagnostics?.domSnapshot?.title, "Fast and reliable | Playwright")
+
+        // Step 3: click with cleaned selector, bounding box, targetOuterHTML from inputSnapshot, before & after shots
+        XCTAssertTrue(web.steps[2].text.contains("locator.click"))
+        XCTAssertFalse(web.steps[2].text.contains("internal:"))
+        XCTAssertNotNil(web.steps[2].diagnostics?.beforeScreenshotDataURI)
+        XCTAssertNotNil(web.steps[2].diagnostics?.afterScreenshotDataURI)
+        XCTAssertNotNil(web.steps[2].diagnostics?.domSnapshot?.targetBoundingBox)
+        XCTAssertTrue(web.steps[2].diagnostics?.domSnapshot?.targetOuterHTML?.contains("Get started") == true)
+        XCTAssertEqual(web.steps[2].diagnostics?.domSnapshot?.title, "Installation | Playwright")
+
+        // Step 4: delta root snapshot `[[1, 5]]` resolved completely!
+        XCTAssertTrue(web.steps[3].text.contains("Expect \"to_be_visible\""))
+        XCTAssertEqual(web.steps[3].diagnostics?.assertion?.method, "to_be_visible")
+        XCTAssertEqual(web.steps[3].diagnostics?.assertion?.actual, "visible")
+        XCTAssertEqual(web.steps[3].diagnostics?.assertion?.isApiAssertion, false)
+        XCTAssertTrue(web.steps[3].diagnostics?.domSnapshot?.html.contains("<h1>Installation</h1>") == true)
+
+        // Verify pure API scenario captured without trace.zip!
+        let api = try XCTUnwrap(loaded.first(where: { $0.scenarioTitle == "test_fetches_todo_resource" }))
+        XCTAssertEqual(api.steps.count, 2)
+        let apiReq = try XCTUnwrap(api.steps[0].diagnostics?.networkRequests.first)
+        XCTAssertEqual(apiReq.source, "playwright-python-api")
+        XCTAssertEqual(apiReq.status, 200)
+        XCTAssertEqual(apiReq.requestHeaders["Authorization"], "[REDACTED]")
+        XCTAssertTrue(apiReq.responseBody?.contains("delectus aut autem") == true)
+        XCTAssertEqual(api.steps[1].diagnostics?.assertion?.relatedRequestId, apiReq.id)
+        XCTAssertEqual(api.steps[1].diagnostics?.assertion?.isApiAssertion, true)
+
+        // Build final HTML report and verify hybrid classification & zero leaked secret
+        let report = TestRunReport(
+            projectPath: root.path,
+            projectName: "my-playwright-python-tests",
+            label: "Run All Tests",
+            commandLine: "pytest -v --tracing=on",
+            startedAt: Date().addingTimeInterval(-1),
+            finishedAt: Date(),
+            exitCode: 0,
+            passedCount: 2,
+            failedCount: 0,
+            skippedCount: 0,
+            durationMs: 650,
+            scenarios: loaded,
+            rawOutput: "2 passed"
+        )
+        let html = TimeTravelHTMLReportBuilder.build(report, traceBundle: TimeTravelTraceBundle(reportID: report.id, scenarios: loaded))
+        XCTAssertTrue(html.contains("\"reportMode\":\"hybrid\""))
+        XCTAssertTrue(html.contains("\"scenarioKind\":\"web\""))
+        XCTAssertTrue(html.contains("\"scenarioKind\":\"api\""))
+        XCTAssertFalse(html.contains("secret-api-key"))
+    }
+
     // MARK: - 6. Python IntelliSense, Folding, Code Snapshot & AI Prompt
 
     func testPythonPlaywrightIntelliSenseFixturesDecoratorsMembersAndInference() throws {

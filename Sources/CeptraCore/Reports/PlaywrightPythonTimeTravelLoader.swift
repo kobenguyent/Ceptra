@@ -20,6 +20,7 @@ public enum PlaywrightPythonTimeTravelLoader {
     import os
     import re
     import time
+    import urllib.parse
     import uuid
     import zipfile
     from pathlib import Path
@@ -45,9 +46,19 @@ public enum PlaywrightPythonTimeTravelLoader {
     }
     INTERNAL_API_NAMES = {
         "browserType.launch", "browser.newContext", "browserContext.newPage",
-        "browserContext.close", "page.close", "apiRequest.newContext",
-        "apiRequestContext.dispose", "tracing.start", "tracing.stop",
-        "tracing.startChunk", "tracing.stopChunk",
+        "browserContext.close", "browserContext.tracingStart", "browserContext.tracingStop",
+        "browserContext.tracingStartChunk", "browserContext.tracingStopChunk",
+        "page.close", "apiRequest.newContext", "apiRequestContext.dispose",
+        "tracing.start", "tracing.stop", "tracing.startChunk", "tracing.stopChunk",
+        "tracing.tracingStart", "tracing.tracingStop",
+        "tracing.tracingStartChunk", "tracing.tracingStopChunk",
+    }
+    LOCATOR_FRAME_METHODS = {
+        "click", "dblclick", "fill", "type", "press", "hover", "check", "uncheck",
+        "selectOption", "tap", "focus", "blur", "setInputFiles", "dispatchEvent",
+        "scrollIntoViewIfNeeded", "waitForSelector", "inputValue", "textContent",
+        "innerText", "innerHTML", "getAttribute", "isVisible", "isHidden",
+        "isEnabled", "isDisabled", "isChecked", "isEditable",
     }
     WEB_ASSERTION_PATTERNS = (
         "tobevisible", "to_be_visible", "tobehidden", "to_be_hidden",
@@ -62,6 +73,9 @@ public enum PlaywrightPythonTimeTravelLoader {
         "tohaveid", "to_have_id", "tohaveurl", "to_have_url",
         "tohavetitle", "to_have_title", "tohavescreenshot", "to_have_screenshot",
     )
+
+    _ACTIVE_PLUGIN = None
+    _HOOKS_INSTALLED = False
 
 
     def _strip_ansi(text):
@@ -123,14 +137,63 @@ public enum PlaywrightPythonTimeTravelLoader {
         return str(val).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-    def _serialize_pw_dom_node(node, budget, depth=0):
-        if node is None or budget[0] >= MAX_DOM_CHARS or depth > 48:
+    def _build_snapshot_nodes(raw_html):
+        """Post-order node list matching Playwright's SnapshotRenderer (strings + elements, skipping subtree refs)."""
+        nodes = []
+
+        def _visit(n):
+            if isinstance(n, str):
+                nodes.append(n)
+            elif isinstance(n, list) and n and isinstance(n[0], str):
+                start_i = 2 if len(n) > 1 and isinstance(n[1], dict) else 1
+                for ch in n[start_i:]:
+                    _visit(ch)
+                nodes.append(n)
+
+        _visit(raw_html)
+        return nodes
+
+
+    def _is_subtree_ref(node):
+        return (
+            isinstance(node, list)
+            and len(node) == 1
+            and isinstance(node[0], list)
+            and len(node[0]) >= 2
+            and isinstance(node[0][0], int)
+            and isinstance(node[0][1], int)
+        )
+
+
+    def _serialize_pw_dom_node(node, budget, depth=0, snap_idx=None, frame_snaps=None, target_call_id=None, target_capture=None):
+        if node is None or budget[0] >= MAX_DOM_CHARS or depth > 64:
             return ""
         if isinstance(node, str):
             esc = _escape_html_text(node)
             budget[0] += len(esc)
             return esc
         if not isinstance(node, list) or not node:
+            return ""
+        if _is_subtree_ref(node):
+            if snap_idx is not None and frame_snaps:
+                ref_offset, node_idx = node[0][0], node[0][1]
+                ref_snap_idx = snap_idx - ref_offset
+                if 0 <= ref_snap_idx < len(frame_snaps):
+                    ref_snap = frame_snaps[ref_snap_idx]
+                    ref_nodes = ref_snap.get("_nodes")
+                    if ref_nodes is None:
+                        ref_nodes = _build_snapshot_nodes(ref_snap.get("htmlNode"))
+                        ref_snap["_nodes"] = ref_nodes
+                    if 0 <= node_idx < len(ref_nodes):
+                        return _serialize_pw_dom_node(
+                            ref_nodes[node_idx],
+                            budget,
+                            depth + 1,
+                            ref_snap_idx,
+                            frame_snaps,
+                            target_call_id,
+                            target_capture,
+                        )
             return ""
         if not isinstance(node[0], str):
             return ""
@@ -140,8 +203,11 @@ public enum PlaywrightPythonTimeTravelLoader {
             return ""
 
         attrs = node[1] if len(node) > 1 and isinstance(node[1], dict) else None
+        is_target = False
         attr_str = ""
         if attrs:
+            if target_call_id and attrs.get("__playwright_target__") == target_call_id:
+                is_target = True
             for k, v in attrs.items():
                 if str(k).startswith("__playwright_"):
                     continue
@@ -153,6 +219,8 @@ public enum PlaywrightPythonTimeTravelLoader {
         if tag in VOID_HTML_TAGS:
             out = f"<{tag}{attr_str}>"
             budget[0] += len(out)
+            if is_target and target_capture is not None and target_capture[0] is None:
+                target_capture[0] = _truncate(out, 2048)
             return out
 
         open_tag = f"<{tag}{attr_str}>"
@@ -162,10 +230,23 @@ public enum PlaywrightPythonTimeTravelLoader {
         for child in node[start_idx:]:
             if budget[0] >= MAX_DOM_CHARS:
                 break
-            inner_parts.append(_serialize_pw_dom_node(child, budget, depth + 1))
+            inner_parts.append(
+                _serialize_pw_dom_node(
+                    child,
+                    budget,
+                    depth + 1,
+                    snap_idx,
+                    frame_snaps,
+                    target_call_id,
+                    target_capture,
+                )
+            )
         close_tag = f"</{tag}>"
         budget[0] += len(close_tag)
-        return open_tag + "".join(inner_parts) + close_tag
+        full = open_tag + "".join(inner_parts) + close_tag
+        if is_target and target_capture is not None and target_capture[0] is None:
+            target_capture[0] = _truncate(full, 2048)
+        return full
 
 
     def _extract_title_from_html(html):
@@ -177,6 +258,13 @@ public enum PlaywrightPythonTimeTravelLoader {
 
     def _redact_headers(headers_arr):
         out = {}
+        if isinstance(headers_arr, dict):
+            for name, val in headers_arr.items():
+                key = str(name or "")
+                if not key or key.startswith(":"):
+                    continue
+                out[key] = "[REDACTED]" if SENSITIVE_HEADER_RE.match(key) else str(val or "")
+            return out
         if not isinstance(headers_arr, list):
             return out
         for h in headers_arr:
@@ -187,6 +275,89 @@ public enum PlaywrightPythonTimeTravelLoader {
                 continue
             out[name] = "[REDACTED]" if SENSITIVE_HEADER_RE.match(name) else str(h.get("value") or "")
         return out
+
+
+    def _clean_selector_display(selector):
+        if not isinstance(selector, str):
+            return ""
+        s = selector.strip()
+        if s.startswith("internal:"):
+            s = s[len("internal:"):]
+        return s
+
+
+    def _synthesize_api_name(ev):
+        raw = str(ev.get("apiName") or "").strip()
+        if raw:
+            return raw
+        cls = str(ev.get("class") or "").strip()
+        method = str(ev.get("method") or "").strip()
+        params = ev.get("params") if isinstance(ev.get("params"), dict) else {}
+        if method == "expect":
+            expr = str(params.get("expression") or "").strip()
+            if expr:
+                return f"expect.{expr.replace('.', '_')}"
+            return "expect"
+        if cls == "Frame":
+            if method in LOCATOR_FRAME_METHODS and isinstance(params.get("selector"), str):
+                return f"locator.{method}"
+            return f"page.{method}" if method else "page"
+        if cls:
+            cls_camel = cls[0].lower() + cls[1:]
+            return f"{cls_camel}.{method}" if method else cls_camel
+        return method
+
+
+    def _extract_expected_text(params):
+        if not isinstance(params, dict):
+            return None
+        exp_text = params.get("expectedText")
+        if isinstance(exp_text, list) and exp_text:
+            parts = []
+            for item in exp_text:
+                if isinstance(item, dict):
+                    if item.get("regexSource"):
+                        flags = item.get("regexFlags") or ""
+                        parts.append(f"/{item['regexSource']}/{flags}")
+                    elif item.get("string") is not None:
+                        parts.append(str(item["string"]))
+            if parts:
+                return ", ".join(parts)
+        if params.get("expectedValue") is not None:
+            try:
+                return json.dumps(params["expectedValue"]) if isinstance(params["expectedValue"], (dict, list)) else str(params["expectedValue"])
+            except Exception:
+                return str(params["expectedValue"])
+        if params.get("expectedNumber") is not None:
+            return str(params["expectedNumber"])
+        return None
+
+
+    def _format_pw_received_value(raw):
+        """Unwrap Playwright's wire protocol `received` payload (e.g. `{'value': {'s': '...'}, 'ariaSnapshot': ...}`)."""
+        def _unwrap(v):
+            if isinstance(v, dict):
+                if "value" in v:
+                    return _unwrap(v["value"])
+                if "s" in v and len(v) <= 2:
+                    return str(v["s"])
+                if "n" in v and len(v) <= 2:
+                    return str(v["n"])
+                if "b" in v and len(v) <= 2:
+                    return "true" if v["b"] else "false"
+                if "v" in v and len(v) <= 2:
+                    return str(v["v"])
+                if "a" in v and isinstance(v["a"], list):
+                    return ", ".join(_unwrap(x) for x in v["a"])
+                if "o" in v and isinstance(v["o"], list):
+                    pairs = [f"{item.get('k')}: {_unwrap(item.get('v'))}" for item in v["o"] if isinstance(item, dict)]
+                    return "{" + ", ".join(pairs) + "}"
+            if isinstance(v, list):
+                return ", ".join(_unwrap(x) for x in v)
+            return str(v) if v is not None else None
+
+        val = _unwrap(raw)
+        return _truncate(val, 512) if val is not None else None
 
 
     def _guess_resource_type(mime_type, url):
@@ -232,12 +403,19 @@ public enum PlaywrightPythonTimeTravelLoader {
         api_name = str(act.get("apiName") or "").strip()
         params = act.get("params") or {}
         if title:
+            sel = _clean_selector_display(params.get("selector"))
+            exp = _extract_expected_text(params)
+            if sel and sel not in title:
+                return f"{title} ({sel})"
+            if exp and exp not in title:
+                return f"{title} ({exp})"
             return title
         if api_name:
             if "goto" in api_name and isinstance(params.get("url"), str):
                 return f'page.goto("{params["url"]}")'
             if isinstance(params.get("selector"), str):
-                return f'{api_name}("{params["selector"]}")'
+                sel = _clean_selector_display(params["selector"])
+                return f'{api_name}("{sel}")'
             if isinstance(params.get("url"), str):
                 method = str(params.get("method") or "").upper()
                 if method:
@@ -257,11 +435,13 @@ public enum PlaywrightPythonTimeTravelLoader {
             return None
 
         viewport = None
+        base_url = None
         screencast_frames = []
         actions_by_call = {}
         action_order = []
         input_boxes = {}
         frame_snapshots = []
+        frame_snaps_by_frame = {}
         console_events = []
         network_entries = []
 
@@ -334,6 +514,8 @@ public enum PlaywrightPythonTimeTravelLoader {
                         if isinstance(ev.get("monotonicTime"), (int, float)):
                             base_mono = float(ev["monotonicTime"])
                         opts = ev.get("options") or {}
+                        if base_url is None and isinstance(opts.get("baseURL"), str) and opts["baseURL"]:
+                            base_url = opts["baseURL"]
                         vp = opts.get("viewport")
                         if viewport is None and isinstance(vp, dict):
                             viewport = {
@@ -358,32 +540,53 @@ public enum PlaywrightPythonTimeTravelLoader {
                     elif etype == "before" and ev.get("callId"):
                         cid = str(ev["callId"])
                         w = to_wall_ms(ev)
+                        api_name = _synthesize_api_name(ev)
                         act = {
                             "callId": cid,
-                            "apiName": str(ev.get("apiName") or ""),
+                            "apiName": api_name,
                             "title": str(ev.get("title") or ""),
                             "method": str(ev.get("method") or ""),
                             "params": ev.get("params") if isinstance(ev.get("params"), dict) else {},
+                            "beforeSnapshot": ev.get("beforeSnapshot"),
+                            "inputSnapshot": None,
+                            "afterSnapshot": None,
                             "startWallMs": w,
                             "endWallMs": w,
                             "startMono": ev.get("startTime") if isinstance(ev.get("startTime"), (int, float)) else None,
                             "error": None,
+                            "actualResult": None,
                         }
                         if cid not in actions_by_call:
                             action_order.append(cid)
                         actions_by_call[cid] = act
                     elif etype == "after" and ev.get("callId"):
-                        act = actions_by_call.get(str(ev["callId"]))
+                        cid = str(ev["callId"])
+                        act = actions_by_call.get(cid)
                         if act:
                             end_mono = ev.get("endTime")
                             if isinstance(end_mono, (int, float)) and act["startMono"] is not None and act["startWallMs"] is not None:
                                 act["endWallMs"] = act["startWallMs"] + max(0.0, float(end_mono) - float(act["startMono"]))
+                            if ev.get("afterSnapshot"):
+                                act["afterSnapshot"] = ev.get("afterSnapshot")
+                            if isinstance(ev.get("result"), dict) and "received" in ev["result"]:
+                                act["actualResult"] = _format_pw_received_value(ev["result"]["received"])
+                            if ev.get("point") and cid not in input_boxes:
+                                pt = ev["point"]
+                                if isinstance(pt, dict) and isinstance(pt.get("x"), (int, float)):
+                                    input_boxes[cid] = {
+                                        "x": max(0.0, float(pt["x"]) - 16.0),
+                                        "y": max(0.0, float(pt.get("y") or 0) - 16.0),
+                                        "width": 32.0,
+                                        "height": 32.0,
+                                    }
                             if ev.get("error"):
                                 err = ev["error"]
                                 msg = err.get("message") if isinstance(err, dict) else str(err)
                                 act["error"] = _truncate(_strip_ansi(str(msg or "")), MAX_ERROR_CHARS)
                     elif etype == "input" and ev.get("callId"):
                         cid = str(ev["callId"])
+                        if cid in actions_by_call and ev.get("inputSnapshot"):
+                            actions_by_call[cid]["inputSnapshot"] = ev.get("inputSnapshot")
                         box = ev.get("box")
                         pt = ev.get("point")
                         if isinstance(box, dict) and isinstance(box.get("x"), (int, float)):
@@ -410,14 +613,32 @@ public enum PlaywrightPythonTimeTravelLoader {
                         else:
                             swall = to_wall_ms(ev)
                         sname = str(snap.get("snapshotName") or "")
-                        frame_snapshots.append({
-                            "callId": snap.get("callId"),
-                            "phase": "before" if sname.startswith("before") else "after",
+                        snap_call_id = snap.get("callId")
+                        phase = "after"
+                        if sname.startswith("before"):
+                            phase = "before"
+                        elif sname.startswith("input"):
+                            phase = "input"
+                        if not snap_call_id and "@" in sname:
+                            prefix, rest = sname.split("@", 1)
+                            if prefix in ("before", "after", "input"):
+                                snap_call_id = rest
+                        fid = str(snap.get("frameId") or "__main__")
+                        flist = frame_snaps_by_frame.setdefault(fid, [])
+                        f_idx = len(flist)
+                        entry = {
+                            "snapshotName": sname,
+                            "callId": snap_call_id,
+                            "phase": phase,
+                            "frameId": fid,
+                            "frameIndex": f_idx,
                             "frameUrl": snap.get("frameUrl"),
                             "viewport": snap.get("viewport") or viewport,
                             "wallTime": swall,
                             "htmlNode": snap.get("html"),
-                        })
+                        }
+                        flist.append(entry)
+                        frame_snapshots.append(entry)
                     elif etype == "console":
                         w = to_wall_ms(ev)
                         lvl = str(ev.get("messageType") or "log").lower()
@@ -555,7 +776,7 @@ public enum PlaywrightPythonTimeTravelLoader {
                         },
                     })
 
-            # Cache frame data URIs & serialized DOM snapshots while zipfile is open
+            # Cache frame data URIs & serialized DOM snapshots (resolving Playwright incremental delta refs)
             frame_uri_cache = {}
             for frame in screencast_frames:
                 fref = frame["file"]
@@ -570,8 +791,23 @@ public enum PlaywrightPythonTimeTravelLoader {
 
             serialized_snaps = []
             for sn in frame_snapshots:
-                html_str = _serialize_pw_dom_node(sn["htmlNode"], [0], 0) if sn.get("htmlNode") else ""
+                flist = frame_snaps_by_frame.get(sn["frameId"], [])
+                target_capture = [None]
+                html_str = (
+                    _serialize_pw_dom_node(
+                        sn["htmlNode"],
+                        [0],
+                        0,
+                        sn["frameIndex"],
+                        flist,
+                        sn["callId"],
+                        target_capture,
+                    )
+                    if sn.get("htmlNode")
+                    else ""
+                )
                 serialized_snaps.append({
+                    "snapshotName": sn["snapshotName"],
                     "callId": sn["callId"],
                     "phase": sn["phase"],
                     "frameUrl": sn["frameUrl"],
@@ -579,6 +815,7 @@ public enum PlaywrightPythonTimeTravelLoader {
                     "wallTime": sn["wallTime"],
                     "html": html_str if html_str else None,
                     "title": _extract_title_from_html(html_str) if html_str else None,
+                    "targetOuterHTML": target_capture[0],
                 })
 
         screencast_frames.sort(key=lambda f: f["wallTime"] if f["wallTime"] is not None else f["mono"])
@@ -587,6 +824,7 @@ public enum PlaywrightPythonTimeTravelLoader {
         ordered_actions = [actions_by_call[cid] for cid in action_order if cid in actions_by_call]
         return {
             "viewport": viewport,
+            "baseURL": base_url,
             "screencastFrames": screencast_frames,
             "frameURICache": frame_uri_cache,
             "actions": ordered_actions,
@@ -604,6 +842,7 @@ public enum PlaywrightPythonTimeTravelLoader {
 
         steps = []
         step_metas = []
+        base_url = parsed.get("baseURL")
 
         # Build step timeline directly from Playwright trace actions (filtering noisy internal setup unless failed)
         for act in parsed["actions"]:
@@ -615,19 +854,22 @@ public enum PlaywrightPythonTimeTravelLoader {
             dur_ms = max(0, int(round(end_ms - start_ms)))
             text = _format_action_step_text(act)
             params = act.get("params") or {}
-            selector = params.get("selector") if isinstance(params.get("selector"), str) else None
+            raw_selector = params.get("selector") if isinstance(params.get("selector"), str) else None
+            selector = _clean_selector_display(raw_selector) if raw_selector else None
             diag = _empty_diagnostics()
 
             if "goto" in api_name and isinstance(params.get("url"), str):
-                diag["pageURL"] = params["url"]
+                raw_u = params["url"]
+                diag["pageURL"] = urllib.parse.urljoin(base_url, raw_u) if (base_url and not re.match(r"^https?://", raw_u)) else raw_u
 
             if api_name.startswith("expect.") or api_name.startswith("locator.expect") or "expect" in api_name.lower():
                 method_name = api_name.split(".")[-1] if "." in api_name else api_name
+                expected_val = _extract_expected_text(params) or selector
                 diag["assertion"] = {
                     "method": method_name,
                     "passed": act["error"] is None,
-                    "expected": None,
-                    "actual": None,
+                    "expected": expected_val,
+                    "actual": act.get("actualResult"),
                     "message": act["error"],
                     "relatedRequestId": None,
                 }
@@ -646,6 +888,9 @@ public enum PlaywrightPythonTimeTravelLoader {
             steps.append(step_rec)
             step_metas.append({
                 "callId": act["callId"],
+                "afterSnapshot": act.get("afterSnapshot"),
+                "inputSnapshot": act.get("inputSnapshot"),
+                "beforeSnapshot": act.get("beforeSnapshot"),
                 "startMs": start_ms,
                 "endMs": end_ms,
                 "apiName": api_name,
@@ -671,7 +916,7 @@ public enum PlaywrightPythonTimeTravelLoader {
                     "errorMessage": e.get("errorText"),
                     "diagnostics": diag,
                 })
-                step_metas.append({"callId": None, "startMs": st_ms, "endMs": st_ms + dur, "apiName": "apiRequestContext"})
+                step_metas.append({"callId": None, "afterSnapshot": None, "inputSnapshot": None, "beforeSnapshot": None, "startMs": st_ms, "endMs": st_ms + dur, "apiName": "apiRequestContext"})
             api_entries = []
 
         if not steps:
@@ -688,28 +933,48 @@ public enum PlaywrightPythonTimeTravelLoader {
             })
             step_metas.append({
                 "callId": None,
+                "afterSnapshot": None,
+                "inputSnapshot": None,
+                "beforeSnapshot": None,
                 "startMs": fallback_start_ms,
                 "endMs": fallback_start_ms + fallback_duration_ms,
                 "apiName": "",
             })
 
-        # 1. Attach screencast frames
+        # 1. Attach screencast frames (bounded by next step so early steps don't steal final frames)
         frames = parsed["screencastFrames"]
         if frames:
             uri_cache = parsed["frameURICache"]
-            for step, meta in zip(steps, step_metas):
+            for idx, (step, meta) in enumerate(zip(steps, step_metas)):
+                next_start = step_metas[idx + 1]["startMs"] if idx + 1 < len(step_metas) else None
+                upper_after = (
+                    min(meta["endMs"] + 250, next_start + 20)
+                    if next_start is not None
+                    else meta["endMs"] + 250
+                )
                 before_f = None
+                before_loose = None
                 after_f = None
+                before_loose_cutoff = min(meta["startMs"] + 25, max(meta["startMs"], meta["endMs"] - 1))
                 for f in frames:
                     wt = f["wallTime"]
                     if wt is None:
                         continue
-                    if wt <= meta["startMs"] + 40:
+                    if wt <= meta["startMs"]:
                         before_f = f
-                    if wt <= meta["endMs"] + 250:
+                    if wt <= before_loose_cutoff:
+                        before_loose = f
+                    if wt <= upper_after:
                         after_f = f
+                if after_f is None or (before_f is not None and after_f is before_f and next_start is not None):
+                    # If no frame arrived before next step started, allow the first frame captured just after endMs
+                    near_f = next((f for f in frames if f["wallTime"] is not None and meta["startMs"] <= f["wallTime"] <= meta["endMs"] + 250), None)
+                    if near_f is not None:
+                        after_f = near_f
                 if after_f is None:
                     after_f = next((f for f in frames if f["wallTime"] is not None and f["wallTime"] >= meta["startMs"]), frames[-1])
+                if before_f is None and before_loose is not None and before_loose is not after_f:
+                    before_f = before_loose
                 if before_f is not None and before_f is not after_f:
                     step["diagnostics"]["beforeScreenshotDataURI"] = uri_cache.get(before_f["file"])
                 if after_f is not None:
@@ -719,20 +984,30 @@ public enum PlaywrightPythonTimeTravelLoader {
         snaps = parsed["snapshots"]
         boxes = parsed["inputBoxes"]
         if snaps:
+            snaps_by_name = {s["snapshotName"]: s for s in snaps if s.get("snapshotName")}
             last_url = None
             for step, meta in zip(steps, step_metas):
                 cid = meta["callId"]
                 chosen = None
-                if cid:
-                    chosen = next((s for s in snaps if s["callId"] == cid and s["phase"] == "after"), None)
+                for ref_key in (meta.get("afterSnapshot"), meta.get("inputSnapshot"), meta.get("beforeSnapshot")):
+                    if ref_key and ref_key in snaps_by_name and snaps_by_name[ref_key].get("html"):
+                        chosen = snaps_by_name[ref_key]
+                        break
+                if not chosen and cid:
+                    chosen = next((s for s in snaps if s["callId"] == cid and s["phase"] == "after" and s.get("html")), None)
                     if not chosen:
-                        chosen = next((s for s in snaps if s["callId"] == cid), None)
+                        chosen = next((s for s in snaps if s["callId"] == cid and s.get("html")), None)
                 if not chosen:
                     for s in snaps:
-                        if s["wallTime"] is not None and s["wallTime"] <= meta["endMs"] + 250:
+                        if s.get("html") and s["wallTime"] is not None and s["wallTime"] <= meta["endMs"] + 250:
                             chosen = s
                 if not chosen:
-                    chosen = snaps[0]
+                    chosen = next((s for s in snaps if s.get("html")), snaps[0])
+
+                # Also grab targetOuterHTML from inputSnapshot if afterSnapshot navigated away
+                target_outer = chosen.get("targetOuterHTML") if chosen else None
+                if not target_outer and meta.get("inputSnapshot") in snaps_by_name:
+                    target_outer = snaps_by_name[meta["inputSnapshot"]].get("targetOuterHTML")
 
                 if chosen and chosen.get("html"):
                     raw_box = boxes.get(cid) if cid else None
@@ -752,11 +1027,11 @@ public enum PlaywrightPythonTimeTravelLoader {
                         "url": chosen.get("frameUrl"),
                         "title": chosen.get("title"),
                         "targetSelector": step.get("targetSelector"),
-                        "targetOuterHTML": None,
+                        "targetOuterHTML": target_outer,
                         "targetBoundingBox": bbox,
-                        "matchedCount": None,
+                        "matchedCount": 1 if (target_outer or bbox) else None,
                     }
-                    if chosen.get("frameUrl"):
+                    if chosen.get("frameUrl") and chosen["frameUrl"] != "about:blank":
                         last_url = chosen["frameUrl"]
                 if step["diagnostics"]["pageURL"]:
                     last_url = step["diagnostics"]["pageURL"]
@@ -828,20 +1103,305 @@ public enum PlaywrightPythonTimeTravelLoader {
             steps[target_idx]["diagnostics"]["consoleEntries"].append(c["entry"])
 
         # 5. Link API assertions to their preceding API request
+        _link_api_assertions(steps)
+        return steps
+
+
+    def _link_api_assertions(steps):
         last_api_id = None
         for step in steps:
+            diag = step.get("diagnostics") or {}
             api_reqs = [
-                r for r in step["diagnostics"]["networkRequests"]
+                r for r in (diag.get("networkRequests") or [])
                 if r.get("source") in ("playwright-api", "playwright-python-api") or r.get("resourceType") == "api"
             ]
             if api_reqs:
                 last_api_id = api_reqs[-1]["id"]
-            assertion = step["diagnostics"].get("assertion")
+            assertion = diag.get("assertion")
             if assertion and not assertion.get("relatedRequestId") and last_api_id:
                 if not _is_web_assertion(assertion.get("method")):
                     assertion["relatedRequestId"] = last_api_id
 
-        return steps
+
+    def _merge_trace_and_live_steps(trace_steps, live_steps):
+        if not live_steps:
+            return trace_steps
+        if not trace_steps:
+            merged = list(live_steps)
+            _link_api_assertions(merged)
+            return merged
+
+        # Deduplicate live API calls that trace.zip already captured via `_apiRequestRef`
+        existing_api_sigs = set()
+        for s in trace_steps:
+            for r in (s.get("diagnostics") or {}).get("networkRequests") or []:
+                if r.get("source") in ("playwright-api", "playwright-python-api") or r.get("resourceType") == "api":
+                    existing_api_sigs.add((r.get("method"), r.get("url")))
+
+        extras = []
+        for ls in live_steps:
+            reqs = (ls.get("diagnostics") or {}).get("networkRequests") or []
+            if reqs and all((r.get("method"), r.get("url")) in existing_api_sigs for r in reqs):
+                continue
+            extras.append(ls)
+
+        if not extras:
+            return trace_steps
+
+        combined = list(trace_steps) + extras
+        combined.sort(key=lambda s: _parse_iso_ms(s.get("startedAt")) or 0)
+        _link_api_assertions(combined)
+        return combined
+
+
+    def _install_playwright_api_hooks():
+        """Safely instrument Playwright Python's APIRequestContext & APIResponseAssertions
+        so pure API tests (without BrowserContext/page) and hybrid tests capture full HTTP
+        exchanges and assertions even when pytest-playwright writes no trace.zip."""
+        global _HOOKS_INSTALLED
+        if _HOOKS_INSTALLED:
+            return
+        _HOOKS_INSTALLED = True
+
+        try:
+            from playwright._impl import _fetch as pw_fetch
+            orig_inner_fetch = getattr(pw_fetch.APIRequestContext, "_inner_fetch", None)
+            if orig_inner_fetch and not getattr(orig_inner_fetch, "_ceptra_wrapped", False):
+                param_names = list(orig_inner_fetch.__code__.co_varnames[1:orig_inner_fetch.__code__.co_argcount])
+
+                def _extract_arg(name, args, kwargs):
+                    if name in kwargs:
+                        return kwargs[name]
+                    if name in param_names:
+                        idx = param_names.index(name)
+                        if idx < len(args):
+                            return args[idx]
+                    return None
+
+                def _serialize_req_body(data, form, request_obj):
+                    try:
+                        if data is not None:
+                            if isinstance(data, (dict, list, int, float, bool)):
+                                return _truncate(json.dumps(data), MAX_API_BODY_CHARS)
+                            if isinstance(data, bytes):
+                                return _truncate(data.decode("utf-8", errors="replace"), MAX_API_BODY_CHARS)
+                            if isinstance(data, str):
+                                return _truncate(data, MAX_API_BODY_CHARS)
+                        if form is not None:
+                            if isinstance(form, dict):
+                                return _truncate(urllib.parse.urlencode(form), MAX_API_BODY_CHARS)
+                            fields = getattr(form, "_fields", None)
+                            if isinstance(fields, list):
+                                return _truncate(urllib.parse.urlencode(fields), MAX_API_BODY_CHARS)
+                        if request_obj is not None:
+                            pbuf = getattr(request_obj, "post_data_buffer", None)
+                            if isinstance(pbuf, (bytes, bytearray)) and pbuf:
+                                return _truncate(bytes(pbuf).decode("utf-8", errors="replace"), MAX_API_BODY_CHARS)
+                    except Exception:
+                        pass
+                    return None
+
+                async def _ceptra_inner_fetch(self, *args, **kwargs):
+                    plugin = _ACTIVE_PLUGIN
+                    if plugin is None or not plugin._active_nodeid:
+                        return await orig_inner_fetch(self, *args, **kwargs)
+
+                    req_obj = _extract_arg("request", args, kwargs)
+                    raw_url = _extract_arg("url", args, kwargs) or (getattr(req_obj, "url", None) if req_obj else "") or ""
+                    raw_method = _extract_arg("method", args, kwargs) or (getattr(req_obj, "method", None) if req_obj else None) or "GET"
+                    req_method = str(raw_method).upper()
+                    raw_headers = _extract_arg("headers", args, kwargs) or (getattr(req_obj, "headers", None) if req_obj else None)
+                    req_body = _serialize_req_body(_extract_arg("data", args, kwargs), _extract_arg("form", args, kwargs), req_obj)
+                    req_headers = _redact_headers(raw_headers) if raw_headers else {}
+
+                    start_ms = int(round(time.time() * 1000.0))
+                    t0 = time.monotonic()
+                    try:
+                        resp = await orig_inner_fetch(self, *args, **kwargs)
+                    except Exception as exc:
+                        dur_ms = max(0, int(round((time.monotonic() - t0) * 1000.0)))
+                        end_ms = start_ms + dur_ms
+                        err_txt = _truncate(_strip_ansi(str(exc)), MAX_ERROR_CHARS)
+                        entry = {
+                            "id": str(uuid.uuid4()),
+                            "method": req_method,
+                            "url": str(raw_url),
+                            "resourceType": "api",
+                            "source": "playwright-python-api",
+                            "status": None,
+                            "statusText": None,
+                            "startedAt": _iso_from_ms(start_ms),
+                            "durationMs": dur_ms,
+                            "requestSizeBytes": len(req_body.encode("utf-8")) if req_body else None,
+                            "responseSizeBytes": None,
+                            "timings": {"dnsMs": None, "connectMs": None, "tlsMs": None, "ttfbMs": None, "downloadMs": None, "totalMs": dur_ms},
+                            "requestHeaders": req_headers,
+                            "responseHeaders": {},
+                            "requestBody": req_body,
+                            "responseBody": None,
+                            "errorText": err_txt,
+                        }
+                        diag = _empty_diagnostics()
+                        diag["networkRequests"].append(entry)
+                        plugin._record_live_step({
+                            "text": f"{req_method} {raw_url}",
+                            "depth": 0,
+                            "status": "failed",
+                            "durationMs": dur_ms,
+                            "startedAt": _iso_from_ms(start_ms),
+                            "finishedAt": _iso_from_ms(end_ms),
+                            "targetSelector": None,
+                            "errorMessage": err_txt,
+                            "diagnostics": diag,
+                        })
+                        raise
+
+                    dur_ms = max(0, int(round((time.monotonic() - t0) * 1000.0)))
+                    end_ms = start_ms + dur_ms
+                    try:
+                        res_url = str(getattr(resp, "url", None) or raw_url)
+                        res_status = getattr(resp, "status", None)
+                        res_status_text = getattr(resp, "status_text", None)
+                        res_headers_arr = getattr(resp, "headers_array", None)
+                        res_headers = _redact_headers(res_headers_arr if res_headers_arr else getattr(resp, "headers", None))
+                        ctype = ""
+                        for hk, hv in res_headers.items():
+                            if hk.lower() == "content-type":
+                                ctype = hv
+                                break
+
+                        res_body = None
+                        res_size = None
+                        try:
+                            raw_bytes = await resp.body()
+                            if isinstance(raw_bytes, (bytes, bytearray)):
+                                res_size = len(raw_bytes)
+                                if not ctype or _is_text_mime(ctype):
+                                    res_body = _truncate(raw_bytes.decode("utf-8", errors="replace"), MAX_API_BODY_CHARS)
+                        except Exception:
+                            pass
+
+                        entry_id = str(uuid.uuid4())
+                        try:
+                            setattr(resp, "_ceptra_req_id", entry_id)
+                        except Exception:
+                            pass
+
+                        entry = {
+                            "id": entry_id,
+                            "method": req_method,
+                            "url": res_url,
+                            "resourceType": "api",
+                            "source": "playwright-python-api",
+                            "status": int(res_status) if isinstance(res_status, int) else None,
+                            "statusText": str(res_status_text) if res_status_text else None,
+                            "startedAt": _iso_from_ms(start_ms),
+                            "durationMs": dur_ms,
+                            "requestSizeBytes": len(req_body.encode("utf-8")) if req_body else None,
+                            "responseSizeBytes": res_size,
+                            "timings": {"dnsMs": None, "connectMs": None, "tlsMs": None, "ttfbMs": None, "downloadMs": None, "totalMs": dur_ms},
+                            "requestHeaders": req_headers,
+                            "responseHeaders": res_headers,
+                            "requestBody": req_body,
+                            "responseBody": res_body,
+                            "errorText": None,
+                        }
+                        diag = _empty_diagnostics()
+                        diag["networkRequests"].append(entry)
+                        plugin._record_live_step({
+                            "text": f"{req_method} {res_url}",
+                            "depth": 0,
+                            "status": "passed",
+                            "durationMs": dur_ms,
+                            "startedAt": _iso_from_ms(start_ms),
+                            "finishedAt": _iso_from_ms(end_ms),
+                            "targetSelector": None,
+                            "errorMessage": None,
+                            "diagnostics": diag,
+                        })
+                    except Exception:
+                        pass
+                    return resp
+
+                _ceptra_inner_fetch._ceptra_wrapped = True
+                pw_fetch.APIRequestContext._inner_fetch = _ceptra_inner_fetch
+        except Exception:
+            pass
+
+        try:
+            from playwright._impl import _assertions as pw_assertions
+            orig_to_be_ok = getattr(pw_assertions.APIResponseAssertions, "to_be_ok", None)
+            if orig_to_be_ok and not getattr(orig_to_be_ok, "_ceptra_wrapped", False):
+                async def _ceptra_to_be_ok(self, *args, **kwargs):
+                    plugin = _ACTIVE_PLUGIN
+                    if plugin is None or not plugin._active_nodeid:
+                        return await orig_to_be_ok(self, *args, **kwargs)
+
+                    is_not = bool(getattr(self, "_is_not", False))
+                    actual_resp = getattr(self, "_actual", None)
+                    method_name = "not_to_be_ok" if is_not else "to_be_ok"
+                    step_text = f"expect(response).{method_name}()"
+                    rel_id = getattr(actual_resp, "_ceptra_req_id", None)
+                    actual_status = getattr(actual_resp, "status", None)
+                    expected_str = "status not in 200..299" if is_not else "status in 200..299"
+                    actual_str = f"HTTP {actual_status}" if actual_status is not None else None
+
+                    start_ms = int(round(time.time() * 1000.0))
+                    t0 = time.monotonic()
+                    try:
+                        res = await orig_to_be_ok(self, *args, **kwargs)
+                    except Exception as exc:
+                        dur_ms = max(0, int(round((time.monotonic() - t0) * 1000.0)))
+                        err_txt = _truncate(_strip_ansi(str(exc)), MAX_ERROR_CHARS)
+                        diag = _empty_diagnostics()
+                        diag["assertion"] = {
+                            "method": method_name,
+                            "passed": False,
+                            "expected": expected_str,
+                            "actual": actual_str,
+                            "message": err_txt,
+                            "relatedRequestId": rel_id,
+                        }
+                        plugin._record_live_step({
+                            "text": step_text,
+                            "depth": 0,
+                            "status": "failed",
+                            "durationMs": dur_ms,
+                            "startedAt": _iso_from_ms(start_ms),
+                            "finishedAt": _iso_from_ms(start_ms + dur_ms),
+                            "targetSelector": None,
+                            "errorMessage": err_txt,
+                            "diagnostics": diag,
+                        })
+                        raise
+
+                    dur_ms = max(0, int(round((time.monotonic() - t0) * 1000.0)))
+                    diag = _empty_diagnostics()
+                    diag["assertion"] = {
+                        "method": method_name,
+                        "passed": True,
+                        "expected": expected_str,
+                        "actual": actual_str,
+                        "message": None,
+                        "relatedRequestId": rel_id,
+                    }
+                    plugin._record_live_step({
+                        "text": step_text,
+                        "depth": 0,
+                        "status": "passed",
+                        "durationMs": dur_ms,
+                        "startedAt": _iso_from_ms(start_ms),
+                        "finishedAt": _iso_from_ms(start_ms + dur_ms),
+                        "targetSelector": None,
+                        "errorMessage": None,
+                        "diagnostics": diag,
+                    })
+                    return res
+
+                _ceptra_to_be_ok._ceptra_wrapped = True
+                pw_assertions.APIResponseAssertions.to_be_ok = _ceptra_to_be_ok
+        except Exception:
+            pass
 
 
     def _slugify_nodeid(nodeid):
@@ -859,7 +1419,7 @@ public enum PlaywrightPythonTimeTravelLoader {
         if os.path.isdir(exact):
             candidate_dirs.append(exact)
         else:
-            # Fallback: match truncated slug prefix or freshly modified folder
+            # Fallback: match truncated slug prefix or suffix
             short_slug = slug[:48]
             try:
                 for entry in os.scandir(output_dir):
@@ -917,9 +1477,22 @@ public enum PlaywrightPythonTimeTravelLoader {
             self.scenarios = []
             self._meta_by_nodeid = {}
             self._start_by_nodeid = {}
+            self._records_by_nodeid = {}
+            self._call_info_by_nodeid = {}
+            self._hydrated_nodeids = set()
+            self._live_steps_by_nodeid = {}
+            self._active_nodeid = None
+
+        def _record_live_step(self, step):
+            nid = self._active_nodeid
+            if not nid:
+                return
+            self._live_steps_by_nodeid.setdefault(nid, []).append(step)
 
         def pytest_runtest_setup(self, item):
+            self._active_nodeid = item.nodeid
             self._start_by_nodeid[item.nodeid] = time.time()
+            self._live_steps_by_nodeid[item.nodeid] = []
             markers = []
             for mark in item.iter_markers():
                 name = str(mark.name or "").strip()
@@ -931,18 +1504,107 @@ public enum PlaywrightPythonTimeTravelLoader {
                 "tags": sorted(set(markers)),
             }
 
+        def _finalize_steps(self, steps, shot_paths, console_entries, status, err_msg):
+            if shot_paths:
+                target = next((s for s in steps if s["status"] == "failed"), steps[-1])
+                for sp in shot_paths:
+                    uri = _image_to_data_uri(sp)
+                    if uri:
+                        if not target["diagnostics"]["afterScreenshotDataURI"]:
+                            target["diagnostics"]["afterScreenshotDataURI"] = uri
+                        elif not target["diagnostics"]["beforeScreenshotDataURI"]:
+                            target["diagnostics"]["beforeScreenshotDataURI"] = target["diagnostics"]["afterScreenshotDataURI"]
+                            target["diagnostics"]["afterScreenshotDataURI"] = uri
+
+            if console_entries:
+                existing_msgs = {
+                    (c.get("level"), c.get("message"))
+                    for c in steps[-1]["diagnostics"]["consoleEntries"]
+                }
+                for ce in console_entries:
+                    key = (ce.get("level"), ce.get("message"))
+                    if key not in existing_msgs:
+                        steps[-1]["diagnostics"]["consoleEntries"].append(ce)
+                        existing_msgs.add(key)
+
+            if status == "failed" and not any(s["status"] == "failed" for s in steps):
+                steps[-1]["status"] = "failed"
+                if not steps[-1]["errorMessage"]:
+                    steps[-1]["errorMessage"] = err_msg
+
+        def _hydrate_record_from_trace(self, nodeid):
+            if nodeid in self._hydrated_nodeids:
+                return False
+            record = self._records_by_nodeid.get(nodeid)
+            info = self._call_info_by_nodeid.get(nodeid)
+            if not record or not info:
+                return False
+
+            trace_zip, shot_paths = _find_trace_and_screenshots(self.pw_output_dir, nodeid, info["startSec"])
+            if not trace_zip and not shot_paths:
+                return False
+
+            live_steps = list(self._live_steps_by_nodeid.get(nodeid) or [])
+            trace_steps = []
+            if trace_zip:
+                trace_steps = build_steps_from_trace_zip(
+                    trace_zip,
+                    info["scenarioTitle"],
+                    record["status"],
+                    info["startMs"],
+                    info["durMs"],
+                    record["errorMessage"],
+                )
+
+            if trace_steps:
+                steps = _merge_trace_and_live_steps(trace_steps, live_steps)
+                self._finalize_steps(steps, shot_paths, info["consoleEntries"], record["status"], record["errorMessage"])
+                record["steps"] = steps
+                self._hydrated_nodeids.add(nodeid)
+                return True
+
+            if shot_paths and record.get("steps"):
+                self._finalize_steps(record["steps"], shot_paths, info["consoleEntries"], record["status"], record["errorMessage"])
+                self._hydrated_nodeids.add(nodeid)
+                return True
+
+            return False
+
         def pytest_runtest_logreport(self, report):
-            # Record on `call` phase, or on `setup` when skipped/failed before call
-            if report.when == "call":
-                pass
+            nodeid = str(report.nodeid)
+
+            # Teardown phase runs AFTER pytest-playwright's `context` fixture saves `trace.zip`!
+            if report.when == "teardown":
+                if self._active_nodeid == nodeid:
+                    self._active_nodeid = None
+                existing = self._records_by_nodeid.get(nodeid)
+                if existing is not None:
+                    if report.failed:
+                        longrepr = _strip_ansi(str(getattr(report, "longreprtext", "") or getattr(report, "longrepr", "") or ""))
+                        err_stack = _truncate(longrepr, MAX_ERROR_CHARS)
+                        err_lines = [ln.strip() for ln in longrepr.splitlines() if ln.strip().startswith("E ")]
+                        err_msg = _truncate("\n".join(err_lines) if err_lines else (longrepr.splitlines()[-1] if longrepr else "Teardown failed"), MAX_ERROR_CHARS)
+                        existing["status"] = "failed"
+                        existing["errorMessage"] = existing["errorMessage"] or err_msg
+                        existing["errorStack"] = existing["errorStack"] or err_stack
+                    self._hydrate_record_from_trace(nodeid)
+                    if existing["status"] == "failed" and existing.get("steps") and not any(s["status"] == "failed" for s in existing["steps"]):
+                        existing["steps"][-1]["status"] = "failed"
+                        if not existing["steps"][-1]["errorMessage"]:
+                            existing["steps"][-1]["errorMessage"] = existing["errorMessage"]
+                    self._flush_sync()
+                    return
+                if not report.failed:
+                    return
+            elif report.when == "call":
+                if self._active_nodeid == nodeid:
+                    self._active_nodeid = None
             elif report.when == "setup" and (report.skipped or report.failed):
-                pass
-            elif report.when == "teardown" and report.failed:
-                pass
+                if self._active_nodeid == nodeid:
+                    self._active_nodeid = None
             else:
                 return
 
-            nodeid = str(report.nodeid)
             meta = self._meta_by_nodeid.get(nodeid, {})
             start_sec = self._start_by_nodeid.get(nodeid, time.time() - float(getattr(report, "duration", 0.0) or 0.0))
             dur_ms = max(0, int(round(float(getattr(report, "duration", 0.0) or 0.0) * 1000.0)))
@@ -976,12 +1638,30 @@ public enum PlaywrightPythonTimeTravelLoader {
                 err_stack = _truncate(longrepr, MAX_ERROR_CHARS)
                 # Extract concise assertion/error line
                 err_lines = [ln.strip() for ln in longrepr.splitlines() if ln.strip().startswith("E ")]
-                err_msg = _truncate("\n".join(err_lines) if err_lines else longrepr.splitlines()[-1] if longrepr else "Test failed", MAX_ERROR_CHARS)
+                err_msg = _truncate("\n".join(err_lines) if err_lines else (longrepr.splitlines()[-1] if longrepr else "Test failed"), MAX_ERROR_CHARS)
 
+            console_entries = []
+            for cap_attr, lvl in (("capstdout", "log"), ("capstderr", "error")):
+                cap_txt = _strip_ansi(str(getattr(report, cap_attr, "") or "")).strip()
+                if cap_txt:
+                    console_entries.append({
+                        "id": str(uuid.uuid4()),
+                        "level": lvl,
+                        "message": _truncate(cap_txt, MAX_CONSOLE_CHARS),
+                        "timestamp": _iso_from_ms(end_ms),
+                        "sourceURL": None,
+                        "lineNumber": None,
+                    })
+
+            live_steps = list(self._live_steps_by_nodeid.get(nodeid) or [])
             trace_zip, shot_paths = _find_trace_and_screenshots(self.pw_output_dir, nodeid, start_sec)
-            steps = []
+            trace_steps = []
             if trace_zip:
-                steps = build_steps_from_trace_zip(trace_zip, scenario_title, status, start_ms, dur_ms, err_msg)
+                trace_steps = build_steps_from_trace_zip(trace_zip, scenario_title, status, start_ms, dur_ms, err_msg)
+
+            steps = _merge_trace_and_live_steps(trace_steps, live_steps)
+            if trace_steps:
+                self._hydrated_nodeids.add(nodeid)
 
             if not steps:
                 steps = [{
@@ -996,36 +1676,7 @@ public enum PlaywrightPythonTimeTravelLoader {
                     "diagnostics": _empty_diagnostics(),
                 }]
 
-            # Attach direct screenshot files if any were saved alongside trace
-            if shot_paths:
-                target = next((s for s in steps if s["status"] == "failed"), steps[-1])
-                for sp in shot_paths:
-                    uri = _image_to_data_uri(sp)
-                    if uri:
-                        if not target["diagnostics"]["afterScreenshotDataURI"]:
-                            target["diagnostics"]["afterScreenshotDataURI"] = uri
-                        elif not target["diagnostics"]["beforeScreenshotDataURI"]:
-                            target["diagnostics"]["beforeScreenshotDataURI"] = target["diagnostics"]["afterScreenshotDataURI"]
-                            target["diagnostics"]["afterScreenshotDataURI"] = uri
-
-            # Attach captured stdout/stderr logs
-            for cap_attr, lvl in (("capstdout", "log"), ("capstderr", "error")):
-                cap_txt = _strip_ansi(str(getattr(report, cap_attr, "") or "")).strip()
-                if cap_txt:
-                    steps[-1]["diagnostics"]["consoleEntries"].append({
-                        "id": str(uuid.uuid4()),
-                        "level": lvl,
-                        "message": _truncate(cap_txt, MAX_CONSOLE_CHARS),
-                        "timestamp": _iso_from_ms(end_ms),
-                        "sourceURL": None,
-                        "lineNumber": None,
-                    })
-
-            # If test failed after trace actions passed (e.g. Python `assert payload["id"] == 2`), mark final step failed
-            if status == "failed" and not any(s["status"] == "failed" for s in steps):
-                steps[-1]["status"] = "failed"
-                if not steps[-1]["errorMessage"]:
-                    steps[-1]["errorMessage"] = err_msg
+            self._finalize_steps(steps, shot_paths, console_entries, status, err_msg)
 
             record = {
                 "featureTitle": feature_title,
@@ -1041,20 +1692,22 @@ public enum PlaywrightPythonTimeTravelLoader {
                 "steps": steps,
             }
 
-            # Avoid duplicate record if teardown also fails on an already-recorded test
-            if report.when == "teardown":
-                for idx, existing in enumerate(self.scenarios):
-                    if existing["featureTitle"] == feature_title and existing["scenarioTitle"] == scenario_title:
-                        existing["status"] = "failed"
-                        existing["errorMessage"] = existing["errorMessage"] or err_msg
-                        existing["errorStack"] = existing["errorStack"] or err_stack
-                        self._flush_sync()
-                        return
-
+            self._call_info_by_nodeid[nodeid] = {
+                "scenarioTitle": scenario_title,
+                "startSec": start_sec,
+                "startMs": start_ms,
+                "durMs": dur_ms,
+                "consoleEntries": console_entries,
+            }
+            self._records_by_nodeid[nodeid] = record
             self.scenarios.append(record)
             self._flush_sync()
 
         def pytest_sessionfinish(self, session, exitstatus):
+            # Final fallback hydration pass for any trace.zip flushed late during session teardown
+            for nid in list(self._records_by_nodeid.keys()):
+                if nid not in self._hydrated_nodeids:
+                    self._hydrate_record_from_trace(nid)
             self._flush_sync()
 
         def _flush_sync(self):
@@ -1076,6 +1729,7 @@ public enum PlaywrightPythonTimeTravelLoader {
 
 
     def pytest_configure(config):
+        global _ACTIVE_PLUGIN
         output_dir = os.environ.get("CEPTRA_TIME_TRAVEL_DIR", "")
         if not output_dir:
             return
@@ -1086,8 +1740,14 @@ public enum PlaywrightPythonTimeTravelLoader {
             except Exception:
                 pw_output_dir = "test-results"
         if not os.path.isabs(pw_output_dir):
-            pw_output_dir = os.path.abspath(pw_output_dir)
+            root_path = getattr(config, "rootpath", None)
+            if root_path:
+                pw_output_dir = os.path.abspath(os.path.join(str(root_path), pw_output_dir))
+            else:
+                pw_output_dir = os.path.abspath(pw_output_dir)
         plugin = CeptraPytestPlaywrightPlugin(output_dir, pw_output_dir)
+        _ACTIVE_PLUGIN = plugin
+        _install_playwright_api_hooks()
         config.pluginmanager.register(plugin, "ceptra_pw_time_travel_plugin")
     """#
 
