@@ -139,6 +139,7 @@ final class AppState: ObservableObject {
     // Editor Tabs, IntelliSense & Import Navigation History
     @Published var openTabs: [OpenDocumentTab] = []
     @Published var activeTabPath: String? = nil
+    @Published var recentlyClosedTabPaths: [String] = []
     @Published var pendingJumpToLine: Int? = nil
     @Published var liveParsedFeaturesByPath: [String: [ParsedFeature]] = [:]
     @Published var completionIndex: WorkspaceCompletionIndex = WorkspaceCompletionIndex()
@@ -551,6 +552,7 @@ final class AppState: ObservableObject {
         completionIndex = IntelliSenseEngine.buildWorkspaceIndex(workspace: scanned)
         openTabs = []
         activeTabPath = nil
+        recentlyClosedTabPaths = []
         navigationBackStack = []
         navigationForwardStack = []
         liveParsedFeaturesByPath = [:]
@@ -801,10 +803,103 @@ final class AppState: ObservableObject {
     }
 
     func closeTab(filePath: String) {
+        applyTabClose(.single(id: filePath))
+    }
+
+    func closeOtherTabs(keeping filePath: String) {
+        applyTabClose(.others(keepingID: filePath))
+    }
+
+    func closeTabsToRight(of filePath: String) {
+        applyTabClose(.toRight(ofID: filePath))
+    }
+
+    func closeTabsToLeft(of filePath: String) {
+        applyTabClose(.toLeft(ofID: filePath))
+    }
+
+    func closeSavedTabs() {
+        applyTabClose(.savedOnly)
+    }
+
+    func closeAllTabs() {
+        applyTabClose(.all)
+    }
+
+    var canCloseSavedTabs: Bool {
+        openTabs.contains(where: { !$0.isDirty })
+    }
+
+    var hasDirtyTabs: Bool {
+        openTabs.contains(where: \.isDirty)
+    }
+
+    func reopenLastClosedTab() {
+        let fm = FileManager.default
+        let openSet = Set(openTabs.map(\.filePath))
+        while let path = recentlyClosedTabPaths.popLast() {
+            if !openSet.contains(path) && fm.fileExists(atPath: path) {
+                openFileByURL(URL(fileURLWithPath: path))
+                return
+            }
+        }
+    }
+
+    func saveTab(filePath: String) {
         guard let idx = openTabs.firstIndex(where: { $0.filePath == filePath }) else { return }
-        openTabs.remove(at: idx)
-        if activeTabPath == filePath {
-            activeTabPath = openTabs.isEmpty ? nil : openTabs[max(0, idx - 1)].filePath
+        saveTab(at: idx)
+    }
+
+    func revealTabInExplorer(filePath: String) {
+        isSidebarVisible = true
+        pendingRevealTreePath = filePath
+    }
+
+    func revealTabInFinder(filePath: String) {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: filePath)])
+    }
+
+    func copyTextToPasteboard(_ text: String, label: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        showBanner("Copied \(label)")
+    }
+
+    func runTabFile(filePath: String) {
+        guard let tab = openTabs.first(where: { $0.filePath == filePath }), tab.isExecutableTestFile else { return }
+        switchTab(to: filePath)
+        runActiveFile()
+    }
+
+    func debugTabFile(filePath: String) {
+        guard let tab = openTabs.first(where: { $0.filePath == filePath }), tab.isExecutableTestFile else { return }
+        switchTab(to: filePath)
+        debugActiveFile()
+    }
+
+    private func applyTabClose(_ action: TabBatchCloseAction) {
+        let result = TabReorderEngine.applyClose(
+            openTabs,
+            activeID: activeTabPath,
+            action: action,
+            id: \.filePath,
+            isDirty: \.isDirty
+        )
+        guard !result.closed.isEmpty else { return }
+
+        for closedTab in result.closed {
+            recentlyClosedTabPaths.removeAll(where: { $0 == closedTab.filePath })
+            recentlyClosedTabPaths.append(closedTab.filePath)
+        }
+        if recentlyClosedTabPaths.count > 30 {
+            recentlyClosedTabPaths.removeFirst(recentlyClosedTabPaths.count - 30)
+        }
+
+        let previousActive = activeTabPath
+        openTabs = result.remaining
+        activeTabPath = result.nextActiveID
+        if activeTabPath != previousActive {
+            editorSelectedRange = NSRange(location: 0, length: 0)
             if let nextPath = activeTabPath {
                 syncAutoConfig(forFilePath: nextPath)
             }

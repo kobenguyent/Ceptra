@@ -16,6 +16,29 @@ public struct TabSlotFrame: Equatable, Sendable {
     public var midX: Double { minX + width * 0.5 }
 }
 
+/// Batch close actions supported by the editor tab bar context menu, overflow menu, and File menu.
+public enum TabBatchCloseAction: Equatable, Sendable {
+    case single(id: String)
+    case others(keepingID: String)
+    case toRight(ofID: String)
+    case toLeft(ofID: String)
+    case savedOnly
+    case all
+}
+
+/// Deterministic outcome of closing one or more editor tabs.
+public struct TabBatchCloseResult<T> {
+    public let remaining: [T]
+    public let closed: [T]
+    public let nextActiveID: String?
+
+    public init(remaining: [T], closed: [T], nextActiveID: String?) {
+        self.remaining = remaining
+        self.closed = closed
+        self.nextActiveID = nextActiveID
+    }
+}
+
 /// Pure, oscillation-free geometry and mutation engine for horizontal drag-to-reorder tab bars.
 public enum TabReorderEngine {
     /// Computes deterministic horizontal slot frames for an ordered list of tab widths.
@@ -183,6 +206,140 @@ public enum TabReorderEngine {
         let item = items.remove(at: fromIndex)
         items.insert(item, at: clampedTarget)
         return true
+    }
+
+    /// Computes the remaining tabs, closed tabs, and deterministic next active tab ID for any tab close action.
+    public static func applyClose<T>(
+        _ items: [T],
+        activeID: String?,
+        action: TabBatchCloseAction,
+        id: (T) -> String,
+        isDirty: (T) -> Bool = { _ in false }
+    ) -> TabBatchCloseResult<T> {
+        guard !items.isEmpty else {
+            return TabBatchCloseResult(remaining: [], closed: [], nextActiveID: nil)
+        }
+
+        switch action {
+        case .single(let targetID):
+            guard let idx = items.firstIndex(where: { id($0) == targetID }) else {
+                return TabBatchCloseResult(remaining: items, closed: [], nextActiveID: activeID)
+            }
+            var remaining = items
+            let removed = remaining.remove(at: idx)
+            let nextActive: String?
+            if activeID == targetID {
+                nextActive = remaining.isEmpty ? nil : id(remaining[max(0, idx - 1)])
+            } else {
+                nextActive = activeID
+            }
+            return TabBatchCloseResult(remaining: remaining, closed: [removed], nextActiveID: nextActive)
+
+        case .others(let keepingID):
+            guard let keepIdx = items.firstIndex(where: { id($0) == keepingID }) else {
+                return TabBatchCloseResult(remaining: items, closed: [], nextActiveID: activeID)
+            }
+            let kept = items[keepIdx]
+            let closed = items.enumerated().compactMap { $0.offset == keepIdx ? nil : $0.element }
+            return TabBatchCloseResult(remaining: [kept], closed: closed, nextActiveID: keepingID)
+
+        case .toRight(let anchorID):
+            guard let anchorIdx = items.firstIndex(where: { id($0) == anchorID }) else {
+                return TabBatchCloseResult(remaining: items, closed: [], nextActiveID: activeID)
+            }
+            guard anchorIdx < items.count - 1 else {
+                return TabBatchCloseResult(remaining: items, closed: [], nextActiveID: activeID)
+            }
+            let remaining = Array(items[...anchorIdx])
+            let closed = Array(items[(anchorIdx + 1)...])
+            let activeStillPresent = activeID.map { aid in remaining.contains(where: { id($0) == aid }) } ?? false
+            let nextActive = activeStillPresent ? activeID : anchorID
+            return TabBatchCloseResult(remaining: remaining, closed: closed, nextActiveID: nextActive)
+
+        case .toLeft(let anchorID):
+            guard let anchorIdx = items.firstIndex(where: { id($0) == anchorID }) else {
+                return TabBatchCloseResult(remaining: items, closed: [], nextActiveID: activeID)
+            }
+            guard anchorIdx > 0 else {
+                return TabBatchCloseResult(remaining: items, closed: [], nextActiveID: activeID)
+            }
+            let closed = Array(items[..<anchorIdx])
+            let remaining = Array(items[anchorIdx...])
+            let activeStillPresent = activeID.map { aid in remaining.contains(where: { id($0) == aid }) } ?? false
+            let nextActive = activeStillPresent ? activeID : anchorID
+            return TabBatchCloseResult(remaining: remaining, closed: closed, nextActiveID: nextActive)
+
+        case .savedOnly:
+            var remaining: [T] = []
+            var closed: [T] = []
+            let oldActiveIdx = activeID.flatMap { aid in items.firstIndex(where: { id($0) == aid }) }
+            var nearestSurvivingAtOrBeforeActive: String? = nil
+
+            for (idx, item) in items.enumerated() {
+                if isDirty(item) {
+                    remaining.append(item)
+                    if let oldActiveIdx, idx <= oldActiveIdx {
+                        nearestSurvivingAtOrBeforeActive = id(item)
+                    }
+                } else {
+                    closed.append(item)
+                }
+            }
+            let activeStillPresent = activeID.map { aid in remaining.contains(where: { id($0) == aid }) } ?? false
+            let nextActive: String?
+            if activeStillPresent {
+                nextActive = activeID
+            } else {
+                nextActive = nearestSurvivingAtOrBeforeActive ?? remaining.first.map(id)
+            }
+            return TabBatchCloseResult(remaining: remaining, closed: closed, nextActiveID: nextActive)
+
+        case .all:
+            return TabBatchCloseResult(remaining: [], closed: items, nextActiveID: nil)
+        }
+    }
+
+    /// Computes minimal parent directory hints for tabs whose filenames collide (e.g. `tests/web/login_test.ts`
+    /// and `tests/api/login_test.ts` yield `"web"` and `"api"`). Unique filenames receive `nil`.
+    public static func disambiguatingParentHints(names: [String], relativePaths: [String]) -> [String?] {
+        guard names.count == relativePaths.count else {
+            return Array(repeating: nil, count: names.count)
+        }
+        var groupedIndices: [String: [Int]] = [:]
+        for (idx, name) in names.enumerated() {
+            groupedIndices[name.lowercased(), default: []].append(idx)
+        }
+
+        var hints: [String?] = Array(repeating: nil, count: names.count)
+        for (_, indices) in groupedIndices where indices.count > 1 {
+            let parentComponents: [[String]] = indices.map { idx in
+                let raw = relativePaths[idx].replacingOccurrences(of: "\\", with: "/")
+                var comps = raw.split(separator: "/").map(String.init)
+                if !comps.isEmpty { comps.removeLast() }
+                return comps
+            }
+            let maxDepth = parentComponents.map(\.count).max() ?? 0
+            guard maxDepth > 0 else { continue }
+
+            var chosenDepth = maxDepth
+            for depth in 1...maxDepth {
+                let candidates = parentComponents.map { comps -> String in
+                    if comps.isEmpty { return "" }
+                    return comps.suffix(depth).joined(separator: "/")
+                }
+                if Set(candidates).count == candidates.count {
+                    chosenDepth = depth
+                    break
+                }
+            }
+
+            for (offset, idx) in indices.enumerated() {
+                let comps = parentComponents[offset]
+                let hint = comps.suffix(chosenDepth).joined(separator: "/")
+                hints[idx] = hint.isEmpty ? nil : hint
+            }
+        }
+        return hints
     }
 
     private static func previewSlotFrames(

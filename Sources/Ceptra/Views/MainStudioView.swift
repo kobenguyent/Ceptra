@@ -1585,6 +1585,10 @@ private struct EditorTabBar: View {
 
     var body: some View {
         let currentIndexByPath = indexByPath
+        let parentHints = TabReorderEngine.disambiguatingParentHints(
+            names: appState.openTabs.map(\.name),
+            relativePaths: appState.openTabs.map(\.relativePath)
+        )
 
         HStack(spacing: 0) {
             if hasNavigationHistory {
@@ -1634,7 +1638,8 @@ private struct EditorTabBar: View {
                         HStack(spacing: Self.tabSpacing) {
                             ForEach(appState.openTabs) { tab in
                                 let tabIndex = currentIndexByPath[tab.filePath] ?? 0
-                                tabCell(for: tab, index: tabIndex)
+                                let hint = parentHints.indices.contains(tabIndex) ? parentHints[tabIndex] : nil
+                                tabCell(for: tab, index: tabIndex, parentHint: hint)
                                     .id(tab.filePath)
                             }
                         }
@@ -1663,7 +1668,16 @@ private struct EditorTabBar: View {
                 }
             }
 
+            if !appState.openTabs.isEmpty {
+                openTabsOverflowMenu(parentHints: parentHints)
+            }
+
             Spacer(minLength: 8)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .contextMenu {
+                    tabBarEmptyAreaContextMenu()
+                }
 
             if let tab = appState.activeTab {
                 HStack(spacing: 8) {
@@ -1729,7 +1743,226 @@ private struct EditorTabBar: View {
     }
 
     @ViewBuilder
-    private func tabCell(for tab: OpenDocumentTab, index: Int) -> some View {
+    private func openTabsOverflowMenu(parentHints: [String?]) -> some View {
+        let count = appState.openTabs.count
+        Menu {
+            Section("Open Tabs (\(count))") {
+                ForEach(Array(appState.openTabs.enumerated()), id: \.element.filePath) { idx, tab in
+                    let isActive = tab.filePath == appState.activeTabPath
+                    let hint = parentHints.indices.contains(idx) ? parentHints[idx] : nil
+                    let dirtyPrefix = tab.isDirty ? "● " : ""
+                    let labelText = hint.map { "\(dirtyPrefix)\(tab.name) — \($0)" } ?? "\(dirtyPrefix)\(tab.name)"
+                    Button {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                            appState.switchTab(to: tab.filePath)
+                        }
+                    } label: {
+                        if isActive {
+                            Label(labelText, systemImage: "checkmark")
+                        } else {
+                            Text(labelText)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            if let activePath = appState.activeTabPath {
+                Button("Close Other Tabs") {
+                    withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                        appState.closeOtherTabs(keeping: activePath)
+                    }
+                }
+                .disabled(count < 2)
+            }
+
+            Button("Close Saved Tabs") {
+                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                    appState.closeSavedTabs()
+                }
+            }
+            .disabled(!appState.canCloseSavedTabs)
+
+            Button("Close All Tabs") {
+                withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                    appState.closeAllTabs()
+                }
+            }
+
+            if !appState.recentlyClosedTabPaths.isEmpty {
+                Divider()
+                Button("Reopen Closed Tab") {
+                    appState.reopenLastClosedTab()
+                }
+            }
+
+            if appState.hasDirtyTabs {
+                Divider()
+                Button("Save All Unsaved Tabs") {
+                    appState.saveAllDirtyFiles()
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if count > 1 {
+                    Text("\(count)")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(CeptraTheme.textSecondary)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(CeptraTheme.textSecondary)
+            }
+            .padding(.horizontal, count > 1 ? 8 : 7)
+            .frame(height: 38)
+            .background(CeptraTheme.sidebarBG)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .overlay(alignment: .leading) {
+            Rectangle().fill(CeptraTheme.border).frame(width: 1)
+        }
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(CeptraTheme.border).frame(width: 1)
+        }
+        .help(count > 1 ? "Open Tabs (\(count)) & Tab Actions" : "Tab Actions")
+    }
+
+    @ViewBuilder
+    private func tabContextMenu(for tab: OpenDocumentTab, index: Int) -> some View {
+        let total = appState.openTabs.count
+        let hasOthers = total > 1
+        let hasRight = index < total - 1
+        let hasLeft = index > 0
+
+        Button("Close") {
+            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                appState.closeTab(filePath: tab.filePath)
+            }
+        }
+        Button("Close Others") {
+            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                appState.closeOtherTabs(keeping: tab.filePath)
+            }
+        }
+        .disabled(!hasOthers)
+
+        Button("Close Tabs to the Right") {
+            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                appState.closeTabsToRight(of: tab.filePath)
+            }
+        }
+        .disabled(!hasRight)
+
+        Button("Close Tabs to the Left") {
+            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                appState.closeTabsToLeft(of: tab.filePath)
+            }
+        }
+        .disabled(!hasLeft)
+
+        Button("Close Saved Tabs") {
+            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                appState.closeSavedTabs()
+            }
+        }
+        .disabled(!appState.canCloseSavedTabs)
+
+        Button("Close All Tabs") {
+            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                appState.closeAllTabs()
+            }
+        }
+
+        if !appState.recentlyClosedTabPaths.isEmpty {
+            Divider()
+            Button("Reopen Closed Tab") {
+                appState.reopenLastClosedTab()
+            }
+        }
+
+        if tab.isDirty || appState.hasDirtyTabs {
+            Divider()
+            if tab.isDirty {
+                Button("Save \"\(tab.name)\"") {
+                    appState.saveTab(filePath: tab.filePath)
+                }
+            }
+            if appState.openTabs.filter(\.isDirty).count > 1 || (!tab.isDirty && appState.hasDirtyTabs) {
+                Button("Save All") {
+                    appState.saveAllDirtyFiles()
+                }
+            }
+        }
+
+        if tab.isExecutableTestFile {
+            Divider()
+            Button("Run Test File") {
+                appState.runTabFile(filePath: tab.filePath)
+            }
+            .disabled(appState.isRunning)
+
+            Button("Debug Test File") {
+                appState.debugTabFile(filePath: tab.filePath)
+            }
+            .disabled(appState.isRunning)
+        }
+
+        Divider()
+
+        Button("Copy Relative Path") {
+            appState.copyTextToPasteboard(tab.relativePath, label: "relative path")
+        }
+        Button("Copy Full Path") {
+            appState.copyTextToPasteboard(tab.filePath, label: "full path")
+        }
+
+        Divider()
+
+        Button("Reveal in Explorer") {
+            appState.revealTabInExplorer(filePath: tab.filePath)
+        }
+        Button("Reveal in Finder") {
+            appState.revealTabInFinder(filePath: tab.filePath)
+        }
+    }
+
+    @ViewBuilder
+    private func tabBarEmptyAreaContextMenu() -> some View {
+        Button("Close Saved Tabs") {
+            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                appState.closeSavedTabs()
+            }
+        }
+        .disabled(!appState.canCloseSavedTabs)
+
+        Button("Close All Tabs") {
+            withAnimation(CeptraMotion.resolve(CeptraMotion.snappy, reduceMotion: reduceMotion)) {
+                appState.closeAllTabs()
+            }
+        }
+        .disabled(appState.openTabs.isEmpty)
+
+        if !appState.recentlyClosedTabPaths.isEmpty {
+            Divider()
+            Button("Reopen Closed Tab") {
+                appState.reopenLastClosedTab()
+            }
+        }
+
+        if appState.hasDirtyTabs {
+            Divider()
+            Button("Save All") {
+                appState.saveAllDirtyFiles()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tabCell(for tab: OpenDocumentTab, index: Int, parentHint: String?) -> some View {
         let isActive = tab.filePath == appState.activeTabPath
         let isDragged = draggingTabPath == tab.filePath
         let isSettling = settlingTabPath == tab.filePath
@@ -1769,6 +2002,12 @@ private struct EditorTabBar: View {
                             : (isHovered ? CeptraTheme.textPrimary.opacity(0.9) : CeptraTheme.textSecondary.opacity(0.85))
                     )
                     .lineLimit(1)
+                if let parentHint {
+                    Text(parentHint)
+                        .font(.system(size: 10.5, weight: .regular, design: .monospaced))
+                        .foregroundStyle(CeptraTheme.textMuted.opacity(0.85))
+                        .lineLimit(1)
+                }
                 if tab.isDirty {
                     Circle()
                         .fill(CeptraTheme.accentWarm)
@@ -1779,7 +2018,7 @@ private struct EditorTabBar: View {
             .padding(.trailing, 2)
             .frame(height: 38)
             .contentShape(Rectangle())
-            .help(appState.openTabs.count > 1 ? "\(tab.relativePath) — Drag to reorder" : tab.relativePath)
+            .help(appState.openTabs.count > 1 ? "\(tab.relativePath) — Drag to reorder · Right-click for options" : "\(tab.relativePath) — Right-click for options")
             .gesture(tabDragGesture(for: tab, index: index))
 
             Button {
@@ -1804,6 +2043,10 @@ private struct EditorTabBar: View {
         .background(isActive ? CeptraTheme.canvasBG : (isHovered ? CeptraTheme.hoverBG : Color.clear))
         .overlay(alignment: .trailing) {
             Rectangle().fill(CeptraTheme.border).frame(width: 1)
+        }
+        .contentShape(Rectangle())
+        .contextMenu {
+            tabContextMenu(for: tab, index: index)
         }
         .background(
             GeometryReader { proxy in

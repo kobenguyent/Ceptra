@@ -107,6 +107,31 @@ struct CeptraApp: App {
                 .keyboardShortcut("w", modifiers: .command)
                 .disabled(appState.activeTabPath == nil)
 
+                Button("Close Other Tabs") {
+                    if let path = appState.activeTabPath {
+                        appState.closeOtherTabs(keeping: path)
+                    }
+                }
+                .keyboardShortcut("w", modifiers: [.command, .option])
+                .disabled(appState.openTabs.count < 2 || appState.activeTabPath == nil)
+
+                Button("Close Saved Tabs") {
+                    appState.closeSavedTabs()
+                }
+                .disabled(!appState.canCloseSavedTabs)
+
+                Button("Close All Tabs") {
+                    appState.closeAllTabs()
+                }
+                .disabled(appState.openTabs.isEmpty)
+
+                Button("Reopen Closed Tab") {
+                    appState.reopenLastClosedTab()
+                }
+                .disabled(appState.recentlyClosedTabPaths.isEmpty)
+
+                Divider()
+
                 Button("Previous Tab") {
                     appState.selectAdjacentTab(offset: -1)
                 }

@@ -225,4 +225,97 @@ final class TabReorderEngineTests: XCTestCase {
         )
         XCTAssertEqual(targetMinX, 127.0)
     }
+
+    func testBatchCloseActionsMaintainExpectedTabsClosedListAndActiveTab() {
+        struct MockTab: Equatable {
+            let id: String
+            let dirty: Bool
+        }
+
+        let tabs = [
+            MockTab(id: "a", dirty: false),
+            MockTab(id: "b", dirty: true),
+            MockTab(id: "c", dirty: false),
+            MockTab(id: "d", dirty: true),
+            MockTab(id: "e", dirty: false)
+        ]
+
+        // 1. Close single active tab selects previous neighbor
+        let singleActive = TabReorderEngine.applyClose(tabs, activeID: "c", action: .single(id: "c"), id: \.id, isDirty: \.dirty)
+        XCTAssertEqual(singleActive.remaining.map(\.id), ["a", "b", "d", "e"])
+        XCTAssertEqual(singleActive.closed.map(\.id), ["c"])
+        XCTAssertEqual(singleActive.nextActiveID, "b")
+
+        // 2. Close single inactive tab keeps current active tab
+        let singleInactive = TabReorderEngine.applyClose(tabs, activeID: "d", action: .single(id: "a"), id: \.id, isDirty: \.dirty)
+        XCTAssertEqual(singleInactive.remaining.map(\.id), ["b", "c", "d", "e"])
+        XCTAssertEqual(singleInactive.closed.map(\.id), ["a"])
+        XCTAssertEqual(singleInactive.nextActiveID, "d")
+
+        // 3. Close Others keeps only anchor and activates it
+        let others = TabReorderEngine.applyClose(tabs, activeID: "a", action: .others(keepingID: "c"), id: \.id, isDirty: \.dirty)
+        XCTAssertEqual(others.remaining.map(\.id), ["c"])
+        XCTAssertEqual(others.closed.map(\.id), ["a", "b", "d", "e"])
+        XCTAssertEqual(others.nextActiveID, "c")
+
+        // 4. Close Tabs to the Right preserves active if left of anchor, or focuses anchor if active was closed
+        let rightKeepActive = TabReorderEngine.applyClose(tabs, activeID: "b", action: .toRight(ofID: "c"), id: \.id, isDirty: \.dirty)
+        XCTAssertEqual(rightKeepActive.remaining.map(\.id), ["a", "b", "c"])
+        XCTAssertEqual(rightKeepActive.closed.map(\.id), ["d", "e"])
+        XCTAssertEqual(rightKeepActive.nextActiveID, "b")
+
+        let rightClosedActive = TabReorderEngine.applyClose(tabs, activeID: "e", action: .toRight(ofID: "c"), id: \.id, isDirty: \.dirty)
+        XCTAssertEqual(rightClosedActive.remaining.map(\.id), ["a", "b", "c"])
+        XCTAssertEqual(rightClosedActive.nextActiveID, "c")
+
+        // No-op when anchor is already rightmost
+        let rightNoOp = TabReorderEngine.applyClose(tabs, activeID: "b", action: .toRight(ofID: "e"), id: \.id, isDirty: \.dirty)
+        XCTAssertEqual(rightNoOp.remaining.map(\.id), ["a", "b", "c", "d", "e"])
+        XCTAssertTrue(rightNoOp.closed.isEmpty)
+        XCTAssertEqual(rightNoOp.nextActiveID, "b")
+
+        // 5. Close Tabs to the Left preserves active if right of anchor, or focuses anchor if active was closed
+        let leftKeepActive = TabReorderEngine.applyClose(tabs, activeID: "d", action: .toLeft(ofID: "c"), id: \.id, isDirty: \.dirty)
+        XCTAssertEqual(leftKeepActive.remaining.map(\.id), ["c", "d", "e"])
+        XCTAssertEqual(leftKeepActive.closed.map(\.id), ["a", "b"])
+        XCTAssertEqual(leftKeepActive.nextActiveID, "d")
+
+        let leftClosedActive = TabReorderEngine.applyClose(tabs, activeID: "a", action: .toLeft(ofID: "c"), id: \.id, isDirty: \.dirty)
+        XCTAssertEqual(leftClosedActive.remaining.map(\.id), ["c", "d", "e"])
+        XCTAssertEqual(leftClosedActive.nextActiveID, "c")
+
+        // No-op when anchor is already leftmost
+        let leftNoOp = TabReorderEngine.applyClose(tabs, activeID: "d", action: .toLeft(ofID: "a"), id: \.id, isDirty: \.dirty)
+        XCTAssertTrue(leftNoOp.closed.isEmpty)
+
+        // 6. Close Saved Only keeps dirty tabs and selects nearest surviving tab when active was clean
+        let savedOnly = TabReorderEngine.applyClose(tabs, activeID: "c", action: .savedOnly, id: \.id, isDirty: \.dirty)
+        XCTAssertEqual(savedOnly.remaining.map(\.id), ["b", "d"])
+        XCTAssertEqual(savedOnly.closed.map(\.id), ["a", "c", "e"])
+        XCTAssertEqual(savedOnly.nextActiveID, "b")
+
+        let savedOnlyKeepDirtyActive = TabReorderEngine.applyClose(tabs, activeID: "d", action: .savedOnly, id: \.id, isDirty: \.dirty)
+        XCTAssertEqual(savedOnlyKeepDirtyActive.nextActiveID, "d")
+
+        // 7. Close All clears everything
+        let allClosed = TabReorderEngine.applyClose(tabs, activeID: "b", action: .all, id: \.id, isDirty: \.dirty)
+        XCTAssertTrue(allClosed.remaining.isEmpty)
+        XCTAssertEqual(allClosed.closed.map(\.id), ["a", "b", "c", "d", "e"])
+        XCTAssertNil(allClosed.nextActiveID)
+    }
+
+    func testDisambiguatingParentHintsResolvesDuplicateFilenamesMinimalDepth() {
+        let hints = TabReorderEngine.disambiguatingParentHints(
+            names: ["login_test.ts", "login_test.ts", "home_page.ts", "config.ts", "config.ts"],
+            relativePaths: [
+                "tests/web/login_test.ts",
+                "tests/api/login_test.ts",
+                "pages/home_page.ts",
+                "packages/web/src/config.ts",
+                "packages/mobile/src/config.ts"
+            ]
+        )
+
+        XCTAssertEqual(hints, ["web", "api", nil, "web/src", "mobile/src"])
+    }
 }

@@ -313,7 +313,67 @@ struct CommandPaletteView: View {
                 iconColor: CeptraTheme.accent,
                 badge: "Reports",
                 action: { appState.showingReportsSheet = true }
-            ),
+            )
+        ])
+
+        if let activePath = appState.activeTabPath, appState.openTabs.count > 1 {
+            list.append(PaletteItem(
+                id: "act-close-other-tabs",
+                title: "Close Other Tabs",
+                subtitle: "Keep only \(appState.activeTab?.name ?? "current tab") open",
+                icon: "xmark.square",
+                iconColor: CeptraTheme.textSecondary,
+                badge: "⌘⌥W",
+                action: { appState.closeOtherTabs(keeping: activePath) }
+            ))
+            if let activeIdx = appState.openTabs.firstIndex(where: { $0.filePath == activePath }),
+               activeIdx < appState.openTabs.count - 1 {
+                list.append(PaletteItem(
+                    id: "act-close-right-tabs",
+                    title: "Close Tabs to the Right",
+                    subtitle: "Close \(appState.openTabs.count - 1 - activeIdx) tab(s) after \(appState.activeTab?.name ?? "current tab")",
+                    icon: "arrow.right.to.line",
+                    iconColor: CeptraTheme.textSecondary,
+                    badge: "Tabs",
+                    action: { appState.closeTabsToRight(of: activePath) }
+                ))
+            }
+        }
+        if appState.canCloseSavedTabs {
+            list.append(PaletteItem(
+                id: "act-close-saved-tabs",
+                title: "Close Saved Tabs",
+                subtitle: "Close all unmodified tabs and keep unsaved edits open",
+                icon: "checkmark.rectangle.stack",
+                iconColor: CeptraTheme.textSecondary,
+                badge: "Tabs",
+                action: { appState.closeSavedTabs() }
+            ))
+        }
+        if !appState.openTabs.isEmpty {
+            list.append(PaletteItem(
+                id: "act-close-all-tabs",
+                title: "Close All Tabs",
+                subtitle: "Close all \(appState.openTabs.count) open editor tab(s)",
+                icon: "rectangle.stack.badge.minus",
+                iconColor: CeptraTheme.textSecondary,
+                badge: "Tabs",
+                action: { appState.closeAllTabs() }
+            ))
+        }
+        if !appState.recentlyClosedTabPaths.isEmpty {
+            list.append(PaletteItem(
+                id: "act-reopen-closed-tab",
+                title: "Reopen Closed Tab",
+                subtitle: URL(fileURLWithPath: appState.recentlyClosedTabPaths.last ?? "").lastPathComponent,
+                icon: "arrow.uturn.backward.square",
+                iconColor: CeptraTheme.accent,
+                badge: "Tabs",
+                action: { appState.reopenLastClosedTab() }
+            ))
+        }
+
+        list.append(contentsOf: [
             PaletteItem(
                 id: "act-zoom-in",
                 title: "Zoom In",
