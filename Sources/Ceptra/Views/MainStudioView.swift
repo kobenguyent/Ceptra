@@ -1820,10 +1820,13 @@ private struct EditorTabBar: View {
                     }
                 }
             }
-
-            if !appState.openTabs.isEmpty {
-                openTabsOverflowMenu(parentHints: parentHints)
-            }
+            .background(
+                Color.clear
+                    .contentShape(Rectangle())
+                    .contextMenu {
+                        tabBarEmptyAreaContextMenu()
+                    }
+            )
 
             Spacer(minLength: 8)
                 .frame(maxHeight: .infinity)
@@ -1852,6 +1855,10 @@ private struct EditorTabBar: View {
                         .foregroundStyle(CeptraTheme.textMuted)
                         .lineLimit(1)
                         .truncationMode(.head)
+
+                    if appState.openTabs.count > 1 {
+                        openTabsOverflowMenu(parentHints: parentHints)
+                    }
 
                     Button {
                         if NSEvent.modifierFlags.contains(.option) {
@@ -1957,31 +1964,23 @@ private struct EditorTabBar: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                if count > 1 {
-                    Text("\(count)")
-                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(CeptraTheme.textSecondary)
-                }
+            HStack(spacing: 3.5) {
+                Text("\(count)")
+                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(CeptraTheme.textSecondary)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.system(size: 8.5, weight: .semibold))
                     .foregroundStyle(CeptraTheme.textSecondary)
             }
-            .padding(.horizontal, count > 1 ? 8 : 7)
-            .frame(height: 38)
-            .background(CeptraTheme.sidebarBG)
+            .padding(.horizontal, 6.5)
+            .frame(height: 22)
+            .background(CeptraTheme.hoverBG.opacity(0.75), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .overlay(alignment: .leading) {
-            Rectangle().fill(CeptraTheme.border).frame(width: 1)
-        }
-        .overlay(alignment: .trailing) {
-            Rectangle().fill(CeptraTheme.border).frame(width: 1)
-        }
-        .help(count > 1 ? "Open Tabs (\(count)) & Tab Actions" : "Tab Actions")
+        .help("Open Tabs (\(count)) & Tab Actions")
     }
 
     @ViewBuilder
