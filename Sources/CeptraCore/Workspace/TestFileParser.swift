@@ -6,6 +6,12 @@ public enum TestFileParser {
         if ext == "feature" {
             return parseGherkin(content: content, filePath: filePath)
         }
+        if ext == "py" {
+            if looksLikePlaywrightPythonTestFile(content: content, filePath: filePath) {
+                return parsePlaywrightPython(content: content, filePath: filePath)
+            }
+            return []
+        }
         let codeceptFeatures = parseJavaScriptOrTypeScript(content: content, filePath: filePath)
         if !codeceptFeatures.isEmpty {
             return codeceptFeatures
@@ -767,6 +773,348 @@ public enum TestFileParser {
             }
         }
         return tags
+    }
+
+    // MARK: - Playwright Python (pytest-playwright) Parser
+
+    private static let pyClassRegex = try! NSRegularExpression(
+        pattern: #"^(\s*)class\s+(Test[A-Za-z0-9_]*)\b"#
+    )
+    private static let pyTestDefRegex = try! NSRegularExpression(
+        pattern: #"^(\s*)(?:async\s+)?def\s+(test_[A-Za-z0-9_]*)\s*\(([^)]*)\)"#
+    )
+    private static let pyAnyDefRegex = try! NSRegularExpression(
+        pattern: #"^(\s*)(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("#
+    )
+    private static let pyMarkerRegex = try! NSRegularExpression(
+        pattern: #"^\s*@pytest\.mark\.([A-Za-z_][A-Za-z0-9_]*)"#
+    )
+    private static let pyFixtureDecoratorRegex = try! NSRegularExpression(
+        pattern: #"^\s*@pytest\.fixture\b"#
+    )
+    private static let pyExpectRegex = try! NSRegularExpression(
+        pattern: #"^(?:await\s+)?expect\s*\((.+)\)\s*\.([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)"#
+    )
+    private static let pyActorCallRegex = try! NSRegularExpression(
+        pattern: #"^(?:await\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\.([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)"#
+    )
+
+    private static func looksLikePlaywrightPythonTestFile(content: String, filePath: String) -> Bool {
+        let lowerName = URL(fileURLWithPath: filePath).lastPathComponent.lowercased()
+        if lowerName == "conftest.py" { return false }
+        let hasTestDef = content.range(of: #"(?m)^\s*(?:async\s+)?def\s+test_[A-Za-z0-9_]*\s*\("#, options: .regularExpression) != nil
+        guard hasTestDef else { return false }
+
+        if content.contains("playwright.sync_api")
+            || content.contains("playwright.async_api")
+            || content.contains("import playwright")
+            || content.contains("from playwright") {
+            return true
+        }
+        let isPyTestFileName = lowerName.hasPrefix("test_") || lowerName.hasSuffix("_test.py")
+        if isPyTestFileName {
+            return content.range(
+                of: #"(?m)^\s*(?:async\s+)?def\s+test_[A-Za-z0-9_]*\s*\([^)]*\b(?:page|context|browser|playwright|api_request_context)\b"#,
+                options: .regularExpression
+            ) != nil || content.contains("import pytest")
+        }
+        return false
+    }
+
+    private static func parsePlaywrightPython(content: String, filePath: String) -> [ParsedFeature] {
+        let lines = content.components(separatedBy: .newlines)
+        let moduleTitle = URL(fileURLWithPath: filePath).deletingPathExtension().lastPathComponent
+
+        struct PySuite {
+            let title: String
+            let lineNumber: Int
+            var tags: [String]
+            var hooks: [ParsedHook]
+            var scenarios: [ParsedScenario]
+            let classIndent: Int?
+        }
+
+        enum ActivePyBlock {
+            case testFunc(suiteIdx: Int, title: String, line: Int, indent: Int, tags: [String], modifier: ScenarioModifier, steps: [ParsedStep])
+            case fixture(suiteIdx: Int, name: String, line: Int, indent: Int, steps: [ParsedStep])
+        }
+
+        var suites: [PySuite] = []
+        var rootSuiteIdx: Int? = nil
+        var activeClassIdx: Int? = nil
+        var activeBlock: ActivePyBlock? = nil
+
+        var pendingDecoratorsTags: [String] = []
+        var pendingModifier: ScenarioModifier = .standard
+        var pendingIsFixture = false
+
+        func ensureRootSuite() -> Int {
+            if let idx = rootSuiteIdx { return idx }
+            let idx = suites.count
+            suites.append(PySuite(
+                title: moduleTitle.isEmpty ? "Playwright Python" : moduleTitle,
+                lineNumber: 1,
+                tags: [],
+                hooks: [],
+                scenarios: [],
+                classIndent: nil
+            ))
+            rootSuiteIdx = idx
+            return idx
+        }
+
+        func flushActiveBlock(at endLine: Int) {
+            guard let block = activeBlock else { return }
+            switch block {
+            case .testFunc(let sIdx, let title, let line, _, let tags, let modifier, let steps):
+                suites[sIdx].scenarios.append(ParsedScenario(
+                    title: title,
+                    filePath: filePath,
+                    featureTitle: suites[sIdx].title,
+                    lineNumber: line,
+                    endLineNumber: max(line, endLine),
+                    tags: Array(Set(tags)).sorted(),
+                    modifier: modifier,
+                    steps: steps
+                ))
+            case .fixture(let sIdx, let name, let line, _, let steps):
+                suites[sIdx].hooks.append(ParsedHook(kind: "fixture(\(name))", lineNumber: line, steps: steps))
+            }
+            activeBlock = nil
+        }
+
+        func indentWidth(_ line: String) -> Int {
+            var count = 0
+            for c in line {
+                if c == " " { count += 1 }
+                else if c == "\t" { count += 4 }
+                else { break }
+            }
+            return count
+        }
+
+        for (zeroIdx, rawLine) in lines.enumerated() {
+            let lineNumber = zeroIdx + 1
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+
+            let indent = indentWidth(rawLine)
+            let nsLine = rawLine as NSString
+            let fullRange = NSRange(location: 0, length: nsLine.length)
+
+            // Close active test/fixture block when indentation returns to or left of its `def`
+            if let block = activeBlock {
+                let blockIndent: Int
+                switch block {
+                case .testFunc(_, _, _, let ind, _, _, _): blockIndent = ind
+                case .fixture(_, _, _, let ind, _): blockIndent = ind
+                }
+                if indent <= blockIndent {
+                    flushActiveBlock(at: lineNumber - 1)
+                } else {
+                    if let step = parsePlaywrightPythonStepLine(trimmed, lineNumber: lineNumber) {
+                        switch block {
+                        case .testFunc(let sIdx, let title, let line, let ind, let tags, let modifier, var steps):
+                            steps.append(step)
+                            activeBlock = .testFunc(suiteIdx: sIdx, title: title, line: line, indent: ind, tags: tags, modifier: modifier, steps: steps)
+                        case .fixture(let sIdx, let name, let line, let ind, var steps):
+                            steps.append(step)
+                            activeBlock = .fixture(suiteIdx: sIdx, name: name, line: line, indent: ind, steps: steps)
+                        }
+                    }
+                    continue
+                }
+            }
+
+            // Exit active `class Test*` when indentation returns to or left of class definition
+            if let cIdx = activeClassIdx,
+               let classIndent = suites[cIdx].classIndent,
+               indent <= classIndent,
+               !trimmed.hasPrefix("@") {
+                activeClassIdx = nil
+            }
+
+            // Capture decorators (`@pytest.mark.*`, `@pytest.fixture`)
+            if trimmed.hasPrefix("@") {
+                if pyFixtureDecoratorRegex.firstMatch(in: rawLine, range: fullRange) != nil {
+                    pendingIsFixture = true
+                } else if let m = pyMarkerRegex.firstMatch(in: rawLine, range: fullRange) {
+                    let mark = nsLine.substring(with: m.range(at: 1))
+                    switch mark {
+                    case "skip", "skipif":
+                        pendingModifier = .skip
+                    case "xfail":
+                        pendingModifier = .todo
+                    case "only":
+                        pendingModifier = .only
+                    case "parametrize":
+                        pendingModifier = .dataDriven
+                    default:
+                        pendingDecoratorsTags.append("@\(mark)")
+                    }
+                }
+                continue
+            }
+
+            // Match `class Test*:`
+            if let m = pyClassRegex.firstMatch(in: rawLine, range: fullRange) {
+                let clsName = nsLine.substring(with: m.range(at: 2))
+                let idx = suites.count
+                suites.append(PySuite(
+                    title: clsName,
+                    lineNumber: lineNumber,
+                    tags: Array(Set(pendingDecoratorsTags)).sorted(),
+                    hooks: [],
+                    scenarios: [],
+                    classIndent: indent
+                ))
+                activeClassIdx = idx
+                pendingDecoratorsTags = []
+                pendingModifier = .standard
+                pendingIsFixture = false
+                continue
+            }
+
+            // Match `def test_*(...)` or `async def test_*(...)`
+            if let m = pyTestDefRegex.firstMatch(in: rawLine, range: fullRange) {
+                let funcName = nsLine.substring(with: m.range(at: 2))
+                let suiteIdx: Int
+                if let cIdx = activeClassIdx,
+                   let classIndent = suites[cIdx].classIndent,
+                   indent > classIndent {
+                    suiteIdx = cIdx
+                } else {
+                    activeClassIdx = nil
+                    suiteIdx = ensureRootSuite()
+                }
+                let combinedTags = Array(Set(pendingDecoratorsTags + suites[suiteIdx].tags)).sorted()
+                activeBlock = .testFunc(
+                    suiteIdx: suiteIdx,
+                    title: funcName,
+                    line: lineNumber,
+                    indent: indent,
+                    tags: combinedTags,
+                    modifier: pendingModifier,
+                    steps: []
+                )
+                pendingDecoratorsTags = []
+                pendingModifier = .standard
+                pendingIsFixture = false
+                continue
+            }
+
+            // Match `@pytest.fixture` function
+            if pendingIsFixture, let m = pyAnyDefRegex.firstMatch(in: rawLine, range: fullRange) {
+                let fixtureName = nsLine.substring(with: m.range(at: 2))
+                let suiteIdx = activeClassIdx ?? ensureRootSuite()
+                activeBlock = .fixture(suiteIdx: suiteIdx, name: fixtureName, line: lineNumber, indent: indent, steps: [])
+                pendingDecoratorsTags = []
+                pendingModifier = .standard
+                pendingIsFixture = false
+                continue
+            }
+
+            // Clear dangling decorators on unrelated statements
+            pendingDecoratorsTags = []
+            pendingModifier = .standard
+            pendingIsFixture = false
+        }
+
+        flushActiveBlock(at: lines.count)
+        return suites
+            .filter { !$0.scenarios.isEmpty }
+            .map { bucket in
+                ParsedFeature(
+                    title: bucket.title,
+                    filePath: filePath,
+                    lineNumber: bucket.lineNumber,
+                    tags: bucket.tags,
+                    hooks: bucket.hooks,
+                    scenarios: bucket.scenarios
+                )
+            }
+    }
+
+    private static func parsePlaywrightPythonStepLine(_ trimmedLine: String, lineNumber: Int) -> ParsedStep? {
+        // Strip inline `# comment` naively outside simple code
+        let codeLine = trimmedLine
+        if codeLine.hasPrefix("assert ") {
+            let expr = String(codeLine.dropFirst(7)).trimmingCharacters(in: .whitespaces)
+            return ParsedStep(
+                actor: "assert",
+                action: "assert",
+                argumentsSummary: summarizeArguments(expr),
+                rawText: trimmedLine,
+                lineNumber: lineNumber,
+                category: .assertion
+            )
+        }
+
+        // Strip leading `var = ` assignment when RHS is a Playwright call
+        let workingLine: String
+        if let eqRange = codeLine.range(of: "="),
+           !codeLine.hasPrefix("expect("),
+           !codeLine.contains("=="),
+           !codeLine.contains("!="),
+           !codeLine.contains("<="),
+           !codeLine.contains(">=") {
+            let lhs = String(codeLine[..<eqRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+            if !lhs.isEmpty && !lhs.contains("(") && !lhs.contains(".") {
+                workingLine = String(codeLine[eqRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+            } else {
+                workingLine = codeLine
+            }
+        } else {
+            workingLine = codeLine
+        }
+
+        let ns = workingLine as NSString
+        let range = NSRange(location: 0, length: ns.length)
+
+        // 1. expect(page).to_have_title(...) / expect(locator).to_be_visible() / expect(response).to_be_ok()
+        if let expMatch = pyExpectRegex.firstMatch(in: workingLine, range: range) {
+            let target = ns.substring(with: expMatch.range(at: 1)).trimmingCharacters(in: .whitespaces)
+            let matcher = ns.substring(with: expMatch.range(at: 2))
+            let args = ns.substring(with: expMatch.range(at: 3)).trimmingCharacters(in: .whitespaces)
+            let summary = args.isEmpty ? summarizeArguments(target) : summarizeArguments("\(target) → \(args)")
+            return ParsedStep(
+                actor: "expect",
+                action: matcher,
+                argumentsSummary: summary,
+                rawText: trimmedLine,
+                lineNumber: lineNumber,
+                category: .assertion
+            )
+        }
+
+        // 2. page.*, request.*, api_request_context.*, context.*, browser.*, locator.*, or *_page.*
+        guard let match = pyActorCallRegex.firstMatch(in: workingLine, range: range) else {
+            return nil
+        }
+        let actor = ns.substring(with: match.range(at: 1))
+        let action = ns.substring(with: match.range(at: 2))
+        let args = ns.substring(with: match.range(at: 3))
+
+        let ignoredActors: Set<String> = ["os", "sys", "re", "json", "time", "math", "Path", "pytest", "logging"]
+        if ignoredActors.contains(actor) { return nil }
+
+        let isPlaywrightActor = ["page", "request", "api_request_context", "context", "browser", "frame", "locator", "response", "playwright"].contains(actor)
+            || actor.hasSuffix("_page")
+            || actor.hasSuffix("_client")
+            || actor.hasSuffix("_api")
+            || actor.hasSuffix("_locator")
+            || action.hasPrefix("get_by_")
+            || ["goto", "click", "fill", "press", "check", "uncheck", "hover", "locator", "screenshot", "wait_for", "wait_for_url", "wait_for_response"].contains(action)
+
+        guard isPlaywrightActor else { return nil }
+        return ParsedStep(
+            actor: actor,
+            action: action,
+            argumentsSummary: summarizeArguments(args),
+            rawText: trimmedLine,
+            lineNumber: lineNumber,
+            category: ParsedStep.classify(actor: actor, action: action)
+        )
     }
 
     // MARK: - Gherkin (.feature) Parser

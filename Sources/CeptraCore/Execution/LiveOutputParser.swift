@@ -34,6 +34,16 @@ public final class LiveOutputParser {
     private static let pwSummaryLineRegex = try! NSRegularExpression(
         pattern: #"^\s*(\d+)\s+(passed|failed|skipped|flaky|interrupted|did not run)(?:\s+\(([^)]+)\))?\s*$"#
     )
+    // pytest -v result lines:
+    //   "tests/test_example.py::test_has_title[chromium] PASSED [ 50%]"
+    //   "tests/test_api.py::TestAPI::test_todo[chromium] FAILED [100%]"
+    //   "tests/test_skip.py::test_legacy SKIPPED (reason) [ 33%]"
+    private static let pytestResultRegex = try! NSRegularExpression(
+        pattern: #"^([^\s:]+\.py)::(.+?)\s+(PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS)\b"#
+    )
+    private static let pytestSummaryRegex = try! NSRegularExpression(
+        pattern: #"^=+\s+(.+?)\s+in\s+([0-9.]+s(?:\s*\([^)]+\))?)\s*=+$"#
+    )
 
     private var currentSuiteTitle: String = "Default"
     private var currentSuiteFile: String? = nil
@@ -170,6 +180,49 @@ public final class LiveOutputParser {
                 skipped: pwSkippedCount,
                 durationLabel: pwDurationLabel
             ))
+            return events
+        }
+
+        // 1c. pytest -v (Playwright Python) result & summary lines
+        if let pyMatch = match(Self.pytestResultRegex, in: trimmed),
+           let relFile = capture(pyMatch, at: 1, in: trimmed),
+           let testExpr = capture(pyMatch, at: 2, in: trimmed),
+           let rawOutcome = capture(pyMatch, at: 3, in: trimmed) {
+            let status: ExecutionStatus
+            switch rawOutcome {
+            case "PASSED", "XPASS": status = .passed
+            case "SKIPPED", "XFAIL": status = .skipped
+            default: status = .failed
+            }
+
+            let parsed = parsePytestNodeID(file: relFile, testExpr: testExpr)
+            let record = ExecutedScenarioRecord(
+                featureTitle: parsed.featureTitle,
+                scenarioTitle: parsed.scenarioTitle,
+                filePath: relFile,
+                status: status,
+                durationMs: 0,
+                tags: [],
+                steps: []
+            )
+            scenarios.append(record)
+            if status == .failed {
+                lastFailedIndex = scenarios.count - 1
+            }
+            events.append(.scenarioFinished(record))
+            return events
+        }
+        if let pySum = match(Self.pytestSummaryRegex, in: trimmed),
+           let body = capture(pySum, at: 1, in: trimmed),
+           let dur = capture(pySum, at: 2, in: trimmed),
+           (body.contains("passed") || body.contains("failed") || body.contains("skipped") || body.contains("error")) {
+            let passed = extractCount(named: "passed", in: body) + extractCount(named: "xpassed", in: body)
+            let failed = extractCount(named: "failed", in: body) + extractCount(named: "error", in: body) + extractCount(named: "errors", in: body)
+            let skipped = extractCount(named: "skipped", in: body) + extractCount(named: "xfailed", in: body)
+            summaryPassed = passed
+            summaryFailed = failed
+            summarySkipped = skipped
+            events.append(.summary(passed: passed, failed: failed, skipped: skipped, durationLabel: dur))
             return events
         }
 
@@ -443,5 +496,34 @@ public final class LiveOutputParser {
         }
 
         return (featureTitle, scenarioTitle, filePath)
+    }
+
+    /// Parses a pytest node ID tail like `TestDocs::test_has_title[chromium]` or `test_todo[chromium]`
+    /// matching `PlaywrightPythonTimeTravelLoader` 1:1 so trace merging produces zero duplicates.
+    private func parsePytestNodeID(file: String, testExpr: String) -> (featureTitle: String, scenarioTitle: String) {
+        let segments = testExpr.components(separatedBy: "::").filter { !$0.isEmpty }
+        let rawTest = segments.last ?? testExpr
+
+        var browserName: String? = nil
+        var scenarioTitle = rawTest
+        for browser in ["chromium", "firefox", "webkit"] {
+            let suffix = "[\(browser)]"
+            if rawTest.hasSuffix(suffix) {
+                browserName = browser
+                scenarioTitle = String(rawTest.dropLast(suffix.count))
+                break
+            }
+        }
+
+        let suiteStem: String
+        if segments.count >= 2 {
+            suiteStem = segments.dropLast().joined(separator: " › ")
+        } else {
+            let stem = URL(fileURLWithPath: file).deletingPathExtension().lastPathComponent
+            suiteStem = stem.isEmpty ? "pytest" : stem
+        }
+
+        let featureTitle = browserName.map { "[\($0)] \(suiteStem)" } ?? suiteStem
+        return (featureTitle, scenarioTitle)
     }
 }

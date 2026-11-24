@@ -91,47 +91,49 @@ public struct ParsedStep: Identifiable, Codable, Equatable, Hashable, Sendable {
             return .gherkin
         }
         let lower = action.lowercased()
+        let compact = lower.replacingOccurrences(of: "_", with: "")
         if lower == "step" && (lowerActor == "test" || lowerActor == "flow") {
             return .control
         }
         if lowerActor == "expect" || lowerActor == "assert"
-            || lower.hasPrefix("see") || lower.hasPrefix("dontsee")
-            || lower.hasPrefix("expect") || lower.hasPrefix("assert")
-            || lower.hasPrefix("tobe") || lower.hasPrefix("tohave")
-            || lower.hasPrefix("tocontain") || lower.hasPrefix("toequal")
-            || lower.hasPrefix("tomatch") || lower.hasPrefix("tothrow")
-            || lower.hasPrefix("topass") || lower.contains("responsecode")
-            || lower.contains("responsecontains") || lower.contains("responsevalid") {
+            || compact.hasPrefix("see") || compact.hasPrefix("dontsee")
+            || compact.hasPrefix("expect") || compact.hasPrefix("assert")
+            || compact.hasPrefix("tobe") || compact.hasPrefix("tohave")
+            || compact.hasPrefix("tocontain") || compact.hasPrefix("toequal")
+            || compact.hasPrefix("tomatch") || compact.hasPrefix("tothrow")
+            || compact.hasPrefix("topass") || compact.contains("responsecode")
+            || compact.contains("responsecontains") || compact.contains("responsevalid") {
             return .assertion
         }
-        if lowerActor == "request"
-            || lower.hasPrefix("send") || lower.contains("request")
-            || lower.contains("graphql") || lower.contains("bearer")
-            || lower.contains("header") || lower.contains("mutation")
-            || lower.contains("query") || lower == "route"
-            || lower == "unroute" || lower == "fetch"
-            || lower == "waitforresponse" || lower == "waitforrequest" {
+        if lowerActor == "request" || lowerActor.contains("api_request") || lowerActor.contains("apirequest")
+            || compact.hasPrefix("send") || compact.contains("request")
+            || compact.contains("graphql") || compact.contains("bearer")
+            || compact.contains("header") || compact.contains("mutation")
+            || compact.contains("query") || compact == "route"
+            || compact == "unroute" || compact == "fetch"
+            || compact == "waitforresponse" || compact == "waitforrequest"
+            || (["get", "post", "put", "patch", "delete", "head"].contains(compact) && lowerActor != "dict") {
             return .network
         }
-        if lower.hasPrefix("amon") || lower == "goto" || lower == "reload"
-            || lower == "goback" || lower == "goforward" || lower == "setviewportsize"
-            || lower.contains("url") || lower.contains("refresh") || lower.contains("back")
-            || lower.contains("tab") || lower.contains("switch") {
+        if compact.hasPrefix("amon") || compact == "goto" || compact == "reload"
+            || compact == "goback" || compact == "goforward" || compact == "setviewportsize"
+            || compact.contains("url") || compact.contains("refresh") || compact.contains("back")
+            || compact.contains("tab") || compact.contains("switch") {
             return .navigation
         }
-        if lower.hasPrefix("wait") || lower.hasPrefix("retry") {
+        if compact.hasPrefix("wait") || compact.hasPrefix("retry") {
             return .wait
         }
-        if lower.contains("click") || lower.contains("fill") || lower.contains("type")
-            || lower.contains("press") || lower.contains("check") || lower.contains("select")
-            || lower.contains("attach") || lower.contains("drag") || lower.contains("scroll")
-            || lower.contains("hover") || lower.contains("clear") || lower.contains("focus")
-            || lower.hasPrefix("getby") || lower == "locator" || lower == "tap"
-            || lower == "dblclick" || lower == "uncheck" || lower == "setinputfiles"
-            || lower == "screenshot" {
+        if compact.contains("click") || compact.contains("fill") || compact.contains("type")
+            || compact.contains("press") || compact.contains("check") || compact.contains("select")
+            || compact.contains("attach") || compact.contains("drag") || compact.contains("scroll")
+            || compact.contains("hover") || compact.contains("clear") || compact.contains("focus")
+            || compact.hasPrefix("getby") || compact == "locator" || compact == "tap"
+            || compact == "dblclick" || compact == "uncheck" || compact == "setinputfiles"
+            || compact == "screenshot" {
             return .interaction
         }
-        if ["retryto", "tryto", "within", "session", "eachelement", "pause"].contains(lower) {
+        if ["retryto", "tryto", "within", "session", "eachelement", "pause"].contains(compact) {
             return .control
         }
         return .custom
@@ -270,11 +272,13 @@ public struct WorkspaceFile: Identifiable, Codable, Equatable, Hashable, Sendabl
         switch fileExtension.lowercased() {
         case "ts", "mts", "cts", "tsx": return "typescript"
         case "js", "mjs", "cjs", "jsx": return "javascript"
+        case "py", "pyi": return "python"
         case "feature": return "gherkin"
         case "json", "jsonc": return "json"
         case "xml", "plist", "svg", "html", "htm": return "xml"
         case "md", "markdown": return "markdown"
         case "yml", "yaml": return "yaml"
+        case "toml", "ini", "cfg": return "yaml"
         case "sh", "bash", "zsh": return "shell"
         default: return "plaintext"
         }

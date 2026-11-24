@@ -344,7 +344,30 @@ final class AppState: ObservableObject {
     }
 
     var isPlaywrightWorkspace: Bool {
-        activeFramework == .playwright
+        activeFramework.isPlaywrightFamily
+    }
+
+    var isPlaywrightPythonWorkspace: Bool {
+        activeFramework == .playwrightPython
+    }
+
+    var effectivePackageManager: PackageManagerKind {
+        guard let ws = workspace else { return .npm }
+        if !activeFramework.isPython && settings.jsRuntime == .bun {
+            return .bun
+        }
+        return ws.packageManager
+    }
+
+    var terminalSuggestions: TerminalEnvironmentSuggestions {
+        let root = workspace?.rootURL ?? FileManager.default.homeDirectoryForCurrentUser
+        return PackageManagerSupport.terminalSuggestions(
+            workspaceRoot: root,
+            framework: activeFramework,
+            packageManager: workspace?.packageManager ?? .npm,
+            jsRuntime: settings.jsRuntime,
+            toolchain: resolvedToolchain
+        )
     }
 
     var resolvedToolchain: ResolvedToolchain? {
@@ -360,7 +383,8 @@ final class AppState: ObservableObject {
             customNodePath: settings.customNodePath,
             customBunPath: settings.customBunPath,
             customCodeceptPath: settings.customCodeceptPath,
-            customPlaywrightPath: settings.customPlaywrightPath
+            customPlaywrightPath: settings.customPlaywrightPath,
+            customPythonPath: settings.customPythonPath
         )
     }
 
@@ -462,7 +486,7 @@ final class AppState: ObservableObject {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Open Test Workspace"
-        panel.message = "Select a CodeceptJS or Playwright Test project folder containing codecept.conf.*, playwright.config.*, or test files."
+        panel.message = "Select a CodeceptJS, Playwright Test, or Playwright Python (pytest) project folder."
         if panel.runModal() == .OK, let url = panel.url {
             openWorkspace(at: url)
         }
@@ -498,6 +522,23 @@ final class AppState: ObservableObject {
                 showBanner("Created starter Playwright Test workspace at \(url.lastPathComponent)")
             } catch {
                 showBanner("Could not scaffold Playwright workspace: \(error.localizedDescription)", isError: true)
+            }
+        }
+    }
+
+    func createSamplePlaywrightPythonWorkspacePanel() {
+        let panel = NSSavePanel()
+        panel.title = "Create Sample Playwright Python Workspace"
+        panel.prompt = "Create Workspace"
+        panel.nameFieldStringValue = "my-playwright-python-tests"
+        panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try ProjectScaffolder.createSamplePlaywrightPythonWorkspace(at: url)
+                openWorkspace(at: url)
+                showBanner("Created starter Playwright Python workspace at \(url.lastPathComponent)")
+            } catch {
+                showBanner("Could not scaffold Playwright Python workspace: \(error.localizedDescription)", isError: true)
             }
         }
     }
@@ -584,7 +625,7 @@ final class AppState: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.directoryURL = root
         panel.prompt = "Use Test Config"
-        panel.message = "Select any CodeceptJS or Playwright Test configuration file (.ts, .js, .cjs, .mjs, .json)."
+        panel.message = "Select any CodeceptJS, Playwright Test, or Playwright Python configuration file (.ts, .js, .cjs, .mjs, .json, .ini, .toml, .cfg, .py)."
         panel.allowedContentTypes = [
             .javaScript,
             .json,
@@ -592,7 +633,11 @@ final class AppState: ObservableObject {
             UTType(filenameExtension: "cjs") ?? .sourceCode,
             UTType(filenameExtension: "mjs") ?? .sourceCode,
             UTType(filenameExtension: "mts") ?? .sourceCode,
-            UTType(filenameExtension: "cts") ?? .sourceCode
+            UTType(filenameExtension: "cts") ?? .sourceCode,
+            UTType(filenameExtension: "ini") ?? .plainText,
+            UTType(filenameExtension: "toml") ?? .plainText,
+            UTType(filenameExtension: "cfg") ?? .plainText,
+            UTType(filenameExtension: "py") ?? .sourceCode
         ]
         if panel.runModal() == .OK, let url = panel.url {
             setCustomConfigFile(path: url.path)
@@ -820,7 +865,7 @@ final class AppState: ObservableObject {
         let ext = stdURL.pathExtension.lowercased()
         let content = (try? String(contentsOf: stdURL, encoding: .utf8)) ?? ""
         let parsedFeatures: [ParsedFeature]
-        if ["js", "ts", "mjs", "cjs", "mts", "cts", "jsx", "tsx", "feature"].contains(ext) {
+        if ["js", "ts", "mjs", "cjs", "mts", "cts", "jsx", "tsx", "py", "feature"].contains(ext) {
             parsedFeatures = TestFileParser.parse(content: content, filePath: stdURL.path)
         } else {
             parsedFeatures = []
@@ -850,7 +895,7 @@ final class AppState: ObservableObject {
         let cat = openTabs[idx].category
         if cat == .testSuite || cat == .gherkinFeature || cat == .other {
             let ext = URL(fileURLWithPath: filePath).pathExtension.lowercased()
-            if ["js", "ts", "mjs", "cjs", "mts", "cts", "jsx", "tsx", "feature"].contains(ext) {
+            if ["js", "ts", "mjs", "cjs", "mts", "cts", "jsx", "tsx", "py", "feature"].contains(ext) {
                 liveParsedFeaturesByPath[filePath] = TestFileParser.parse(content: newText, filePath: filePath)
             }
         }
@@ -1084,7 +1129,7 @@ final class AppState: ObservableObject {
             showBanner("Could not resolve \(runFramework.displayName) toolchain.", isError: true)
             return
         }
-        if isDebugSession && toolchain.runtime == .bun {
+        if isDebugSession && !runFramework.isPython && toolchain.runtime == .bun {
             showBanner("Interactive CDP step-through debugging requires Node.js. Switch runtime to Node in the toolbar or Settings.", isError: true)
             return
         }
@@ -1158,7 +1203,7 @@ final class AppState: ObservableObject {
             return
         }
 
-        if toolchain.runtime == .bun && !toolchain.isActiveRuntimeAvailable {
+        if !runFramework.isPython && toolchain.runtime == .bun && !toolchain.isActiveRuntimeAvailable {
             let msg = "Bun executable was not found in PATH. Install Bun (https://bun.sh), set Custom Bun Path in Settings, or switch runtime to Node.js."
             isConsoleVisible = true
             consoleLogs.append(ConsoleLogEntry(
@@ -1404,7 +1449,7 @@ final class AppState: ObservableObject {
 
     func runActiveFile() {
         guard isActiveTabExecutableTestFile, let tab = activeTab else {
-            showBanner("Select a test file containing Feature()/Scenario() or Playwright test() to run.", isError: true)
+            showBanner("Select a test file containing Feature()/Scenario(), Playwright test(), or pytest def test_* to run.", isError: true)
             return
         }
         let targetRel = activeWorkspaceFile?.relativePath ?? tab.relativePath
@@ -1432,10 +1477,12 @@ final class AppState: ObservableObject {
             commandInputText = ""
         }
 
+        let activePM = effectivePackageManager
+
         if settings.consoleExecutionMode == .systemTerminal {
             let command = PackageManagerSupport.buildCommand(
                 action: action,
-                packageManager: workspace.packageManager,
+                packageManager: activePM,
                 workspaceRoot: workspace.rootURL,
                 toolchain: toolchain,
                 extraEnv: runOptions.environmentVariables,
@@ -1473,7 +1520,7 @@ final class AppState: ObservableObject {
 
         let command = PackageManagerSupport.buildCommand(
             action: action,
-            packageManager: workspace.packageManager,
+            packageManager: activePM,
             workspaceRoot: workspace.rootURL,
             toolchain: toolchain,
             extraEnv: runOptions.environmentVariables
@@ -1708,6 +1755,12 @@ final class AppState: ObservableObject {
                 return "Playwright · \(firstProject)"
             }
             return "Playwright Test"
+        }
+        if config.framework == .playwrightPython {
+            if let firstBrowser = config.playwrightProjects.first {
+                return "Playwright (Py) · \(firstBrowser)"
+            }
+            return "Playwright (Python)"
         }
         guard !config.helpers.isEmpty else {
             return "CodeceptJS"

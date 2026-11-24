@@ -121,13 +121,16 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                 TextField("Custom Playwright Binary or cli.js (optional)", text: $appState.settings.customPlaywrightPath)
                     .textFieldStyle(.roundedBorder)
+                TextField("Custom Python / Pytest Path (optional, e.g. .venv/bin/python)", text: $appState.settings.customPythonPath)
+                    .textFieldStyle(.roundedBorder)
 
                 if let tc = appState.resolvedToolchain {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Node: \(tc.nodePath ?? "Not found")  •  Bun: \(tc.bunPath ?? "Not found")")
+                        Text("Node: \(tc.nodePath ?? "Not found")  •  Bun: \(tc.bunPath ?? "Not found")  •  Python: \(tc.pythonPath ?? "Not found")")
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(tc.isActiveRuntimeAvailable ? Color.secondary : Color.orange)
-                        Text("Resolved (\(tc.framework.shortName) · \(tc.runtime.displayName)): \(tc.runnerExecutable) (\(tc.resolutionSource))")
+                        let runtimeTag = tc.framework == .playwrightPython ? "Python" : tc.runtime.displayName
+                        Text("Resolved (\(tc.framework.shortName) · \(runtimeTag)): \(tc.runnerExecutable) (\(tc.resolutionSource))")
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)

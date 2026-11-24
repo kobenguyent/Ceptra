@@ -2906,6 +2906,14 @@ final class CeptraCodeTextView: NSTextView {
         } else if editorLanguage == "plaintext" {
             apply(#"^\s*#.*$"#, color: commentColor, options: [.anchorsMatchLines])
             apply(#"^[A-Z0-9_]+(?==)"#, color: dslColor, options: [.anchorsMatchLines])
+        } else if editorLanguage == "python" {
+            apply(#"\b(?:import|from|as|def|async|await|class|return|yield|if|elif|else|for|in|while|with|try|except|finally|raise|pass|break|continue|assert|and|or|not|is|lambda|del|global|nonlocal|None|True|False|self|cls)\b"#, color: keywordColor)
+            apply(#"\b(?:pytest|expect|sync_playwright|async_playwright|Page|Locator|FrameLocator|Browser|BrowserContext|Playwright|APIRequestContext|APIResponse|Route|re)\b"#, color: dslColor, useBold: true)
+            apply(#"\b(?:page|context|browser|playwright|api_request_context|request|route|locator|frame|self)\.[A-Za-z_][A-Za-z0-9_]*"#, color: actorColor)
+            apply(#"^\s*@[A-Za-z0-9_.]+"#, color: tagColor, useBold: true, options: [.anchorsMatchLines])
+            apply(#"\b\d+(?:_\d+)*(?:\.\d+)?\b"#, color: numberColor)
+            apply(#"(?:[fFrRbBuU]{0,2})(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')"#, color: stringColor)
+            apply(#"#[^\n]*"#, color: commentColor)
         } else {
             apply(#"\b(?:import|export|from|const|let|var|async|await|return|if|else|for|while|try|catch|finally|throw|new|class|extends|default|function|type|interface|true|false|null|undefined)\b"#, color: keywordColor)
             apply(#"\b(?:Feature|Scenario|xScenario|BeforeSuite|AfterSuite|Before|After|Data|DataTable|within|session|tryTo|retryTo|locate|secret|inject|pause|eachElement|test|expect|defineConfig|devices)\b"#, color: dslColor, useBold: true)

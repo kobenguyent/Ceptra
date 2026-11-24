@@ -274,10 +274,14 @@ struct CommandPaletteView: View {
             ),
             PaletteItem(
                 id: "act-ai-generate",
-                title: appState.isPlaywrightWorkspace ? "Generate Playwright Test with AI" : "Generate CodeceptJS Scenario with AI",
-                subtitle: appState.isPlaywrightWorkspace
-                    ? "Create @playwright/test spec matching active file & page objects"
-                    : "Create scenario matching active file & I.* custom steps",
+                title: appState.isPlaywrightPythonWorkspace
+                    ? "Generate Playwright Python Test with AI"
+                    : (appState.isPlaywrightWorkspace ? "Generate Playwright Test with AI" : "Generate CodeceptJS Scenario with AI"),
+                subtitle: appState.isPlaywrightPythonWorkspace
+                    ? "Create pytest-playwright test matching active file & page objects"
+                    : (appState.isPlaywrightWorkspace
+                        ? "Create @playwright/test spec matching active file & page objects"
+                        : "Create scenario matching active file & I.* custom steps"),
                 icon: "sparkles.rectangle.stack",
                 iconColor: CeptraTheme.violet,
                 badge: "AI",
@@ -348,6 +352,33 @@ struct CommandPaletteView: View {
                     appState.settings.appearance = appState.settings.appearance == .dark ? .light : .dark
                     appState.saveSettings()
                 }
+            ),
+            PaletteItem(
+                id: "act-sample-pw-ts",
+                title: "Create Sample Playwright Test Workspace…",
+                subtitle: "Scaffold a starter TypeScript @playwright/test project",
+                icon: "theatermasks",
+                iconColor: CeptraTheme.success,
+                badge: "New",
+                action: { appState.createSamplePlaywrightWorkspacePanel() }
+            ),
+            PaletteItem(
+                id: "act-sample-pw-py",
+                title: "Create Sample Playwright Python Workspace…",
+                subtitle: "Scaffold a starter pytest-playwright Python project",
+                icon: "chevron.left.forwardslash.chevron.right",
+                iconColor: CeptraTheme.cyan,
+                badge: "New",
+                action: { appState.createSamplePlaywrightPythonWorkspacePanel() }
+            ),
+            PaletteItem(
+                id: "act-sample-codecept",
+                title: "Create Sample CodeceptJS 4.x Workspace…",
+                subtitle: "Scaffold a starter CodeceptJS 4.x project",
+                icon: "sparkles",
+                iconColor: CeptraTheme.accent,
+                badge: "New",
+                action: { appState.createSampleWorkspacePanel() }
             )
         ])
 

@@ -423,11 +423,20 @@ private struct ProjectArchitectureView: View {
     let workspace: CodeceptWorkspace
 
     var body: some View {
-        let isPW = workspace.config.framework == .playwright
+        let fw = workspace.config.framework
+        let isPW = fw.isPlaywrightFamily
+        let isPWPy = fw == .playwrightPython
+        let archHeading: String = {
+            switch fw {
+            case .codeceptJS: return "CODECEPTJS 4.X ARCHITECTURE"
+            case .playwright: return "PLAYWRIGHT TEST ARCHITECTURE"
+            case .playwrightPython: return "PLAYWRIGHT PYTHON ARCHITECTURE"
+            }
+        }()
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(isPW ? "PLAYWRIGHT TEST ARCHITECTURE" : "CODECEPTJS 4.X ARCHITECTURE")
+                    Text(archHeading)
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundStyle(CeptraTheme.accent)
                     Text(workspace.config.projectName)
@@ -446,10 +455,12 @@ private struct ProjectArchitectureView: View {
                 }
                 Spacer()
                 HStack(spacing: 6) {
+                    if fw == .playwrightPython { CeptraBadge(text: "Python", color: CeptraTheme.accent) }
                     if workspace.config.isTypeScript { CeptraBadge(text: "TypeScript", color: CeptraTheme.accent) }
                     if workspace.config.isESM { CeptraBadge(text: "ESM", color: CeptraTheme.success) }
                     if let v = workspace.config.packageCodeceptVersion {
-                        CeptraBadge(text: isPW ? "@playwright/test \(v)" : "codeceptjs \(v)", color: CeptraTheme.accentWarm)
+                        let pkgPrefix = fw == .playwrightPython ? "playwright" : (fw == .playwright ? "@playwright/test" : "codeceptjs")
+                        CeptraBadge(text: "\(pkgPrefix) \(v)", color: CeptraTheme.accentWarm)
                     }
                 }
             }
@@ -517,12 +528,12 @@ private struct ProjectArchitectureView: View {
 
             // Plugins / Reporters
             architectureCard(
-                title: isPW ? "REPORTERS (\(workspace.config.plugins.count))" : "PLUGINS (\(workspace.config.plugins.count))",
+                title: isPWPy ? "PYTEST PLUGINS (\(workspace.config.plugins.count))" : (isPW ? "REPORTERS (\(workspace.config.plugins.count))" : "PLUGINS (\(workspace.config.plugins.count))"),
                 icon: "puzzlepiece.extension",
                 color: CeptraTheme.violet
             ) {
                 if workspace.config.plugins.isEmpty {
-                    Text(isPW ? "Using Playwright Test default list reporter." : "Using CodeceptJS 4.x default plugins (screenshot on fail).")
+                    Text(isPWPy ? "Using pytest-playwright with Ceptra's zero-config Time-Travel plugin." : (isPW ? "Using Playwright Test default list reporter." : "Using CodeceptJS 4.x default plugins (screenshot on fail)."))
                         .font(.system(size: 12))
                         .foregroundStyle(CeptraTheme.textMuted)
                 } else {
@@ -538,23 +549,23 @@ private struct ProjectArchitectureView: View {
                 }
             }
 
-            // Multiple Suites / Playwright Projects
+            // Multiple Suites / Playwright Projects / Browsers
             if !workspace.config.multipleSuites.isEmpty {
                 architectureCard(
-                    title: isPW ? "PROJECTS (\(workspace.config.multipleSuites.count))" : "MULTIPLE SUITES (\(workspace.config.multipleSuites.count))",
+                    title: isPWPy ? "BROWSERS (\(workspace.config.multipleSuites.count))" : (isPW ? "PROJECTS (\(workspace.config.multipleSuites.count))" : "MULTIPLE SUITES (\(workspace.config.multipleSuites.count))"),
                     icon: "square.stack.3d.up",
                     color: CeptraTheme.success
                 ) {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text(isPW ? "Configured for `playwright test --project=<name>`" : "Configured for `codeceptjs run-multiple`")
+                            Text(isPWPy ? "Configured for `pytest --browser <name>`" : (isPW ? "Configured for `playwright test --project=<name>`" : "Configured for `codeceptjs run-multiple`"))
                                 .font(.system(size: 11))
                                 .foregroundStyle(CeptraTheme.textMuted)
                             Spacer()
                             Button {
                                 appState.run(mode: .runMultiple(suites: [], runAll: true))
                             } label: {
-                                Label(isPW ? "Run All Projects" : "Run All (--all)", systemImage: "play.fill")
+                                Label(isPWPy ? "Run All Browsers" : (isPW ? "Run All Projects" : "Run All (--all)"), systemImage: "play.fill")
                                     .font(.system(size: 10.5, weight: .semibold))
                                     .foregroundStyle(.white)
                                     .padding(.horizontal, 9)

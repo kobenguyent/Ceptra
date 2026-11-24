@@ -3,13 +3,23 @@ import Foundation
 public enum TestFrameworkKind: String, Codable, CaseIterable, Identifiable, Equatable, Hashable, Sendable {
     case codeceptJS
     case playwright
+    case playwrightPython
 
     public var id: String { rawValue }
+
+    public var isPlaywrightFamily: Bool {
+        self == .playwright || self == .playwrightPython
+    }
+
+    public var isPython: Bool {
+        self == .playwrightPython
+    }
 
     public var displayName: String {
         switch self {
         case .codeceptJS: return "CodeceptJS 4.x"
         case .playwright: return "Playwright Test"
+        case .playwrightPython: return "Playwright Python"
         }
     }
 
@@ -17,6 +27,7 @@ public enum TestFrameworkKind: String, Codable, CaseIterable, Identifiable, Equa
         switch self {
         case .codeceptJS: return "CodeceptJS"
         case .playwright: return "Playwright"
+        case .playwrightPython: return "Playwright (Py)"
         }
     }
 
@@ -24,6 +35,7 @@ public enum TestFrameworkKind: String, Codable, CaseIterable, Identifiable, Equa
         switch self {
         case .codeceptJS: return "CodeceptUI"
         case .playwright: return "Playwright UI"
+        case .playwrightPython: return "Trace Viewer"
         }
     }
 
@@ -31,6 +43,7 @@ public enum TestFrameworkKind: String, Codable, CaseIterable, Identifiable, Equa
         switch self {
         case .codeceptJS: return "@codeceptjs/ui"
         case .playwright: return "@playwright/test"
+        case .playwrightPython: return "pytest-playwright"
         }
     }
 }
@@ -204,7 +217,7 @@ public struct CodeceptConfigSummary: Codable, Equatable, Hashable, Sendable {
         let baseURL = resolvedTestRootURL(workspaceRoot: rootURL)
         let trimmed = outputDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            let fallbackDir = framework == .playwright ? "test-results" : "output"
+            let fallbackDir = framework.isPlaywrightFamily ? "test-results" : "output"
             return baseURL.appendingPathComponent(fallbackDir, isDirectory: true)
         }
         if trimmed.hasPrefix("/") {

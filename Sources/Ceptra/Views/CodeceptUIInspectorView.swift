@@ -7,11 +7,15 @@ struct CodeceptUIInspectorView: View {
     @EnvironmentObject var appState: AppState
 
     private var isPlaywright: Bool {
-        appState.isPlaywrightWorkspace
+        appState.activeFramework == .playwright
+    }
+
+    private var isPlaywrightPython: Bool {
+        appState.isPlaywrightPythonWorkspace
     }
 
     private var toolName: String {
-        isPlaywright ? "Playwright UI" : "@codeceptjs/ui"
+        appState.activeFramework.uiToolDisplayName
     }
 
     private var packageName: String {
@@ -128,7 +132,49 @@ struct CodeceptUIInspectorView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             case .stopped:
-                if appState.isCodeceptUIInstalled {
+                if isPlaywrightPython {
+                    VStack(spacing: 12) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 26, weight: .light))
+                            .foregroundStyle(CeptraTheme.accent)
+                        Text("Playwright Python Uses Native Replay")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(CeptraTheme.textPrimary)
+                        Text("pytest-playwright does not include a `--ui` web server. Ceptra automatically captures Playwright `trace.zip` frames, DOM snapshots, console logs, and API exchanges directly into the Replay Inspector.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(CeptraTheme.textSecondary)
+                            .multilineTextAlignment(.center)
+                        HStack(spacing: 8) {
+                            Button {
+                                appState.openRightTab(.replay)
+                            } label: {
+                                Label("Open Replay", systemImage: "clock.arrow.circlepath")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(CeptraTheme.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(CeptraTactilePressStyle())
+
+                            Button {
+                                appState.launchPlaywrightCodegen()
+                            } label: {
+                                Label("Codegen (Py)", systemImage: "record.circle")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(CeptraTheme.textPrimary)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(CeptraTheme.panelBG, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(CeptraTheme.border, lineWidth: 1))
+                            }
+                            .buttonStyle(CeptraTactilePressStyle())
+                            .disabled(appState.isRunning)
+                        }
+                    }
+                    .padding(20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if appState.isCodeceptUIInstalled {
                     VStack(spacing: 10) {
                         Image(systemName: "macwindow")
                             .font(.system(size: 26, weight: .light))

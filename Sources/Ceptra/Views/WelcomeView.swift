@@ -41,7 +41,7 @@ struct WelcomeView: View {
                     .font(.system(size: 30, weight: .bold, design: .rounded))
                     .foregroundStyle(CeptraTheme.textPrimary)
 
-                Text("Minimalist Native macOS IDE for CodeceptJS 4.x & Playwright Test")
+                Text("Minimalist Native macOS IDE for CodeceptJS 4.x & Playwright (TS/JS & Python)")
                     .font(.system(size: 13.5))
                     .foregroundStyle(CeptraTheme.textSecondary)
 
@@ -94,6 +94,11 @@ struct WelcomeView: View {
                         appState.createSamplePlaywrightWorkspacePanel()
                     } label: {
                         Label("Playwright Test Project (TypeScript)…", systemImage: "theatermasks")
+                    }
+                    Button {
+                        appState.createSamplePlaywrightPythonWorkspacePanel()
+                    } label: {
+                        Label("Playwright Python Project (pytest)…", systemImage: "chevron.left.forwardslash.chevron.right")
                     }
                     Button {
                         appState.createSampleWorkspacePanel()

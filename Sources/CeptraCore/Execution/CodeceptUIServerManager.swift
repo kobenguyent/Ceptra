@@ -65,6 +65,10 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
     /// Returns `true` if `@codeceptjs/ui` (CodeceptJS) or `@playwright/test` (Playwright) is declared
     /// in `package.json` or its binary exists in `node_modules/.bin`.
     public static func isInstalled(in workspaceRoot: URL, framework: TestFrameworkKind = .codeceptJS) -> Bool {
+        // pytest-playwright does not bundle an HTTP `--ui` server; Ceptra uses its native Replay Inspector & `playwright show-trace`.
+        if framework == .playwrightPython {
+            return false
+        }
         let fm = FileManager.default
         var dir = workspaceRoot.standardizedFileURL
 
@@ -156,6 +160,21 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
         env["PORT"] = String(port)
         env["FORCE_COLOR"] = "0"
         env.removeValue(forKey: "NO_COLOR")
+
+        if framework == .playwrightPython {
+            let cli = NodeToolchainResolver.resolvePlaywrightPythonCLI(toolchain: toolchain)
+            let displayPrefix = cli.prefixArguments.isEmpty
+                ? [URL(fileURLWithPath: cli.executable).lastPathComponent]
+                : [URL(fileURLWithPath: cli.executable).lastPathComponent] + cli.prefixArguments
+            let tailArgs = ["show-trace"]
+            return BuiltCommand(
+                executablePath: cli.executable,
+                arguments: cli.prefixArguments + tailArgs,
+                workingDirectory: workspaceRoot,
+                environment: env,
+                displayCommand: (displayPrefix + tailArgs).joined(separator: " ")
+            )
+        }
 
         if framework == .playwright {
             var tailArgs: [String] = ["test", "--ui-host=127.0.0.1", "--ui-port=\(port)"]
@@ -255,6 +274,22 @@ public final class CodeceptUIServerManager: @unchecked Sendable {
         env["PATH"] = toolchain.searchPath
         env["FORCE_COLOR"] = "0"
         env.removeValue(forKey: "NO_COLOR")
+
+        if framework == .playwrightPython {
+            let pythonExec = toolchain.pythonPath
+                ?? NodeToolchainResolver.findExecutable(named: "python3", in: toolchain.searchPath)
+                ?? "/usr/bin/env"
+            let pipArgs = pythonExec == "/usr/bin/env"
+                ? ["python3", "-m", "pip", "install", "pytest-playwright"]
+                : ["-m", "pip", "install", "pytest-playwright"]
+            return BuiltCommand(
+                executablePath: pythonExec,
+                arguments: pipArgs,
+                workingDirectory: workspaceRoot,
+                environment: env,
+                displayCommand: "python3 -m pip install pytest-playwright"
+            )
+        }
 
         let pkg = framework.uiPackageName
         let pmExecName = packageManager.executableName

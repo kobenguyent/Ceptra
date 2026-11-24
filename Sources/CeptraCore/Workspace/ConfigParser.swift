@@ -23,16 +23,25 @@ public enum ConfigParser {
         "playwright.config.cts"
     ]
 
-    public static let allStandardConfigFileNames: [String] = configFileNames + playwrightConfigFileNames
+    public static let playwrightPythonConfigFileNames: [String] = [
+        "pytest.ini",
+        "pyproject.toml",
+        "setup.cfg",
+        "conftest.py"
+    ]
+
+    public static let allStandardConfigFileNames: [String] =
+        configFileNames + playwrightConfigFileNames + playwrightPythonConfigFileNames
 
     public static let supportedConfigExtensions: Set<String> = [
-        "js", "ts", "cjs", "mjs", "mts", "cts", "json"
+        "js", "ts", "cjs", "mjs", "mts", "cts", "json", "ini", "toml", "cfg", "py"
     ]
 
     private static let ignoredScanDirectories: Set<String> = [
         "node_modules", ".git", ".idea", ".vscode", "dist", "build",
         "output", "_output", "test-results", "playwright-report", ".playwright",
-        "coverage", ".build", ".next", "allure-report", "allure-results"
+        "coverage", ".build", ".next", "allure-report", "allure-results",
+        ".venv", "venv", ".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache", ".tox", ".eggs"
     ]
 
     private static let excludedToolConfigPrefixes: [String] = [
@@ -114,6 +123,15 @@ public enum ConfigParser {
                 register(candidate, priority: 20 + idx)
             }
         }
+        // Standard Playwright Python configs at root (only when workspace signals Playwright Python)
+        for (idx, name) in playwrightPythonConfigFileNames.enumerated() {
+            let candidate = standardizedRoot.appendingPathComponent(name)
+            if fm.fileExists(atPath: candidate.path),
+               isPlaywrightPythonConfigCandidate(url: candidate, directory: standardizedRoot) {
+                register(candidate, priority: 25 + idx)
+                break
+            }
+        }
 
         // 2. Explicit `-c` / `--config` targets referenced in package.json scripts
         for scriptConfigURL in extractConfigPathsFromPackageScripts(rootURL: standardizedRoot) {
@@ -168,6 +186,22 @@ public enum ConfigParser {
 
                 if playwrightConfigFileNames.contains(fileName) {
                     register(fileURL, priority: 34 + depth * 5)
+                    continue
+                }
+
+                if playwrightPythonConfigFileNames.contains(fileName) {
+                    let parentDir = fileURL.deletingLastPathComponent()
+                    if isPlaywrightPythonConfigCandidate(url: fileURL, directory: parentDir) {
+                        // Prefer pytest.ini / pyproject.toml over conftest.py inside the same dir
+                        let subOffset = playwrightPythonConfigFileNames.firstIndex(of: fileName) ?? 0
+                        let hasHigherInSameDir = playwrightPythonConfigFileNames.prefix(subOffset).contains { higherName in
+                            let hURL = parentDir.appendingPathComponent(higherName)
+                            return fm.fileExists(atPath: hURL.path) && isPlaywrightPythonConfigCandidate(url: hURL, directory: parentDir)
+                        }
+                        if !hasHigherInSameDir {
+                            register(fileURL, priority: 36 + depth * 5 + subOffset)
+                        }
+                    }
                     continue
                 }
 
@@ -283,6 +317,25 @@ public enum ConfigParser {
                     isTypeScript: isTS
                 )
             }
+            if directoryHasPlaywrightPythonSignals(standardizedRoot) {
+                let pyVersion = detectPythonPlaywrightVersion(in: standardizedRoot)
+                return CodeceptConfigSummary(
+                    framework: .playwrightPython,
+                    configFilePath: nil,
+                    isCustomConfigOverride: false,
+                    projectName: fallbackName,
+                    testsPattern: "{./**/test_*.py,./**/*_test.py}",
+                    hasExplicitTestsPattern: false,
+                    outputDirectory: "./test-results",
+                    htmlReportDirectory: nil,
+                    helpers: [CodeceptHelperInfo(name: "Playwright (Python)", isBuiltIn: true, summary: "pytest-playwright")],
+                    multipleSuites: ["chromium", "firefox", "webkit"].map { CodeceptMultipleSuiteInfo(name: $0, browsers: [$0]) },
+                    playwrightProjects: ["chromium", "firefox", "webkit"],
+                    packageCodeceptVersion: pyVersion,
+                    isESM: false,
+                    isTypeScript: false
+                )
+            }
             return CodeceptConfigSummary(
                 configFilePath: nil,
                 isCustomConfigOverride: false,
@@ -301,6 +354,16 @@ public enum ConfigParser {
                 isCustomOverride: isCustomOverride,
                 fallbackName: fallbackName,
                 packageInfo: packageInfo
+            )
+        }
+
+        if isPlaywrightPythonConfig(url: configURL, content: rawContent, ext: ext) {
+            return parsePlaywrightPythonConfig(
+                rawContent: rawContent,
+                configURL: configURL,
+                standardizedRoot: standardizedRoot,
+                isCustomOverride: isCustomOverride,
+                fallbackName: fallbackName
             )
         }
 
@@ -474,6 +537,211 @@ public enum ConfigParser {
             multipleSuites: multipleSuites,
             packageCodeceptVersion: packageInfo.codeceptVersion,
             isESM: packageInfo.isESM,
+            isTypeScript: false
+        )
+    }
+
+    // MARK: - Playwright Python (pytest-playwright) Config Discovery & Parsing
+
+    private static func isPlaywrightPythonConfig(url: URL, content: String, ext: String) -> Bool {
+        let lowerName = url.lastPathComponent.lowercased()
+        if ["ini", "toml", "cfg"].contains(ext) {
+            if lowerName == "pytest.ini" || lowerName == "pyproject.toml" || lowerName == "setup.cfg" {
+                return true
+            }
+            return content.contains("[pytest]") || content.contains("[tool.pytest") || content.contains("pytest-playwright")
+        }
+        if ext == "py" && (lowerName == "conftest.py" || content.contains("playwright")) {
+            return true
+        }
+        return false
+    }
+
+    private static func isPlaywrightPythonConfigCandidate(url: URL, directory: URL) -> Bool {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        let lowerName = url.lastPathComponent.lowercased()
+        let lowerContent = content.lowercased()
+
+        // Explicit Playwright signals inside the config file itself
+        if lowerContent.contains("pytest-playwright")
+            || lowerContent.contains("playwright.sync_api")
+            || lowerContent.contains("playwright.async_api")
+            || lowerContent.contains("--browser")
+            || lowerContent.contains("--tracing")
+            || lowerContent.contains("--headed") {
+            return true
+        }
+
+        // Standard pytest config file in a directory whose deps/tests use Playwright Python
+        if lowerName == "pytest.ini"
+            || (lowerName == "pyproject.toml" && (lowerContent.contains("[tool.pytest") || lowerContent.contains("playwright")))
+            || (lowerName == "setup.cfg" && lowerContent.contains("[tool:pytest]"))
+            || lowerName == "conftest.py" {
+            return directoryHasPlaywrightPythonSignals(directory)
+        }
+        return false
+    }
+
+    private static func directoryHasPlaywrightPythonSignals(_ dir: URL) -> Bool {
+        let fm = FileManager.default
+        let depFiles = ["pyproject.toml", "requirements.txt", "requirements-dev.txt", "requirements-test.txt", "Pipfile", "setup.cfg", "pytest.ini", "conftest.py"]
+        for name in depFiles {
+            let f = dir.appendingPathComponent(name)
+            if let text = try? String(contentsOf: f, encoding: .utf8) {
+                let lower = text.lowercased()
+                if lower.contains("playwright") {
+                    return true
+                }
+            }
+        }
+        // Quick shallow check of root and tests/ for Python Playwright imports
+        let dirsToCheck = [dir, dir.appendingPathComponent("tests"), dir.appendingPathComponent("e2e")]
+        for candidateDir in dirsToCheck {
+            guard let items = try? fm.contentsOfDirectory(at: candidateDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+                continue
+            }
+            for item in items.prefix(20) where item.pathExtension.lowercased() == "py" {
+                if let text = try? String(contentsOf: item, encoding: .utf8),
+                   text.contains("playwright") {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private static func detectPythonPlaywrightVersion(in directory: URL) -> String? {
+        let candidates = ["pyproject.toml", "requirements.txt", "requirements-dev.txt", "requirements-test.txt"]
+        let versionRegex = try? NSRegularExpression(
+            pattern: #"(?:pytest-playwright|playwright)\s*(?:==|>=|~=|<=|>|<|\^)?\s*([0-9]+(?:\.[0-9]+){1,2})"#,
+            options: [.caseInsensitive]
+        )
+        for name in candidates {
+            let url = directory.appendingPathComponent(name)
+            guard let content = try? String(contentsOf: url, encoding: .utf8),
+                  let regex = versionRegex else { continue }
+            let ns = content as NSString
+            if let m = regex.firstMatch(in: content, range: NSRange(location: 0, length: ns.length)) {
+                return ns.substring(with: m.range(at: 1))
+            }
+        }
+        return nil
+    }
+
+    private static func parsePlaywrightPythonConfig(
+        rawContent: String,
+        configURL: URL,
+        standardizedRoot: URL,
+        isCustomOverride: Bool,
+        fallbackName: String
+    ) -> CodeceptConfigSummary {
+        let configDir = configURL.deletingLastPathComponent().standardizedFileURL
+        let ext = configURL.pathExtension.lowercased()
+
+        // Extract pyproject [project] name if present
+        var parsedName: String? = nil
+        if ext == "toml",
+           let nameRegex = try? NSRegularExpression(pattern: #"(?m)^\s*name\s*=\s*["']([^"'\n]+)["']"#),
+           let m = nameRegex.firstMatch(in: rawContent, range: NSRange(location: 0, length: (rawContent as NSString).length)) {
+            parsedName = (rawContent as NSString).substring(with: m.range(at: 1))
+        }
+
+        // Extract addopts string (works for pytest.ini, setup.cfg, and pyproject.toml)
+        var addopts = ""
+        if let m = rawContent.range(of: #"(?m)^\s*addopts\s*=\s*(.+)$"#, options: .regularExpression) {
+            addopts = String(rawContent[m])
+                .replacingOccurrences(of: #"^\s*addopts\s*=\s*"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'[] "))
+        }
+
+        // Extract testpaths (`testpaths = tests` or `testpaths = ["tests", "e2e"]`)
+        var testPaths: [String] = []
+        if let m = rawContent.range(of: #"(?m)^\s*testpaths\s*=\s*(.+)$"#, options: .regularExpression) {
+            let rhs = String(rawContent[m])
+                .replacingOccurrences(of: #"^\s*testpaths\s*=\s*"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if rhs.hasPrefix("[") {
+                if let strRegex = try? NSRegularExpression(pattern: #"["']([^"']+)["']"#) {
+                    let ns = rhs as NSString
+                    testPaths = strRegex.matches(in: rhs, range: NSRange(location: 0, length: ns.length)).map {
+                        ns.substring(with: $0.range(at: 1))
+                    }
+                }
+            } else {
+                testPaths = rhs.split(whereSeparator: { $0.isWhitespace || $0 == "," }).map(String.init)
+            }
+        }
+
+        // Extract --browser values, --base-url, and --output from addopts
+        var browsers: [String] = []
+        if let bRegex = try? NSRegularExpression(pattern: #"--browser(?:=|\s+)(chromium|firefox|webkit)\b"#) {
+            let ns = addopts as NSString
+            for m in bRegex.matches(in: addopts, range: NSRange(location: 0, length: ns.length)) {
+                let b = ns.substring(with: m.range(at: 1))
+                if !browsers.contains(b) { browsers.append(b) }
+            }
+        }
+        let effectiveBrowsers = browsers.isEmpty ? ["chromium", "firefox", "webkit"] : browsers
+
+        var baseURL: String? = nil
+        if let uRegex = try? NSRegularExpression(pattern: #"--base-url(?:=|\s+)["']?([^\s"']+)["']?"#),
+           let m = uRegex.firstMatch(in: addopts, range: NSRange(location: 0, length: (addopts as NSString).length)) {
+            baseURL = (addopts as NSString).substring(with: m.range(at: 1))
+        }
+
+        var outputDir = "./test-results"
+        if let oRegex = try? NSRegularExpression(pattern: #"--output(?:=|\s+)["']?([^\s"']+)["']?"#),
+           let m = oRegex.firstMatch(in: addopts, range: NSRange(location: 0, length: (addopts as NSString).length)) {
+            outputDir = (addopts as NSString).substring(with: m.range(at: 1))
+        }
+
+        let testsPattern: String
+        if !testPaths.isEmpty {
+            let expanded = testPaths.flatMap { raw -> [String] in
+                var clean = raw.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+                if clean.isEmpty { clean = "." }
+                let pref = clean.hasPrefix(".") ? clean : "./\(clean)"
+                return ["\(pref)/**/test_*.py", "\(pref)/**/*_test.py"]
+            }
+            testsPattern = "{\(expanded.joined(separator: ","))}"
+        } else {
+            testsPattern = "{./**/test_*.py,./**/*_test.py}"
+        }
+
+        let pyVersion = detectPythonPlaywrightVersion(in: configDir) ?? detectPythonPlaywrightVersion(in: standardizedRoot)
+        let isNestedConfig = configDir.path != standardizedRoot.path
+        let baseTitle = parsedName ?? fallbackName
+        let projectName = isNestedConfig ? "\(baseTitle) (\(configDir.lastPathComponent))" : baseTitle
+
+        var summaryParts = [effectiveBrowsers.joined(separator: ", ")]
+        if let baseURL { summaryParts.append(baseURL) }
+
+        let helpers = [
+            CodeceptHelperInfo(
+                name: "Playwright (Python)",
+                isBuiltIn: true,
+                summary: summaryParts.joined(separator: " · ")
+            )
+        ]
+        let multipleSuites = effectiveBrowsers.map { CodeceptMultipleSuiteInfo(name: $0, browsers: [$0]) }
+
+        return CodeceptConfigSummary(
+            framework: .playwrightPython,
+            configFilePath: configURL.standardizedFileURL.path,
+            isCustomConfigOverride: isCustomOverride,
+            projectName: projectName,
+            testsPattern: testsPattern,
+            hasExplicitTestsPattern: !testPaths.isEmpty,
+            outputDirectory: outputDir,
+            htmlReportDirectory: nil,
+            baseURL: baseURL,
+            helpers: helpers,
+            plugins: [CodeceptPluginInfo(name: "pytest-playwright", enabled: true)],
+            includes: [],
+            multipleSuites: multipleSuites,
+            playwrightProjects: effectiveBrowsers,
+            packageCodeceptVersion: pyVersion,
+            isESM: false,
             isTypeScript: false
         )
     }

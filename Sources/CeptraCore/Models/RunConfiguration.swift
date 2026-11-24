@@ -38,9 +38,15 @@ public enum CodeceptRunMode: Equatable, Hashable, Sendable {
         case .runLastFailed:
             return "Re-run Failed"
         case .runWorkers(let count, let strategy, let selectedRuns, _, let lastFailed):
-            var label = framework == .playwright
-                ? "Run \(count) Workers"
-                : "Run \(count) Workers (\(strategy.rawValue))"
+            var label: String
+            switch framework {
+            case .playwright:
+                label = "Run \(count) Workers"
+            case .playwrightPython:
+                label = "Run \(count) Workers (-n)"
+            case .codeceptJS:
+                label = "Run \(count) Workers (\(strategy.rawValue))"
+            }
             if !selectedRuns.isEmpty {
                 label += " · \(selectedRuns.joined(separator: ", "))"
             } else if lastFailed {
@@ -49,6 +55,12 @@ public enum CodeceptRunMode: Equatable, Hashable, Sendable {
             return label
         case .runMultiple(let suites, let runAll):
             let clean = suites.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            if framework == .playwrightPython {
+                if runAll || clean.isEmpty {
+                    return "Run All Browsers"
+                }
+                return "Run Browsers (\(clean.joined(separator: ", ")))"
+            }
             if framework == .playwright {
                 if runAll || clean.isEmpty {
                     return "Run All Projects"
@@ -60,17 +72,33 @@ public enum CodeceptRunMode: Equatable, Hashable, Sendable {
             }
             return "Run Multiple (\(clean.joined(separator: ", ")))"
         case .dryRun:
-            return framework == .playwright ? "List Tests (--list)" : "Dry Run"
+            switch framework {
+            case .playwright: return "List Tests (--list)"
+            case .playwrightPython: return "Collect Tests (--co)"
+            case .codeceptJS: return "Dry Run"
+            }
         case .checkEnvironment:
-            return framework == .playwright ? "Playwright Version" : "Check Environment"
+            switch framework {
+            case .playwright: return "Playwright Version"
+            case .playwrightPython: return "Pytest & Playwright Version"
+            case .codeceptJS: return "Check Environment"
+            }
         case .generateDefinitions:
-            return framework == .playwright ? "Playwright Codegen" : "Generate steps.d.ts"
+            switch framework {
+            case .playwright: return "Playwright Codegen"
+            case .playwrightPython: return "Playwright Codegen (Python)"
+            case .codeceptJS: return "Generate steps.d.ts"
+            }
         case .listActions:
-            return framework == .playwright ? "List Tests (--list)" : "List I.* Actions"
+            switch framework {
+            case .playwright: return "List Tests (--list)"
+            case .playwrightPython: return "Collect Tests (--co)"
+            case .codeceptJS: return "List I.* Actions"
+            }
         case .playwrightCodegen:
-            return "Playwright Codegen"
+            return framework == .playwrightPython ? "Playwright Codegen (Python)" : "Playwright Codegen"
         case .playwrightShowReport:
-            return "Playwright HTML Report"
+            return framework == .playwrightPython ? "Playwright Trace Viewer" : "Playwright HTML Report"
         }
     }
 

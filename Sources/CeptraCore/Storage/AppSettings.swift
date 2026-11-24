@@ -100,6 +100,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var customBunPath: String
     public var customCodeceptPath: String
     public var customPlaywrightPath: String
+    public var customPythonPath: String
     public var consoleExecutionMode: ConsoleExecutionMode
     public var customTerminalAppPath: String
     public var defaultRunOptions: RunOptions
@@ -120,6 +121,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         customBunPath: String = "",
         customCodeceptPath: String = "",
         customPlaywrightPath: String = "",
+        customPythonPath: String = "",
         consoleExecutionMode: ConsoleExecutionMode = .builtIn,
         customTerminalAppPath: String = "",
         defaultRunOptions: RunOptions = RunOptions(),
@@ -139,6 +141,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.customBunPath = customBunPath
         self.customCodeceptPath = customCodeceptPath
         self.customPlaywrightPath = customPlaywrightPath
+        self.customPythonPath = customPythonPath
         self.consoleExecutionMode = consoleExecutionMode
         self.customTerminalAppPath = customTerminalAppPath
         self.defaultRunOptions = defaultRunOptions
@@ -161,6 +164,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.customBunPath = try c.decodeIfPresent(String.self, forKey: .customBunPath) ?? ""
         self.customCodeceptPath = try c.decodeIfPresent(String.self, forKey: .customCodeceptPath) ?? ""
         self.customPlaywrightPath = try c.decodeIfPresent(String.self, forKey: .customPlaywrightPath) ?? ""
+        self.customPythonPath = try c.decodeIfPresent(String.self, forKey: .customPythonPath) ?? ""
         self.consoleExecutionMode = try c.decodeIfPresent(ConsoleExecutionMode.self, forKey: .consoleExecutionMode) ?? .builtIn
         self.customTerminalAppPath = try c.decodeIfPresent(String.self, forKey: .customTerminalAppPath) ?? ""
         self.defaultRunOptions = try c.decodeIfPresent(RunOptions.self, forKey: .defaultRunOptions) ?? RunOptions()

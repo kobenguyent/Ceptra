@@ -28,6 +28,7 @@ public struct ResolvedToolchain: Equatable, Sendable {
     public let runtime: JSRuntimeKind
     public let nodePath: String?
     public let bunPath: String?
+    public let pythonPath: String?
     public let codeceptExecutable: String
     public let prefixArguments: [String]
     public let searchPath: String
@@ -36,6 +37,9 @@ public struct ResolvedToolchain: Equatable, Sendable {
     public var runnerExecutable: String { codeceptExecutable }
 
     public var activeRuntimePath: String? {
+        if framework == .playwrightPython {
+            return pythonPath
+        }
         switch runtime {
         case .node: return nodePath
         case .bun: return bunPath
@@ -51,6 +55,7 @@ public struct ResolvedToolchain: Equatable, Sendable {
         runtime: JSRuntimeKind = .node,
         nodePath: String?,
         bunPath: String? = nil,
+        pythonPath: String? = nil,
         codeceptExecutable: String,
         prefixArguments: [String],
         searchPath: String,
@@ -60,6 +65,7 @@ public struct ResolvedToolchain: Equatable, Sendable {
         self.runtime = runtime
         self.nodePath = nodePath
         self.bunPath = bunPath
+        self.pythonPath = pythonPath
         self.codeceptExecutable = codeceptExecutable
         self.prefixArguments = prefixArguments
         self.searchPath = searchPath
@@ -73,6 +79,8 @@ public enum NodeToolchainResolver {
         var candidates: [String] = extraPaths + [
             "/opt/homebrew/bin",
             "/usr/local/bin",
+            "\(home)/.local/bin",
+            "\(home)/.pyenv/shims",
             "\(home)/.bun/bin",
             "\(home)/.volta/bin",
             "\(home)/.fnm/current/bin",
@@ -118,13 +126,24 @@ public enum NodeToolchainResolver {
         customNodePath: String = "",
         customBunPath: String = "",
         customCodeceptPath: String = "",
-        customPlaywrightPath: String = ""
+        customPlaywrightPath: String = "",
+        customPythonPath: String = ""
     ) -> ResolvedToolchain {
         let fm = FileManager.default
         let trimmedNode = customNodePath.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedBun = customBunPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCodecept = customCodeceptPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPlaywright = customPlaywrightPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPython = customPythonPath.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if framework == .playwrightPython {
+            return resolvePlaywrightPythonToolchain(
+                workspaceRoot: workspaceRoot,
+                trimmedPython: trimmedPython,
+                trimmedNode: trimmedNode,
+                trimmedBun: trimmedBun
+            )
+        }
 
         var extraDirs: [String] = [
             workspaceRoot.appendingPathComponent("node_modules/.bin").path
@@ -489,6 +508,206 @@ public enum NodeToolchainResolver {
             searchPath: searchPath,
             resolutionSource: "npx fallback"
         )
+    }
+
+    // MARK: - Playwright Python (pytest-playwright) Toolchain Resolution
+
+    private static func resolvePlaywrightPythonToolchain(
+        workspaceRoot: URL,
+        trimmedPython: String,
+        trimmedNode: String,
+        trimmedBun: String
+    ) -> ResolvedToolchain {
+        let fm = FileManager.default
+        var extraDirs: [String] = []
+
+        if !trimmedPython.isEmpty {
+            extraDirs.append(URL(fileURLWithPath: trimmedPython).deletingLastPathComponent().path)
+        }
+
+        // Collect candidate virtualenvs walking up to 4 levels
+        var venvDirs: [(binDir: String, label: String)] = []
+        var searchDir = workspaceRoot.standardizedFileURL
+        for level in 0...4 {
+            for venvName in [".venv", "venv", ".env_venv"] {
+                let binDir = searchDir.appendingPathComponent("\(venvName)/bin").path
+                if fm.fileExists(atPath: binDir) {
+                    let label = level == 0 ? "Project \(venvName)" : "Parent \(venvName)"
+                    venvDirs.append((binDir, label))
+                    extraDirs.append(binDir)
+                }
+            }
+            let parent = searchDir.deletingLastPathComponent()
+            if parent.path == searchDir.path { break }
+            searchDir = parent
+        }
+
+        let searchPath = buildSearchPath(extraPaths: extraDirs)
+        let nodePath: String? = (!trimmedNode.isEmpty && fm.isExecutableFile(atPath: trimmedNode))
+            ? trimmedNode
+            : findExecutable(named: "node", in: searchPath)
+        let bunPath: String? = (!trimmedBun.isEmpty && fm.isExecutableFile(atPath: trimmedBun))
+            ? trimmedBun
+            : findExecutable(named: "bun", in: searchPath)
+
+        // 1. User-specified custom Python or pytest binary
+        if !trimmedPython.isEmpty, fm.isExecutableFile(atPath: trimmedPython) {
+            let name = URL(fileURLWithPath: trimmedPython).lastPathComponent.lowercased()
+            if name.contains("pytest") {
+                let dir = URL(fileURLWithPath: trimmedPython).deletingLastPathComponent().path
+                let siblingPy = ["python3", "python"].map { "\(dir)/\($0)" }.first(where: { fm.isExecutableFile(atPath: $0) })
+                    ?? findExecutable(named: "python3", in: searchPath)
+                return ResolvedToolchain(
+                    framework: .playwrightPython,
+                    runtime: .node,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
+                    pythonPath: siblingPy,
+                    codeceptExecutable: trimmedPython,
+                    prefixArguments: [],
+                    searchPath: searchPath,
+                    resolutionSource: "Custom pytest binary"
+                )
+            }
+            return ResolvedToolchain(
+                framework: .playwrightPython,
+                runtime: .node,
+                nodePath: nodePath,
+                bunPath: bunPath,
+                pythonPath: trimmedPython,
+                codeceptExecutable: trimmedPython,
+                prefixArguments: ["-m", "pytest"],
+                searchPath: searchPath,
+                resolutionSource: "Custom Python interpreter"
+            )
+        }
+
+        // 2. Local project / monorepo virtualenv (.venv / venv)
+        for (binDir, label) in venvDirs {
+            let venvPython = ["python", "python3"].map { "\(binDir)/\($0)" }.first(where: { fm.isExecutableFile(atPath: $0) })
+            let venvPytest = "\(binDir)/pytest"
+            if fm.isExecutableFile(atPath: venvPytest) {
+                return ResolvedToolchain(
+                    framework: .playwrightPython,
+                    runtime: .node,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
+                    pythonPath: venvPython ?? findExecutable(named: "python3", in: searchPath),
+                    codeceptExecutable: venvPytest,
+                    prefixArguments: [],
+                    searchPath: searchPath,
+                    resolutionSource: label
+                )
+            }
+            if let venvPython {
+                return ResolvedToolchain(
+                    framework: .playwrightPython,
+                    runtime: .node,
+                    nodePath: nodePath,
+                    bunPath: bunPath,
+                    pythonPath: venvPython,
+                    codeceptExecutable: venvPython,
+                    prefixArguments: ["-m", "pytest"],
+                    searchPath: searchPath,
+                    resolutionSource: "\(label) (python -m pytest)"
+                )
+            }
+        }
+
+        let detectedPython = findExecutable(named: "python3", in: searchPath) ?? findExecutable(named: "python", in: searchPath)
+
+        // 3. `uv run pytest` when project uses uv (`uv.lock` or `pyproject.toml`)
+        if fm.fileExists(atPath: workspaceRoot.appendingPathComponent("uv.lock").path),
+           let uvBin = findExecutable(named: "uv", in: searchPath) {
+            return ResolvedToolchain(
+                framework: .playwrightPython,
+                runtime: .node,
+                nodePath: nodePath,
+                bunPath: bunPath,
+                pythonPath: detectedPython ?? uvBin,
+                codeceptExecutable: uvBin,
+                prefixArguments: ["run", "pytest"],
+                searchPath: searchPath,
+                resolutionSource: "uv project"
+            )
+        }
+
+        // 4. `poetry run pytest` when project uses Poetry (`poetry.lock`)
+        if fm.fileExists(atPath: workspaceRoot.appendingPathComponent("poetry.lock").path),
+           let poetryBin = findExecutable(named: "poetry", in: searchPath) {
+            return ResolvedToolchain(
+                framework: .playwrightPython,
+                runtime: .node,
+                nodePath: nodePath,
+                bunPath: bunPath,
+                pythonPath: detectedPython ?? poetryBin,
+                codeceptExecutable: poetryBin,
+                prefixArguments: ["run", "pytest"],
+                searchPath: searchPath,
+                resolutionSource: "Poetry environment"
+            )
+        }
+
+        // 5. Global `pytest` on PATH
+        if let globalPytest = findExecutable(named: "pytest", in: searchPath) {
+            return ResolvedToolchain(
+                framework: .playwrightPython,
+                runtime: .node,
+                nodePath: nodePath,
+                bunPath: bunPath,
+                pythonPath: detectedPython,
+                codeceptExecutable: globalPytest,
+                prefixArguments: [],
+                searchPath: searchPath,
+                resolutionSource: "Global PATH"
+            )
+        }
+
+        // 6. Fallback `python3 -m pytest`
+        if let detectedPython {
+            return ResolvedToolchain(
+                framework: .playwrightPython,
+                runtime: .node,
+                nodePath: nodePath,
+                bunPath: bunPath,
+                pythonPath: detectedPython,
+                codeceptExecutable: detectedPython,
+                prefixArguments: ["-m", "pytest"],
+                searchPath: searchPath,
+                resolutionSource: "python3 -m pytest fallback"
+            )
+        }
+
+        return ResolvedToolchain(
+            framework: .playwrightPython,
+            runtime: .node,
+            nodePath: nodePath,
+            bunPath: bunPath,
+            pythonPath: nil,
+            codeceptExecutable: "/usr/bin/env",
+            prefixArguments: ["python3", "-m", "pytest"],
+            searchPath: searchPath,
+            resolutionSource: "python3 fallback (not found in PATH)"
+        )
+    }
+
+    /// Resolves the `playwright` CLI binary for Python workspaces (`codegen`, `show-trace`, `install`).
+    public static func resolvePlaywrightPythonCLI(
+        toolchain: ResolvedToolchain
+    ) -> (executable: String, prefixArguments: [String]) {
+        let fm = FileManager.default
+        if let pyPath = toolchain.pythonPath {
+            let pyDir = URL(fileURLWithPath: pyPath).deletingLastPathComponent().path
+            let siblingPW = "\(pyDir)/playwright"
+            if fm.isExecutableFile(atPath: siblingPW) {
+                return (siblingPW, [])
+            }
+            return (pyPath, ["-m", "playwright"])
+        }
+        if let globalPW = findExecutable(named: "playwright", in: toolchain.searchPath) {
+            return (globalPW, [])
+        }
+        return ("/usr/bin/env", ["playwright"])
     }
 
     /// Resolves symlinks (e.g. `node_modules/.bin/codeceptjs` -> `node_modules/codeceptjs/bin/codecept.js`)

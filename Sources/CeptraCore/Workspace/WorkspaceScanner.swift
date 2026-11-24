@@ -5,7 +5,8 @@ public enum WorkspaceScanner {
     private static let ignoredDirectories: Set<String> = [
         "node_modules", ".git", ".idea", ".vscode", "dist", "build",
         "coverage", ".build", ".next", ".nuxt", ".turbo", ".cache",
-        "allure-report", "allure-results", "__pycache__"
+        "allure-report", "allure-results", "__pycache__",
+        ".venv", "venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".eggs"
     ]
 
     private static let ignoredFiles: Set<String> = [
@@ -13,7 +14,7 @@ public enum WorkspaceScanner {
     ]
 
     private static let codeTestExtensions: Set<String> = [
-        "js", "ts", "mjs", "cjs", "mts", "cts", "jsx", "tsx", "feature"
+        "js", "ts", "mjs", "cjs", "mts", "cts", "jsx", "tsx", "feature", "py"
     ]
 
     private static let maxTreeDepth = 12
@@ -347,19 +348,29 @@ public enum WorkspaceScanner {
         helperAbsolutePaths: Set<String>,
         stepDefAbsolutePaths: Set<String>
     ) -> WorkspaceFileCategory {
+        let lowerName = fileName.lowercased()
+        let lowerPath = relativePath.lowercased()
+
+        // Keep `conftest.py` classified as `.helper` (fixtures/hooks) unless it is the workspace's sole active config file.
+        if lowerName == "conftest.py" && fullPath != activeConfigPath {
+            return .helper
+        }
+
         if fullPath == activeConfigPath
             || knownConfigPaths.contains(fullPath)
             || ConfigParser.allStandardConfigFileNames.contains(fileName)
             || fileName == "package.json"
             || fileName == "tsconfig.json"
             || fileName == "jsconfig.json"
-            || fileName == "steps.d.ts" {
+            || fileName == "steps.d.ts"
+            || fileName == "requirements.txt"
+            || fileName == "pyproject.toml"
+            || fileName == "pytest.ini" {
             return .config
         }
-        let lowerName = fileName.lowercased()
-        let lowerPath = relativePath.lowercased()
 
         if helperAbsolutePaths.contains(fullPath)
+            || lowerName == "conftest.py"
             || lowerPath.contains("helper")
             || lowerPath.hasPrefix("helpers/")
             || lowerPath.contains("fixtures/")
@@ -375,6 +386,7 @@ public enum WorkspaceScanner {
             || lowerPath.contains("stepobjects/")
             || lowerPath.contains("steps_file")
             || lowerName.contains("page.")
+            || lowerName.hasSuffix("_page.py")
             || lowerName.contains("steps.") {
             return .pageObject
         }

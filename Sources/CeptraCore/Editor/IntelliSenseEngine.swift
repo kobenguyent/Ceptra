@@ -180,6 +180,18 @@ public enum IntelliSenseEngine {
             return gherkinCompletions(linePrefix: linePrefix, cursorOffset: cursorUTF16Offset, index: index)
         }
 
+        // 1.5. Python Playwright (`pytest-playwright`) completions
+        if language == "python" {
+            return pythonCompletions(
+                in: source,
+                linePrefix: linePrefix,
+                cursorUTF16Offset: cursorUTF16Offset,
+                sourceFileURL: sourceFileURL,
+                workspace: workspace,
+                index: index
+            )
+        }
+
         // 2. Import / require path completion inside quotes: from './... or require('./...
         if let importMatch = matchImportStringPrefix(linePrefix) {
             let typed = importMatch.typedPath
@@ -352,6 +364,701 @@ public enum IntelliSenseEngine {
         return ranked.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: ranked)
     }
 
+    // MARK: - Python Playwright (`pytest-playwright`) Completions
+
+    private struct PythonFixtureArgContext {
+        let prefix: String
+        let existingNames: Set<String>
+        let isTypeAnnotation: Bool
+    }
+
+    private static func matchPythonFixtureArgContext(_ linePrefix: String) -> PythonFixtureArgContext? {
+        let pattern = #"^\s*(?:async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)\n]*)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = linePrefix as NSString
+        guard let m = regex.firstMatch(in: linePrefix, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        let inside = ns.substring(with: m.range(at: 1))
+        let segments = inside.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        guard let currentSeg = segments.last else { return nil }
+
+        // If typing a default value after `=`, don't offer fixture names or types
+        if currentSeg.contains("=") { return nil }
+
+        var existing = Set<String>()
+        for seg in segments.dropLast() {
+            let namePart = seg.split(separator: ":", maxSplits: 1).first ?? Substring(seg)
+            let clean = namePart.split(separator: "=", maxSplits: 1).first?.trimmingCharacters(in: .whitespaces) ?? ""
+            if !clean.isEmpty { existing.insert(clean) }
+        }
+
+        if let colonIdx = currentSeg.firstIndex(of: ":") {
+            let typedType = String(currentSeg[currentSeg.index(after: colonIdx)...]).trimmingCharacters(in: .whitespaces)
+            if !typedType.isEmpty && !typedType.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }) {
+                return nil
+            }
+            return PythonFixtureArgContext(prefix: typedType, existingNames: existing, isTypeAnnotation: true)
+        }
+
+        let trimmedCurrent = currentSeg.trimmingCharacters(in: .whitespaces)
+        if !trimmedCurrent.isEmpty && !trimmedCurrent.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) {
+            return nil
+        }
+        return PythonFixtureArgContext(prefix: trimmedCurrent, existingNames: existing, isTypeAnnotation: false)
+    }
+
+    private static func pythonCompletions(
+        in source: String,
+        linePrefix: String,
+        cursorUTF16Offset: Int,
+        sourceFileURL: URL?,
+        workspace: CodeceptWorkspace?,
+        index: WorkspaceCompletionIndex
+    ) -> CompletionResult? {
+        // 1. Decorator completion: `@`, `@pytest`, `@pytest.mark.sm`
+        if let decPrefix = matchTrailingRegex(#"(@[A-Za-z0-9_.]*)$"#, in: linePrefix) {
+            let replaceRange = NSRange(location: cursorUTF16Offset - (decPrefix as NSString).length, length: (decPrefix as NSString).length)
+            var pool = builtInPythonPytestDecorators
+            let existing = Set(pool.map(\.label))
+            for rawTag in index.workspaceTags {
+                let cleanTag = rawTag.hasPrefix("@") ? String(rawTag.dropFirst()) : rawTag
+                let markerLabel = "@pytest.mark.\(cleanTag)"
+                if !cleanTag.isEmpty && !existing.contains(markerLabel) {
+                    pool.append(CompletionItem(label: markerLabel, insertText: markerLabel, signature: "", detail: "Workspace pytest marker", kind: .tag))
+                }
+            }
+            let ranked = rankAndFilter(pool, prefix: decPrefix)
+            return ranked.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: ranked)
+        }
+
+        // 2. Python pytest fixture parameter or type annotation completion inside `def test_...(`
+        if let argCtx = matchPythonFixtureArgContext(linePrefix) {
+            let typed = argCtx.prefix
+            let replaceRange = NSRange(location: cursorUTF16Offset - (typed as NSString).length, length: (typed as NSString).length)
+            if argCtx.isTypeAnnotation {
+                let ranked = rankAndFilter(builtInPythonPlaywrightTypeAnnotations, prefix: typed)
+                return ranked.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: ranked)
+            }
+            var pool = builtInPythonPlaywrightFixtureArgs
+            var existingLabels = Set(pool.map(\.label))
+            for custom in extractPythonFixtureNames(in: source, workspace: workspace) where existingLabels.insert(custom).inserted {
+                pool.append(CompletionItem(label: custom, insertText: custom, signature: "", detail: "Custom @pytest.fixture", kind: .symbol))
+            }
+            let filtered = pool.filter { !argCtx.existingNames.contains($0.label) || $0.label == typed }
+            let ranked = rankAndFilter(filtered, prefix: typed)
+            return ranked.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: ranked)
+        }
+
+        // 3. Member access: `page.`, `expect(page).`, `playwright.request.`, `api_ctx.`, `res.`, `pytest.mark.`, `home.`
+        if let memberMatch = matchPythonMemberAccess(linePrefix) {
+            let receiver = memberMatch.receiver
+            let typed = memberMatch.memberPrefix
+            let replaceRange = NSRange(location: cursorUTF16Offset - (typed as NSString).length, length: (typed as NSString).length)
+            let inferred = inferPythonLocalReceiverTypes(in: source, upToUTF16Offset: cursorUTF16Offset)
+
+            var pool: [CompletionItem] = []
+            if receiver == "expect" {
+                pool = builtInPythonPlaywrightExpectMatchers
+            } else if receiver == "pytest" {
+                pool = builtInPythonPytestMembers
+            } else if receiver == "pytest.mark" {
+                pool = builtInPythonPytestMarkMembers
+            } else if receiver == "playwright" {
+                pool = builtInPythonPlaywrightRootMembers
+            } else if let kind = pythonReceiverKind(forName: receiver, inferred: inferred) {
+                pool = builtInPythonMembers(for: kind)
+            } else if let className = inferred.constructedClassByVar[receiver] {
+                pool = resolvePythonClassMembers(
+                    className: className,
+                    in: source,
+                    sourceFileURL: sourceFileURL,
+                    workspace: workspace
+                )
+            }
+
+            let ranked = rankAndFilter(pool, prefix: typed)
+            return ranked.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: ranked)
+        }
+
+        // 4. General Python Playwright DSL, keywords, fixture params & local symbols
+        guard let wordPrefix = matchTrailingRegex(#"([A-Za-z_][A-Za-z0-9_]*)$"#, in: linePrefix), !wordPrefix.isEmpty else {
+            return nil
+        }
+        let replaceRange = NSRange(location: cursorUTF16Offset - (wordPrefix as NSString).length, length: (wordPrefix as NSString).length)
+        var pool = builtInPythonPlaywrightDSLItems + pythonKeywordItems
+        var seen = Set(pool.map(\.label))
+
+        // Add function parameters declared in `def ...(...)` in the current file
+        for param in extractPythonFunctionParameters(from: source) where seen.insert(param.name).inserted {
+            pool.append(CompletionItem(
+                label: param.name,
+                insertText: param.name,
+                signature: param.signature,
+                detail: param.detail,
+                kind: .symbol
+            ))
+        }
+
+        // Add local Python variables / functions / classes
+        for local in extractPythonLocalIdentifiers(from: source) where local != wordPrefix && seen.insert(local).inserted {
+            pool.append(CompletionItem(label: local, insertText: local, signature: "", detail: "local symbol", kind: .symbol))
+        }
+
+        let ranked = rankAndFilter(pool, prefix: wordPrefix)
+        return ranked.isEmpty ? nil : CompletionResult(replacementRange: replaceRange, items: ranked)
+    }
+
+    private enum PythonReceiverKind {
+        case page
+        case locator
+        case apiRequest
+        case response
+        case context
+        case browser
+        case playwright
+        case route
+        case keyboard
+        case mouse
+    }
+
+    private struct PythonInferredTypes {
+        var receiverKindByVar: [String: PythonReceiverKind] = [:]
+        var constructedClassByVar: [String: String] = [:]
+    }
+
+    private static func pythonReceiverKind(forTypeName rawType: String) -> PythonReceiverKind? {
+        let clean = rawType.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch clean {
+        case "Page", "Frame": return .page
+        case "Locator", "FrameLocator": return .locator
+        case "APIRequestContext", "APIRequest": return .apiRequest
+        case "APIResponse", "Response": return .response
+        case "BrowserContext": return .context
+        case "Browser": return .browser
+        case "Playwright": return .playwright
+        case "Route": return .route
+        case "Keyboard": return .keyboard
+        case "Mouse": return .mouse
+        default: return nil
+        }
+    }
+
+    private static func pythonReceiverKind(forName name: String, inferred: PythonInferredTypes) -> PythonReceiverKind? {
+        if let kind = inferred.receiverKindByVar[name] {
+            return kind
+        }
+        switch name {
+        case "page", "frame": return .page
+        case "locator": return .locator
+        case "api_request_context", "api_context", "api_ctx", "api_request": return .apiRequest
+        case "response", "resp", "res": return .response
+        case "context": return .context
+        case "browser": return .browser
+        case "playwright": return .playwright
+        case "route": return .route
+        case "keyboard": return .keyboard
+        case "mouse": return .mouse
+        default:
+            if name.hasSuffix("_page") { return .page }
+            if name.hasSuffix("_locator") { return .locator }
+            return nil
+        }
+    }
+
+    private static func builtInPythonMembers(for kind: PythonReceiverKind) -> [CompletionItem] {
+        switch kind {
+        case .page: return builtInPythonPlaywrightPageActions
+        case .locator: return builtInPythonPlaywrightLocatorActions
+        case .apiRequest: return builtInPythonPlaywrightRequestActions
+        case .response: return builtInPythonPlaywrightResponseActions
+        case .context: return builtInPythonPlaywrightContextActions
+        case .browser: return builtInPythonPlaywrightBrowserActions
+        case .playwright: return builtInPythonPlaywrightRootMembers
+        case .route: return builtInPythonPlaywrightRouteActions
+        case .keyboard: return builtInPythonPlaywrightKeyboardActions
+        case .mouse: return builtInPythonPlaywrightMouseActions
+        }
+    }
+
+    private static func matchPythonMemberAccess(_ linePrefix: String) -> (receiver: String, memberPrefix: String)? {
+        if let trailingDotMatch = matchTrailingMemberPrefix(linePrefix) {
+            let member = trailingDotMatch.memberPrefix
+            let beforeDot = trailingDotMatch.prefixBeforeDot
+            if beforeDot.hasSuffix("pytest.mark") {
+                return ("pytest.mark", member)
+            }
+            if beforeDot.hasSuffix(".request") {
+                return ("api_request_context", member)
+            }
+            if beforeDot.hasSuffix(".keyboard") {
+                return ("keyboard", member)
+            }
+            if beforeDot.hasSuffix(".mouse") {
+                return ("mouse", member)
+            }
+            if beforeDot.hasSuffix(".first") || beforeDot.hasSuffix(".last") {
+                return ("locator", member)
+            }
+            if beforeDot.hasSuffix(")"),
+               let callHead = receiverBeforeBalancedCall(beforeDot) {
+                if callHead == "expect" {
+                    return ("expect", member)
+                }
+                if callHead.hasSuffix(".new_context") {
+                    return (callHead.contains(".request.") ? "api_request_context" : "context", member)
+                }
+                if callHead.hasSuffix(".new_page") {
+                    return ("page", member)
+                }
+                let responseMethods = [".get", ".post", ".put", ".patch", ".delete", ".head", ".fetch"]
+                if responseMethods.contains(where: { callHead.hasSuffix($0) }) {
+                    return ("response", member)
+                }
+                let locatorMethods = [
+                    ".locator", ".frame_locator", ".get_by_role", ".get_by_test_id", ".get_by_text",
+                    ".get_by_label", ".get_by_placeholder", ".get_by_alt_text", ".get_by_title",
+                    ".nth", ".filter"
+                ]
+                if locatorMethods.contains(where: { callHead.hasSuffix($0) }) {
+                    return ("locator", member)
+                }
+            }
+        }
+
+        let pattern = #"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)?$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = linePrefix as NSString
+        guard let m = regex.firstMatch(in: linePrefix, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        let receiver = ns.substring(with: m.range(at: 1))
+        let member = m.range(at: 2).location != NSNotFound ? ns.substring(with: m.range(at: 2)) : ""
+        return (receiver, member)
+    }
+
+    private static func inferPythonLocalReceiverTypes(in source: String, upToUTF16Offset: Int) -> PythonInferredTypes {
+        var result = PythonInferredTypes()
+        let nsFull = source as NSString
+        let limit = min(max(0, upToUTF16Offset), nsFull.length)
+        let prefixText = nsFull.substring(to: limit)
+        let ns = prefixText as NSString
+        let range = NSRange(location: 0, length: ns.length)
+
+        // 1. Explicit type annotations: `page: Page`, `api: APIRequestContext`, `res: APIResponse`
+        if let regex = try? NSRegularExpression(pattern: #"\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(Page|Frame|Locator|FrameLocator|APIRequestContext|APIRequest|APIResponse|Response|BrowserContext|Browser|Playwright|Route|Keyboard|Mouse)\b"#) {
+            for m in regex.matches(in: prefixText, range: range) {
+                let name = ns.substring(with: m.range(at: 1))
+                let typeName = ns.substring(with: m.range(at: 2))
+                if let kind = pythonReceiverKind(forTypeName: typeName) {
+                    result.receiverKindByVar[name] = kind
+                }
+            }
+        }
+
+        // 2. Route lambda/callback params: `.route(..., lambda r:`
+        if let regex = try? NSRegularExpression(pattern: #"\.route\s*\([^,\n]+,\s*lambda\s+([A-Za-z_][A-Za-z0-9_]*)\s*:"#) {
+            for m in regex.matches(in: prefixText, range: range) {
+                result.receiverKindByVar[ns.substring(with: m.range(at: 1))] = .route
+            }
+        }
+
+        // 3. Assignments: `api_ctx = playwright.request.new_context(...)`, `res = api_ctx.get(...)`, `home = HomePage(page)`
+        if let regex = try? NSRegularExpression(pattern: #"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n]+)?=\s*(?:await\s+)?([^\n#]+)"#, options: [.anchorsMatchLines]) {
+            for m in regex.matches(in: prefixText, range: range) {
+                let varName = ns.substring(with: m.range(at: 1))
+                let rhs = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespaces)
+                if rhs.range(of: #"\.request\.new_context\s*\("#, options: .regularExpression) != nil
+                    || rhs.range(of: #"\.request\b"#, options: .regularExpression) != nil && !rhs.contains("(") {
+                    result.receiverKindByVar[varName] = .apiRequest
+                } else if rhs.range(of: #"\.(?:get|post|put|patch|delete|head|fetch)\s*\("#, options: .regularExpression) != nil {
+                    result.receiverKindByVar[varName] = .response
+                } else if rhs.range(of: #"\.(?:locator|frame_locator|get_by_role|get_by_test_id|get_by_text|get_by_label|get_by_placeholder|get_by_alt_text|get_by_title|nth|filter)\s*\("#, options: .regularExpression) != nil {
+                    result.receiverKindByVar[varName] = .locator
+                } else if rhs.range(of: #"\.new_page\s*\("#, options: .regularExpression) != nil {
+                    result.receiverKindByVar[varName] = .page
+                } else if rhs.range(of: #"\.new_context\s*\("#, options: .regularExpression) != nil {
+                    result.receiverKindByVar[varName] = .context
+                } else if let clsRegex = try? NSRegularExpression(pattern: #"^([A-Z][A-Za-z0-9_]*)\s*\("#),
+                          let cm = clsRegex.firstMatch(in: rhs, range: NSRange(location: 0, length: (rhs as NSString).length)) {
+                    let cls = (rhs as NSString).substring(with: cm.range(at: 1))
+                    result.constructedClassByVar[varName] = cls
+                }
+            }
+        }
+
+        return result
+    }
+
+    private static func resolvePythonClassMembers(
+        className: String,
+        in source: String,
+        sourceFileURL: URL?,
+        workspace: CodeceptWorkspace?
+    ) -> [CompletionItem] {
+        // 1. Check same file first
+        let sameFileHeader = "class \(className)"
+        if source.contains(sameFileHeader) {
+            let methods = extractMethodSignatures(from: source, sourceLabel: sourceFileURL?.lastPathComponent ?? "local", kind: .method)
+            if !methods.isEmpty { return methods }
+        }
+        // 2. Check `from <pkg.mod> import ClassName` across workspace Python files
+        guard let workspace else { return [] }
+        for file in workspace.files where file.fileExtension == "py" {
+            if let text = try? String(contentsOf: file.url, encoding: .utf8),
+               text.contains(sameFileHeader) {
+                let methods = extractMethodSignatures(from: text, sourceLabel: file.name, kind: .method)
+                if !methods.isEmpty { return methods }
+            }
+        }
+        return []
+    }
+
+    private static func extractPythonFixtureNames(in source: String, workspace: CodeceptWorkspace?) -> [String] {
+        var names: [String] = []
+        var seen = Set<String>()
+        let pattern = #"@pytest\.fixture(?:\([^)]*\))?\s*\n\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+
+        func scan(_ text: String) {
+            let ns = text as NSString
+            for m in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+                let name = ns.substring(with: m.range(at: 1))
+                if seen.insert(name).inserted { names.append(name) }
+            }
+        }
+
+        scan(source)
+        if let workspace {
+            for file in workspace.files where file.name == "conftest.py" {
+                if let text = try? String(contentsOf: file.url, encoding: .utf8) {
+                    scan(text)
+                }
+            }
+        }
+        return names
+    }
+
+    private static func extractPythonFunctionParameters(from source: String) -> [(name: String, signature: String, detail: String)] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"^\s*(?:async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)\n]*)\)"#,
+            options: [.anchorsMatchLines]
+        ) else { return [] }
+        let ns = source as NSString
+        var out: [(name: String, signature: String, detail: String)] = []
+        var seen = Set<String>()
+        for m in regex.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
+            let inside = ns.substring(with: m.range(at: 1))
+            for rawSeg in inside.split(separator: ",") {
+                let seg = rawSeg.trimmingCharacters(in: .whitespaces)
+                if seg.isEmpty { continue }
+                let parts = seg.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                let name = parts[0].split(separator: "=", maxSplits: 1).first?.trimmingCharacters(in: .whitespaces) ?? ""
+                guard !name.isEmpty, name != "self", name != "cls", seen.insert(name).inserted else { continue }
+                let typeAnnotation = parts.count > 1
+                    ? parts[1].split(separator: "=", maxSplits: 1).first?.trimmingCharacters(in: .whitespaces)
+                    : nil
+                if let builtIn = builtInPythonPlaywrightFixtureArgs.first(where: { $0.label == name }) {
+                    out.append((name, builtIn.signature, builtIn.detail))
+                } else if let t = typeAnnotation, !t.isEmpty {
+                    out.append((name, ": \(t)", "pytest fixture / arg"))
+                } else {
+                    out.append((name, "", "parameter"))
+                }
+            }
+        }
+        return out
+    }
+
+    private static func extractPythonLocalIdentifiers(from source: String) -> [String] {
+        var out = Set<String>()
+        let ns = source as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        if let regex = try? NSRegularExpression(pattern: #"^\s*(?:(?:async\s+)?def|class)\s+([A-Za-z_][A-Za-z0-9_]*)"#, options: [.anchorsMatchLines]) {
+            for m in regex.matches(in: source, range: range) {
+                out.insert(ns.substring(with: m.range(at: 1)))
+            }
+        }
+        if let regex = try? NSRegularExpression(pattern: #"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n]+)?="#, options: [.anchorsMatchLines]) {
+            for m in regex.matches(in: source, range: range) {
+                out.insert(ns.substring(with: m.range(at: 1)))
+            }
+        }
+        return Array(out).sorted()
+    }
+
+    // MARK: - Curated Playwright Python (`pytest-playwright`) Catalog
+
+    public static let builtInPythonPlaywrightDSLItems: [CompletionItem] = [
+        CompletionItem(label: "expect", insertText: "expect().to_be_visible()", signature: "(actual)", detail: "Playwright web-first assertion", kind: .dsl, cursorBackOffset: 16),
+        CompletionItem(label: "pytest", insertText: "pytest", signature: "", detail: "Pytest test runner module", kind: .dsl),
+        CompletionItem(label: "sync_playwright", insertText: "with sync_playwright() as p:\n    ", signature: "()", detail: "Synchronous Playwright context manager", kind: .dsl),
+        CompletionItem(label: "async_playwright", insertText: "async with async_playwright() as p:\n    ", signature: "()", detail: "Asynchronous Playwright context manager", kind: .dsl),
+        CompletionItem(label: "re.compile", insertText: "re.compile(r\"\")", signature: "(pattern)", detail: "Regex matcher for Playwright assertions", kind: .dsl, cursorBackOffset: 2)
+    ]
+
+    public static let pythonKeywordItems: [CompletionItem] = [
+        "def", "async", "await", "class", "import", "from", "as", "return", "yield",
+        "assert", "with", "if", "elif", "else", "for", "in", "while", "try", "except",
+        "finally", "raise", "pass", "lambda", "True", "False", "None"
+    ].map { CompletionItem(label: $0, insertText: $0, signature: "", detail: "keyword", kind: .keyword) }
+
+    public static let builtInPythonPytestDecorators: [CompletionItem] = [
+        CompletionItem(label: "@pytest.mark.smoke", insertText: "@pytest.mark.smoke", signature: "", detail: "Tag test with smoke marker", kind: .tag),
+        CompletionItem(label: "@pytest.mark.web", insertText: "@pytest.mark.web", signature: "", detail: "Tag test with web marker", kind: .tag),
+        CompletionItem(label: "@pytest.mark.api", insertText: "@pytest.mark.api", signature: "", detail: "Tag test with api marker", kind: .tag),
+        CompletionItem(label: "@pytest.mark.regression", insertText: "@pytest.mark.regression", signature: "", detail: "Tag test with regression marker", kind: .tag),
+        CompletionItem(label: "@pytest.mark.skip", insertText: "@pytest.mark.skip(reason=\"\")", signature: "(reason=...)", detail: "Skip this test unconditionally", kind: .tag, cursorBackOffset: 2),
+        CompletionItem(label: "@pytest.mark.skipif", insertText: "@pytest.mark.skipif(, reason=\"\")", signature: "(condition, reason=...)", detail: "Conditionally skip test", kind: .tag, cursorBackOffset: 12),
+        CompletionItem(label: "@pytest.mark.xfail", insertText: "@pytest.mark.xfail(reason=\"\")", signature: "(reason=...)", detail: "Mark test as expected failure", kind: .tag, cursorBackOffset: 2),
+        CompletionItem(label: "@pytest.mark.parametrize", insertText: "@pytest.mark.parametrize(\"\", [])", signature: "(argnames, argvalues)", detail: "Data-driven parametrized test", kind: .tag, cursorBackOffset: 6),
+        CompletionItem(label: "@pytest.mark.only_browser", insertText: "@pytest.mark.only_browser(\"chromium\")", signature: "(name)", detail: "Run only on specified browser", kind: .tag, cursorBackOffset: 2),
+        CompletionItem(label: "@pytest.mark.skip_browser", insertText: "@pytest.mark.skip_browser(\"webkit\")", signature: "(name)", detail: "Skip test on specified browser", kind: .tag, cursorBackOffset: 2),
+        CompletionItem(label: "@pytest.fixture", insertText: "@pytest.fixture", signature: "(scope=...)", detail: "Define reusable pytest fixture", kind: .dsl),
+        CompletionItem(label: "@pytest.fixture(scope=\"session\")", insertText: "@pytest.fixture(scope=\"session\")", signature: "", detail: "Define session-scoped pytest fixture", kind: .dsl)
+    ]
+
+    public static let builtInPythonPlaywrightFixtureArgs: [CompletionItem] = [
+        CompletionItem(label: "page", insertText: "page: Page", signature: ": Page", detail: "Isolated Playwright browser page", kind: .symbol),
+        CompletionItem(label: "context", insertText: "context: BrowserContext", signature: ": BrowserContext", detail: "Isolated Playwright browser context", kind: .symbol),
+        CompletionItem(label: "browser", insertText: "browser: Browser", signature: ": Browser", detail: "Shared Playwright browser instance", kind: .symbol),
+        CompletionItem(label: "playwright", insertText: "playwright: Playwright", signature: ": Playwright", detail: "Playwright root (APIRequestContext & browsers)", kind: .symbol),
+        CompletionItem(label: "api_request_context", insertText: "api_request_context: APIRequestContext", signature: ": APIRequestContext", detail: "Playwright HTTP / API client fixture", kind: .symbol),
+        CompletionItem(label: "browser_name", insertText: "browser_name: str", signature: ": str", detail: "Active browser name (chromium/firefox/webkit)", kind: .symbol),
+        CompletionItem(label: "base_url", insertText: "base_url: str", signature: ": str", detail: "Configured --base-url value", kind: .symbol),
+        CompletionItem(label: "request", insertText: "request: pytest.FixtureRequest", signature: ": FixtureRequest", detail: "Pytest FixtureRequest metadata", kind: .symbol),
+        CompletionItem(label: "browser_context_args", insertText: "browser_context_args: dict", signature: ": dict", detail: "Override context options in conftest.py", kind: .symbol),
+        CompletionItem(label: "is_chromium", insertText: "is_chromium: bool", signature: ": bool", detail: "True when running on Chromium", kind: .symbol),
+        CompletionItem(label: "is_firefox", insertText: "is_firefox: bool", signature: ": bool", detail: "True when running on Firefox", kind: .symbol),
+        CompletionItem(label: "is_webkit", insertText: "is_webkit: bool", signature: ": bool", detail: "True when running on WebKit", kind: .symbol),
+        CompletionItem(label: "tmp_path", insertText: "tmp_path", signature: ": Path", detail: "Pytest temporary directory fixture", kind: .symbol),
+        CompletionItem(label: "monkeypatch", insertText: "monkeypatch", signature: ": MonkeyPatch", detail: "Pytest env/attribute monkeypatcher", kind: .symbol)
+    ]
+
+    public static let builtInPythonPlaywrightTypeAnnotations: [CompletionItem] = [
+        CompletionItem(label: "Page", insertText: "Page", signature: "", detail: "playwright.sync_api.Page", kind: .dsl),
+        CompletionItem(label: "Locator", insertText: "Locator", signature: "", detail: "playwright.sync_api.Locator", kind: .dsl),
+        CompletionItem(label: "BrowserContext", insertText: "BrowserContext", signature: "", detail: "playwright.sync_api.BrowserContext", kind: .dsl),
+        CompletionItem(label: "Browser", insertText: "Browser", signature: "", detail: "playwright.sync_api.Browser", kind: .dsl),
+        CompletionItem(label: "Playwright", insertText: "Playwright", signature: "", detail: "playwright.sync_api.Playwright", kind: .dsl),
+        CompletionItem(label: "APIRequestContext", insertText: "APIRequestContext", signature: "", detail: "playwright.sync_api.APIRequestContext", kind: .dsl),
+        CompletionItem(label: "APIResponse", insertText: "APIResponse", signature: "", detail: "playwright.sync_api.APIResponse", kind: .dsl),
+        CompletionItem(label: "Route", insertText: "Route", signature: "", detail: "playwright.sync_api.Route", kind: .dsl),
+        CompletionItem(label: "pytest.FixtureRequest", insertText: "pytest.FixtureRequest", signature: "", detail: "Pytest request fixture type", kind: .dsl),
+        CompletionItem(label: "str", insertText: "str", signature: "", detail: "Python str", kind: .keyword),
+        CompletionItem(label: "bool", insertText: "bool", signature: "", detail: "Python bool", kind: .keyword),
+        CompletionItem(label: "dict", insertText: "dict", signature: "", detail: "Python dict", kind: .keyword)
+    ]
+
+    public static let builtInPythonPlaywrightPageActions: [CompletionItem] = [
+        CompletionItem(label: "goto", insertText: "goto(\"\")", signature: "(url, **kwargs)", detail: "Navigate to URL", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "get_by_role", insertText: "get_by_role(\"button\", name=\"\")", signature: "(role, name=...)", detail: "Locate by ARIA role", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "get_by_test_id", insertText: "get_by_test_id(\"\")", signature: "(test_id)", detail: "Locate by data-testid", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "get_by_text", insertText: "get_by_text(\"\")", signature: "(text, exact=...)", detail: "Locate by visible text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "get_by_label", insertText: "get_by_label(\"\")", signature: "(text, exact=...)", detail: "Locate form control by label", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "get_by_placeholder", insertText: "get_by_placeholder(\"\")", signature: "(text, exact=...)", detail: "Locate input by placeholder", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "get_by_alt_text", insertText: "get_by_alt_text(\"\")", signature: "(text, exact=...)", detail: "Locate image by alt text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "get_by_title", insertText: "get_by_title(\"\")", signature: "(text, exact=...)", detail: "Locate by title attribute", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "locator", insertText: "locator(\"\")", signature: "(selector)", detail: "Create CSS/XPath locator", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "frame_locator", insertText: "frame_locator(\"\")", signature: "(selector)", detail: "Locate inside iframe", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "click", insertText: "click(\"\")", signature: "(selector)", detail: "Click element", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "fill", insertText: "fill(\"\", \"\")", signature: "(selector, value)", detail: "Fill input field", kind: .action, cursorBackOffset: 6),
+        CompletionItem(label: "press", insertText: "press(\"\", \"Enter\")", signature: "(selector, key)", detail: "Press keyboard key", kind: .action, cursorBackOffset: 11),
+        CompletionItem(label: "hover", insertText: "hover(\"\")", signature: "(selector)", detail: "Hover over element", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "check", insertText: "check(\"\")", signature: "(selector)", detail: "Check checkbox/radio", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "uncheck", insertText: "uncheck(\"\")", signature: "(selector)", detail: "Uncheck checkbox", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "select_option", insertText: "select_option(\"\", \"\")", signature: "(selector, value)", detail: "Select dropdown option", kind: .action, cursorBackOffset: 6),
+        CompletionItem(label: "wait_for_url", insertText: "wait_for_url(\"\")", signature: "(url)", detail: "Wait for navigation URL", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "wait_for_load_state", insertText: "wait_for_load_state(\"networkidle\")", signature: "(state=...)", detail: "Wait for page load state", kind: .action),
+        CompletionItem(label: "expect_response", insertText: "expect_response(\"\")", signature: "(url_or_predicate)", detail: "Context manager waiting for response", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "expect_request", insertText: "expect_request(\"\")", signature: "(url_or_predicate)", detail: "Context manager waiting for request", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "expect_popup", insertText: "expect_popup()", signature: "()", detail: "Context manager waiting for popup", kind: .action),
+        CompletionItem(label: "route", insertText: "route(\"**/*\", lambda route: route.continue_())", signature: "(url, handler)", detail: "Intercept network requests", kind: .action),
+        CompletionItem(label: "screenshot", insertText: "screenshot(path=\"screenshot.png\")", signature: "(path=...)", detail: "Capture screenshot", kind: .action),
+        CompletionItem(label: "evaluate", insertText: "evaluate(\"() => document.title\")", signature: "(expression)", detail: "Evaluate JS in page", kind: .action),
+        CompletionItem(label: "reload", insertText: "reload()", signature: "()", detail: "Reload current page", kind: .action),
+        CompletionItem(label: "go_back", insertText: "go_back()", signature: "()", detail: "Navigate back", kind: .action),
+        CompletionItem(label: "set_viewport_size", insertText: "set_viewport_size({\"width\": 1440, \"height\": 900})", signature: "(viewport_size)", detail: "Resize viewport", kind: .action),
+        CompletionItem(label: "pause", insertText: "pause()", signature: "()", detail: "Pause in Playwright Inspector", kind: .action),
+        CompletionItem(label: "title", insertText: "title()", signature: "()", detail: "Return page title", kind: .action),
+        CompletionItem(label: "url", insertText: "url", signature: ": str", detail: "Current page URL", kind: .symbol),
+        CompletionItem(label: "content", insertText: "content()", signature: "()", detail: "Return full page HTML", kind: .action),
+        CompletionItem(label: "request", insertText: "request", signature: ": APIRequestContext", detail: "Page-scoped APIRequestContext", kind: .symbol),
+        CompletionItem(label: "context", insertText: "context", signature: ": BrowserContext", detail: "Parent BrowserContext", kind: .symbol),
+        CompletionItem(label: "keyboard", insertText: "keyboard", signature: ": Keyboard", detail: "Low-level keyboard input", kind: .symbol),
+        CompletionItem(label: "mouse", insertText: "mouse", signature: ": Mouse", detail: "Low-level mouse input", kind: .symbol),
+        CompletionItem(label: "close", insertText: "close()", signature: "()", detail: "Close page", kind: .action)
+    ]
+
+    public static let builtInPythonPlaywrightLocatorActions: [CompletionItem] = [
+        CompletionItem(label: "click", insertText: "click()", signature: "(**kwargs)", detail: "Click matched element", kind: .action),
+        CompletionItem(label: "dblclick", insertText: "dblclick()", signature: "(**kwargs)", detail: "Double-click element", kind: .action),
+        CompletionItem(label: "fill", insertText: "fill(\"\")", signature: "(value)", detail: "Fill input text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "clear", insertText: "clear()", signature: "()", detail: "Clear input field", kind: .action),
+        CompletionItem(label: "press", insertText: "press(\"Enter\")", signature: "(key)", detail: "Press key on element", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "press_sequentially", insertText: "press_sequentially(\"\")", signature: "(text)", detail: "Type character by character", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "hover", insertText: "hover()", signature: "()", detail: "Hover over element", kind: .action),
+        CompletionItem(label: "focus", insertText: "focus()", signature: "()", detail: "Focus element", kind: .action),
+        CompletionItem(label: "check", insertText: "check()", signature: "()", detail: "Check checkbox/radio", kind: .action),
+        CompletionItem(label: "uncheck", insertText: "uncheck()", signature: "()", detail: "Uncheck checkbox", kind: .action),
+        CompletionItem(label: "select_option", insertText: "select_option(\"\")", signature: "(value)", detail: "Select option", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "set_input_files", insertText: "set_input_files(\"\")", signature: "(files)", detail: "Upload file(s)", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "wait_for", insertText: "wait_for(state=\"visible\")", signature: "(state=...)", detail: "Wait for locator state", kind: .action),
+        CompletionItem(label: "scroll_into_view_if_needed", insertText: "scroll_into_view_if_needed()", signature: "()", detail: "Scroll element into view", kind: .action),
+        CompletionItem(label: "text_content", insertText: "text_content()", signature: "()", detail: "Read textContent", kind: .action),
+        CompletionItem(label: "inner_text", insertText: "inner_text()", signature: "()", detail: "Read innerText", kind: .action),
+        CompletionItem(label: "input_value", insertText: "input_value()", signature: "()", detail: "Read input value", kind: .action),
+        CompletionItem(label: "get_attribute", insertText: "get_attribute(\"\")", signature: "(name)", detail: "Read HTML attribute", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "is_visible", insertText: "is_visible()", signature: "()", detail: "Check immediate visibility", kind: .action),
+        CompletionItem(label: "is_enabled", insertText: "is_enabled()", signature: "()", detail: "Check enabled state", kind: .action),
+        CompletionItem(label: "is_checked", insertText: "is_checked()", signature: "()", detail: "Check checked state", kind: .action),
+        CompletionItem(label: "count", insertText: "count()", signature: "()", detail: "Count matched elements", kind: .action),
+        CompletionItem(label: "first", insertText: "first", signature: ": Locator", detail: "First matched element", kind: .symbol),
+        CompletionItem(label: "last", insertText: "last", signature: ": Locator", detail: "Last matched element", kind: .symbol),
+        CompletionItem(label: "nth", insertText: "nth(0)", signature: "(index)", detail: "Nth matched element", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "filter", insertText: "filter(has_text=\"\")", signature: "(has_text=...)", detail: "Narrow locator matches", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "screenshot", insertText: "screenshot()", signature: "(path=...)", detail: "Screenshot element", kind: .action)
+    ]
+
+    public static let builtInPythonPlaywrightRequestActions: [CompletionItem] = [
+        CompletionItem(label: "new_context", insertText: "new_context(base_url=\"\")", signature: "(base_url=..., extra_http_headers=...)", detail: "Create APIRequestContext", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "get", insertText: "get(\"\")", signature: "(url, params=..., headers=...)", detail: "HTTP GET request", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "post", insertText: "post(\"\", data={})", signature: "(url, data=..., headers=...)", detail: "HTTP POST request", kind: .action, cursorBackOffset: 10),
+        CompletionItem(label: "put", insertText: "put(\"\", data={})", signature: "(url, data=..., headers=...)", detail: "HTTP PUT request", kind: .action, cursorBackOffset: 10),
+        CompletionItem(label: "patch", insertText: "patch(\"\", data={})", signature: "(url, data=..., headers=...)", detail: "HTTP PATCH request", kind: .action, cursorBackOffset: 10),
+        CompletionItem(label: "delete", insertText: "delete(\"\")", signature: "(url, headers=...)", detail: "HTTP DELETE request", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "head", insertText: "head(\"\")", signature: "(url, headers=...)", detail: "HTTP HEAD request", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "fetch", insertText: "fetch(\"\", method=\"GET\")", signature: "(url_or_request, method=...)", detail: "Generic HTTP request", kind: .action, cursorBackOffset: 16),
+        CompletionItem(label: "storage_state", insertText: "storage_state()", signature: "(path=...)", detail: "Export cookies & storage", kind: .action),
+        CompletionItem(label: "dispose", insertText: "dispose()", signature: "()", detail: "Dispose APIRequestContext", kind: .action)
+    ]
+
+    public static let builtInPythonPlaywrightResponseActions: [CompletionItem] = [
+        CompletionItem(label: "ok", insertText: "ok", signature: ": bool", detail: "True if HTTP status is 2xx", kind: .symbol),
+        CompletionItem(label: "status", insertText: "status", signature: ": int", detail: "HTTP status code (e.g. 200)", kind: .symbol),
+        CompletionItem(label: "status_text", insertText: "status_text", signature: ": str", detail: "HTTP status text (e.g. OK)", kind: .symbol),
+        CompletionItem(label: "json", insertText: "json()", signature: "()", detail: "Parse JSON response body", kind: .action),
+        CompletionItem(label: "text", insertText: "text()", signature: "()", detail: "Read response body as UTF-8 text", kind: .action),
+        CompletionItem(label: "body", insertText: "body()", signature: "()", detail: "Read raw response bytes", kind: .action),
+        CompletionItem(label: "headers", insertText: "headers", signature: ": dict[str, str]", detail: "Response headers dictionary", kind: .symbol),
+        CompletionItem(label: "headers_array", insertText: "headers_array", signature: ": list", detail: "Raw response header pairs", kind: .symbol),
+        CompletionItem(label: "url", insertText: "url", signature: ": str", detail: "Final response URL", kind: .symbol),
+        CompletionItem(label: "dispose", insertText: "dispose()", signature: "()", detail: "Release response body buffer", kind: .action)
+    ]
+
+    public static let builtInPythonPlaywrightContextActions: [CompletionItem] = [
+        CompletionItem(label: "new_page", insertText: "new_page()", signature: "()", detail: "Open a new page in context", kind: .action),
+        CompletionItem(label: "pages", insertText: "pages", signature: ": list[Page]", detail: "List open pages in context", kind: .symbol),
+        CompletionItem(label: "cookies", insertText: "cookies()", signature: "(urls=...)", detail: "Read context cookies", kind: .action),
+        CompletionItem(label: "add_cookies", insertText: "add_cookies([])", signature: "(cookies)", detail: "Add cookies to context", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "clear_cookies", insertText: "clear_cookies()", signature: "()", detail: "Clear context cookies", kind: .action),
+        CompletionItem(label: "storage_state", insertText: "storage_state(path=\"\")", signature: "(path=...)", detail: "Export cookies & localStorage", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "route", insertText: "route(\"**/*\", lambda route: route.continue_())", signature: "(url, handler)", detail: "Intercept context requests", kind: .action),
+        CompletionItem(label: "unroute", insertText: "unroute(\"**/*\")", signature: "(url)", detail: "Remove route interceptor", kind: .action),
+        CompletionItem(label: "set_extra_http_headers", insertText: "set_extra_http_headers({})", signature: "(headers)", detail: "Set default HTTP headers", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "grant_permissions", insertText: "grant_permissions([\"\"])", signature: "(permissions)", detail: "Grant browser permissions", kind: .action, cursorBackOffset: 3),
+        CompletionItem(label: "clear_permissions", insertText: "clear_permissions()", signature: "()", detail: "Reset browser permissions", kind: .action),
+        CompletionItem(label: "set_geolocation", insertText: "set_geolocation({\"latitude\": 0, \"longitude\": 0})", signature: "(geolocation)", detail: "Mock geolocation", kind: .action),
+        CompletionItem(label: "set_offline", insertText: "set_offline(True)", signature: "(offline)", detail: "Simulate offline network", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "tracing", insertText: "tracing", signature: ": Tracing", detail: "Playwright trace recorder", kind: .symbol),
+        CompletionItem(label: "request", insertText: "request", signature: ": APIRequestContext", detail: "Context APIRequestContext", kind: .symbol),
+        CompletionItem(label: "browser", insertText: "browser", signature: ": Browser", detail: "Owning Browser instance", kind: .symbol),
+        CompletionItem(label: "close", insertText: "close()", signature: "()", detail: "Close browser context", kind: .action)
+    ]
+
+    public static let builtInPythonPlaywrightBrowserActions: [CompletionItem] = [
+        CompletionItem(label: "new_context", insertText: "new_context()", signature: "(**kwargs)", detail: "Create isolated BrowserContext", kind: .action),
+        CompletionItem(label: "new_page", insertText: "new_page()", signature: "(**kwargs)", detail: "Create page in new context", kind: .action),
+        CompletionItem(label: "contexts", insertText: "contexts", signature: ": list[BrowserContext]", detail: "List open browser contexts", kind: .symbol),
+        CompletionItem(label: "version", insertText: "version", signature: ": str", detail: "Browser engine version", kind: .symbol),
+        CompletionItem(label: "is_connected", insertText: "is_connected()", signature: "()", detail: "Check browser connection", kind: .action),
+        CompletionItem(label: "browser_type", insertText: "browser_type", signature: ": BrowserType", detail: "BrowserType (chromium/firefox/webkit)", kind: .symbol),
+        CompletionItem(label: "close", insertText: "close()", signature: "()", detail: "Close browser instance", kind: .action)
+    ]
+
+    public static let builtInPythonPlaywrightRootMembers: [CompletionItem] = [
+        CompletionItem(label: "request", insertText: "request", signature: ": APIRequest", detail: "Create standalone APIRequestContext", kind: .symbol),
+        CompletionItem(label: "chromium", insertText: "chromium", signature: ": BrowserType", detail: "Chromium browser launcher", kind: .symbol),
+        CompletionItem(label: "firefox", insertText: "firefox", signature: ": BrowserType", detail: "Firefox browser launcher", kind: .symbol),
+        CompletionItem(label: "webkit", insertText: "webkit", signature: ": BrowserType", detail: "WebKit browser launcher", kind: .symbol),
+        CompletionItem(label: "devices", insertText: "devices[\"Desktop Chrome\"]", signature: "[name]", detail: "Playwright device descriptors", kind: .symbol),
+        CompletionItem(label: "selectors", insertText: "selectors", signature: ": Selectors", detail: "Custom selector engines", kind: .symbol),
+        CompletionItem(label: "stop", insertText: "stop()", signature: "()", detail: "Stop Playwright instance", kind: .action)
+    ]
+
+    public static let builtInPythonPytestMembers: [CompletionItem] = [
+        CompletionItem(label: "mark", insertText: "mark.", signature: "", detail: "Pytest markers & tags", kind: .dsl),
+        CompletionItem(label: "fixture", insertText: "fixture", signature: "(scope=...)", detail: "Declare pytest fixture", kind: .dsl),
+        CompletionItem(label: "raises", insertText: "raises(Exception)", signature: "(expected_exception)", detail: "Assert exception is raised", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "skip", insertText: "skip(\"\")", signature: "(reason)", detail: "Dynamically skip test", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "fail", insertText: "fail(\"\")", signature: "(reason)", detail: "Explicitly fail test", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "xfail", insertText: "xfail(\"\")", signature: "(reason)", detail: "Mark expected failure", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "param", insertText: "param(, id=\"\")", signature: "(*values, id=...)", detail: "Parametrize case helper", kind: .action, cursorBackOffset: 8),
+        CompletionItem(label: "approx", insertText: "approx()", signature: "(expected)", detail: "Approximate float assertion", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "FixtureRequest", insertText: "FixtureRequest", signature: "", detail: "Type for request fixture", kind: .dsl)
+    ]
+
+    public static let builtInPythonPytestMarkMembers: [CompletionItem] = [
+        CompletionItem(label: "smoke", insertText: "smoke", signature: "", detail: "Smoke marker", kind: .tag),
+        CompletionItem(label: "web", insertText: "web", signature: "", detail: "Web test marker", kind: .tag),
+        CompletionItem(label: "api", insertText: "api", signature: "", detail: "API test marker", kind: .tag),
+        CompletionItem(label: "regression", insertText: "regression", signature: "", detail: "Regression marker", kind: .tag),
+        CompletionItem(label: "skip", insertText: "skip(reason=\"\")", signature: "(reason=...)", detail: "Skip test", kind: .dsl, cursorBackOffset: 2),
+        CompletionItem(label: "skipif", insertText: "skipif(, reason=\"\")", signature: "(condition, reason=...)", detail: "Conditional skip", kind: .dsl, cursorBackOffset: 12),
+        CompletionItem(label: "xfail", insertText: "xfail(reason=\"\")", signature: "(reason=...)", detail: "Expected failure", kind: .dsl, cursorBackOffset: 2),
+        CompletionItem(label: "parametrize", insertText: "parametrize(\"\", [])", signature: "(argnames, argvalues)", detail: "Parametrize test inputs", kind: .dsl, cursorBackOffset: 6),
+        CompletionItem(label: "only_browser", insertText: "only_browser(\"chromium\")", signature: "(browser)", detail: "Restrict test to one browser", kind: .dsl, cursorBackOffset: 2),
+        CompletionItem(label: "skip_browser", insertText: "skip_browser(\"webkit\")", signature: "(browser)", detail: "Skip test on specified browser", kind: .dsl, cursorBackOffset: 2),
+        CompletionItem(label: "usefixtures", insertText: "usefixtures(\"\")", signature: "(*fixtures)", detail: "Apply fixtures to test/class", kind: .dsl, cursorBackOffset: 2)
+    ]
+
+    public static let builtInPythonPlaywrightRouteActions: [CompletionItem] = [
+        CompletionItem(label: "continue_", insertText: "continue_()", signature: "(**overrides)", detail: "Continue request to network", kind: .action),
+        CompletionItem(label: "fulfill", insertText: "fulfill(status=200, json={})", signature: "(status=..., json=..., body=...)", detail: "Mock HTTP response", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "abort", insertText: "abort()", signature: "(error_code=...)", detail: "Abort network request", kind: .action),
+        CompletionItem(label: "fetch", insertText: "fetch()", signature: "(**overrides)", detail: "Perform request & inspect response", kind: .action),
+        CompletionItem(label: "fallback", insertText: "fallback()", signature: "(**overrides)", detail: "Delegate to next route handler", kind: .action),
+        CompletionItem(label: "request", insertText: "request", signature: ": Request", detail: "Intercepted Request object", kind: .symbol)
+    ]
+
+    public static let builtInPythonPlaywrightKeyboardActions: [CompletionItem] = [
+        CompletionItem(label: "press", insertText: "press(\"Enter\")", signature: "(key)", detail: "Press & release key", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "type", insertText: "type(\"\")", signature: "(text, delay=...)", detail: "Type text with key events", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "insert_text", insertText: "insert_text(\"\")", signature: "(text)", detail: "Insert text directly", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "down", insertText: "down(\"\")", signature: "(key)", detail: "Hold key down", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "up", insertText: "up(\"\")", signature: "(key)", detail: "Release held key", kind: .action, cursorBackOffset: 2)
+    ]
+
+    public static let builtInPythonPlaywrightMouseActions: [CompletionItem] = [
+        CompletionItem(label: "click", insertText: "click(0, 0)", signature: "(x, y)", detail: "Click at viewport coordinates", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "dblclick", insertText: "dblclick(0, 0)", signature: "(x, y)", detail: "Double-click at coordinates", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "move", insertText: "move(0, 0)", signature: "(x, y)", detail: "Move mouse cursor", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "down", insertText: "down()", signature: "()", detail: "Press mouse button", kind: .action),
+        CompletionItem(label: "up", insertText: "up()", signature: "()", detail: "Release mouse button", kind: .action),
+        CompletionItem(label: "wheel", insertText: "wheel(0, 100)", signature: "(delta_x, delta_y)", detail: "Dispatch scroll wheel event", kind: .action, cursorBackOffset: 1)
+    ]
+
+    public static let builtInPythonPlaywrightExpectMatchers: [CompletionItem] = [
+        CompletionItem(label: "to_be_visible", insertText: "to_be_visible()", signature: "(timeout=...)", detail: "Assert locator is visible", kind: .action),
+        CompletionItem(label: "to_be_hidden", insertText: "to_be_hidden()", signature: "(timeout=...)", detail: "Assert locator is hidden", kind: .action),
+        CompletionItem(label: "to_be_enabled", insertText: "to_be_enabled()", signature: "(timeout=...)", detail: "Assert locator is enabled", kind: .action),
+        CompletionItem(label: "to_be_disabled", insertText: "to_be_disabled()", signature: "(timeout=...)", detail: "Assert locator is disabled", kind: .action),
+        CompletionItem(label: "to_be_checked", insertText: "to_be_checked()", signature: "(checked=True)", detail: "Assert checkbox is checked", kind: .action),
+        CompletionItem(label: "to_be_focused", insertText: "to_be_focused()", signature: "()", detail: "Assert element has focus", kind: .action),
+        CompletionItem(label: "to_have_text", insertText: "to_have_text(\"\")", signature: "(expected)", detail: "Assert exact/regex text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "to_contain_text", insertText: "to_contain_text(\"\")", signature: "(expected)", detail: "Assert substring text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "to_have_value", insertText: "to_have_value(\"\")", signature: "(value)", detail: "Assert input value", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "to_have_attribute", insertText: "to_have_attribute(\"\", \"\")", signature: "(name, value)", detail: "Assert DOM attribute", kind: .action, cursorBackOffset: 6),
+        CompletionItem(label: "to_have_class", insertText: "to_have_class(\"\")", signature: "(expected)", detail: "Assert CSS class", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "to_have_count", insertText: "to_have_count(1)", signature: "(count)", detail: "Assert matched element count", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "to_have_url", insertText: "to_have_url(\"\")", signature: "(url_or_regex)", detail: "Assert page URL", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "to_have_title", insertText: "to_have_title(\"\")", signature: "(title_or_regex)", detail: "Assert page title", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "to_be_ok", insertText: "to_be_ok()", signature: "()", detail: "Assert HTTP 2xx APIResponse", kind: .action),
+        CompletionItem(label: "not_to_be_visible", insertText: "not_to_be_visible()", signature: "()", detail: "Assert locator is not visible", kind: .action),
+        CompletionItem(label: "not_to_have_text", insertText: "not_to_have_text(\"\")", signature: "(expected)", detail: "Assert locator lacks text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "not_to_be_ok", insertText: "not_to_be_ok()", signature: "()", detail: "Assert non-2xx APIResponse", kind: .action)
+    ]
+
     // MARK: - Gherkin Completions
 
     private static func gherkinCompletions(
@@ -506,9 +1213,10 @@ public enum IntelliSenseEngine {
     }
 
     /// True when the caret on `linePrefix` sits inside a callback parameter destructuring list
-    /// such as `test('...', async ({ `, `async ({ page, `, or `async ({ request }, `.
+    /// such as `test('...', async ({ `, `async ({ page, `, `async ({ request }, `,
+    /// or a Python pytest function signature such as `def test_login(page: Page, `.
     public static func isInsideCallbackArgList(_ linePrefix: String) -> Bool {
-        matchCallbackArgContext(linePrefix) != nil
+        matchCallbackArgContext(linePrefix) != nil || matchPythonFixtureArgContext(linePrefix) != nil
     }
 
     private static func matchCallbackArgContext(_ linePrefix: String) -> (prefix: String, existingNames: Set<String>, isSecondParam: Bool)? {
@@ -991,9 +1699,11 @@ public enum IntelliSenseEngine {
             // Object arrow method: `login: async (email, pass) =>`
             #"^\s*([A-Za-z_$][\w$]*)\s*:\s*(?:async\s*)?\(([^)\n]{0,80})\)\s*=>"#,
             // Named exported function: `export async function sendLogin(user)`
-            #"^\s*export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(([^)\n]{0,80})\)"#
+            #"^\s*export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(([^)\n]{0,80})\)"#,
+            // Python class/module method: `def click_get_started(self, timeout: int = 5000) -> None:`
+            #"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)\n]{0,120})\)"#
         ]
-        let ignored: Set<String> = ["if", "for", "while", "switch", "catch", "constructor", "return", "function", "Scenario", "Feature", "Before", "After"]
+        let ignored: Set<String> = ["if", "for", "while", "switch", "catch", "constructor", "return", "function", "Scenario", "Feature", "Before", "After", "__init__", "__repr__", "__str__"]
         var results: [CompletionItem] = []
         var seen = Set<String>()
 
@@ -1003,9 +1713,16 @@ public enum IntelliSenseEngine {
             for match in regex.matches(in: content, range: NSRange(location: 0, length: ns.length)) {
                 let name = ns.substring(with: match.range(at: 1))
                 guard !ignored.contains(name), seen.insert(name).inserted else { continue }
-                let params = match.range(at: 2).location != NSNotFound
+                var params = match.range(at: 2).location != NSNotFound
                     ? ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespaces)
                     : ""
+                if params == "self" || params == "cls" {
+                    params = ""
+                } else if params.hasPrefix("self,") {
+                    params = String(params.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                } else if params.hasPrefix("cls,") {
+                    params = String(params.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+                }
                 let hasParams = !params.isEmpty
                 results.append(CompletionItem(
                     label: name,

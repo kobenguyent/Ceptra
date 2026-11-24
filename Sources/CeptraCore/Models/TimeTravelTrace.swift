@@ -117,7 +117,7 @@ public struct TimeTravelAssertionRecord: Codable, Equatable, Hashable, Sendable 
         if let rel = relatedRequestId, !rel.isEmpty {
             return true
         }
-        let lower = method.lowercased()
+        let lower = method.lowercased().replacingOccurrences(of: "_", with: "")
         // Explicit browser/DOM assertions are never API assertions
         let webPatterns = [
             "tobevisible", "tobehidden", "tobeenabled", "tobedisabled", "tobechecked",
@@ -220,7 +220,7 @@ public struct TimeTravelNetworkEntry: Identifiable, Codable, Equatable, Hashable
     /// CodeceptJS REST/GraphQL, or Playwright `APIRequestContext`), as opposed to browser page subresources.
     public var isApiExchange: Bool {
         if let src = source?.lowercased(),
-           ["http", "https", "fetch", "rest", "graphql", "playwright-api"].contains(src) {
+           ["http", "https", "fetch", "rest", "graphql", "playwright-api", "playwright-python-api"].contains(src) {
             return true
         }
         return resourceType?.lowercased() == "api"

@@ -49,9 +49,13 @@ struct ParallelRunSheetView: View {
         appState.isPlaywrightWorkspace
     }
 
+    private var isPlaywrightPython: Bool {
+        appState.isPlaywrightPythonWorkspace
+    }
+
     private var commandPreview: String {
         guard let ws = appState.workspace, let tc = appState.resolvedToolchain else {
-            return isPlaywright ? "playwright test" : "codeceptjs"
+            return isPlaywrightPython ? "pytest" : (isPlaywright ? "playwright test" : "codeceptjs")
         }
         let mode = appState.parallelRunSheetTab == .workers ? effectiveWorkerMode : effectiveMultipleMode
         return CommandBuilder.build(
@@ -70,10 +74,18 @@ struct ParallelRunSheetView: View {
             // Header + Mode Switcher
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(isPlaywright ? "Parallel Workers & Projects" : "Parallel & Multi-Suite Execution")
+                    Text(
+                        isPlaywrightPython
+                            ? "Parallel Workers & Browsers"
+                            : (isPlaywright ? "Parallel Workers & Projects" : "Parallel & Multi-Suite Execution")
+                    )
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(CeptraTheme.textPrimary)
-                    Text(isPlaywright ? "Playwright Test --workers & --project launcher" : "CodeceptJS 4.x run-workers & run-multiple launcher")
+                    Text(
+                        isPlaywrightPython
+                            ? "pytest-xdist (-n) & pytest-playwright (--browser) launcher"
+                            : (isPlaywright ? "Playwright Test --workers & --project launcher" : "CodeceptJS 4.x run-workers & run-multiple launcher")
+                    )
                         .font(.system(size: 11))
                         .foregroundStyle(CeptraTheme.textMuted)
                 }
@@ -84,6 +96,9 @@ struct ParallelRunSheetView: View {
                 options: ParallelRunTab.allCases,
                 selection: $appState.parallelRunSheetTab,
                 label: { tab in
+                    if isPlaywrightPython {
+                        return tab == .workers ? "Workers (-n)" : "Browsers (--browser)"
+                    }
                     if isPlaywright {
                         return tab == .workers ? "Workers (--workers)" : "Projects (--project)"
                     }

@@ -328,9 +328,12 @@ public enum CodeSnapshotEngine {
         case "tsx": return "TSX"
         case "js", "mjs", "cjs": return "JS"
         case "jsx": return "JSX"
+        case "py", "pyi": return "PY"
         case "feature": return "GHERKIN"
         case "json": return "JSON"
         case "yml", "yaml": return "YAML"
+        case "toml": return "TOML"
+        case "ini", "cfg": return "INI"
         case "md": return "MD"
         case "sh", "zsh", "bash": return "SHELL"
         case "xml", "html": return ext.uppercased()
@@ -339,6 +342,7 @@ public enum CodeSnapshotEngine {
         switch language.lowercased() {
         case "typescript": return "TS"
         case "javascript": return "JS"
+        case "python": return "PY"
         case "gherkin": return "GHERKIN"
         case "json": return "JSON"
         case "yaml": return "YAML"
@@ -393,9 +397,10 @@ public enum CodeSnapshotEngine {
                     }
                 }
             }
-            // For Gherkin scenarios, include immediately preceding `@tag` lines above `Scenario:`
+            // For Gherkin scenarios and Python functions/classes, include immediately preceding `@tag` / `@decorator` lines
             var blockStart = chosen.startLine
-            if language.lowercased() == "gherkin" {
+            let lowerLang = language.lowercased()
+            if lowerLang == "gherkin" || lowerLang == "python" {
                 while blockStart > 1 {
                     let prev = lineText(blockStart - 1).trimmingCharacters(in: .whitespaces)
                     if prev.hasPrefix("@") {
@@ -431,6 +436,7 @@ public enum CodeSnapshotEngine {
             "Scenario(", "Scenario.", "xScenario(", "Feature(",
             "Before(", "After(", "BeforeSuite(", "AfterSuite(", "Data(",
             "test(", "test.", "it(", "describe(",
+            "def ", "async def ",
             "Scenario:", "Scenario Outline:", "Background:",
             "async function ", "function ", "export function ", "export async function ",
             "export default ", "export const ", "class ", "export class "
@@ -449,6 +455,13 @@ public enum CodeSnapshotEngine {
                qEnd > qStart {
                 let inner = String(sub[sub.index(after: qStart)..<qEnd])
                 return inner.isEmpty ? nil : inner
+            }
+        }
+        if trimmedLine.hasPrefix("def ") || trimmedLine.hasPrefix("async def ") || trimmedLine.hasPrefix("class ") {
+            let pattern = #"^(?:async\s+def|def|class)\s+([A-Za-z_][A-Za-z0-9_]*)"#
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let m = regex.firstMatch(in: trimmedLine, range: NSRange(location: 0, length: (trimmedLine as NSString).length)) {
+                return (trimmedLine as NSString).substring(with: m.range(at: 1))
             }
         }
         if trimmedLine.hasPrefix("Scenario:") || trimmedLine.hasPrefix("Scenario Outline:") {
@@ -590,6 +603,16 @@ public enum CodeSnapshotEngine {
         case "plaintext":
             collect(#"^[A-Z0-9_]+(?==)"#, kind: .property, options: [.anchorsMatchLines])
             collect(#"^\s*#.*$"#, kind: .comment, options: [.anchorsMatchLines])
+
+        case "python":
+            collect(#"\b(?:import|from|as|def|async|await|class|return|yield|if|elif|else|for|in|while|with|try|except|finally|raise|pass|break|continue|assert|and|or|not|is|lambda|del|global|nonlocal|None|True|False|self|cls)\b"#, kind: .keyword)
+            collect(#"\b(?:Page|Locator|FrameLocator|Browser|BrowserContext|Playwright|APIRequestContext|APIResponse|Response|Request|Route|Keyboard|Mouse|Generator|Optional|Any|Dict|List|Tuple|Set|str|int|float|bool|dict|list|tuple|set|bytes)\b"#, kind: .typeName)
+            collect(#"\b(?:pytest|expect|sync_playwright|async_playwright|re)\b"#, kind: .dsl, isBold: true)
+            collect(#"\b(?:page|context|browser|playwright|api_request_context|request|route|locator|frame|self)\.[A-Za-z_][A-Za-z0-9_]*"#, kind: .actor)
+            collect(#"^\s*@[A-Za-z0-9_.]+"#, kind: .tag, isBold: true, options: [.anchorsMatchLines])
+            collect(#"\b\d+(?:_\d+)*(?:\.\d+)?\b"#, kind: .number)
+            collect(#"(?:[fFrRbBuU]{0,2})(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')"#, kind: .string)
+            collect(#"#[^\n]*"#, kind: .comment)
 
         default:
             // TypeScript / JavaScript / CodeceptJS 4.x / Playwright Test

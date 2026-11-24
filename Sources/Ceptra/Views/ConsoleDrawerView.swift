@@ -147,84 +147,70 @@ struct ConsoleDrawerView: View {
                     .accessibilityLabel("Open Workspace in System Console")
                 }
 
-                // Quick Dependencies & Scripts Menu (npm / pnpm / yarn / bun)
+                // Adaptive Runtime Environment & Pre-Suggested Commands Menu (uv / poetry / .venv / pip / bun / pnpm / yarn / npm)
                 if let ws = appState.workspace {
-                    let pm = ws.packageManager
-                    CeptraGlassDropdown(arrowEdge: .top, minWidth: 270, maxWidth: 350) { isOpen in
+                    let suggestions = appState.terminalSuggestions
+                    let pillColor = suggestions.environment.isPython ? CeptraTheme.cyan : CeptraTheme.accentWarm
+                    CeptraGlassDropdown(arrowEdge: .top, minWidth: 285, maxWidth: 380) { isOpen in
                         CeptraMenuPillLabel(
-                            title: pm.rawValue,
+                            title: suggestions.badgeTitle,
                             titleFont: .system(size: 10.5, weight: .semibold, design: .monospaced),
-                            titleColor: CeptraTheme.accentWarm,
-                            accentBorder: CeptraTheme.accentWarm,
-                            tint: CeptraTheme.accentWarm,
+                            titleColor: pillColor,
+                            accentBorder: pillColor,
+                            tint: pillColor,
                             tintOpacity: 0.14,
                             horizontalPadding: 8,
                             verticalPadding: 3.5,
                             cornerRadius: 6,
                             isOpen: isOpen
                         ) {
-                            Image(systemName: "shippingbox")
+                            Image(systemName: suggestions.environment.iconName)
                                 .font(.system(size: 10.5))
-                                .foregroundStyle(CeptraTheme.accentWarm)
+                                .foregroundStyle(pillColor)
                         }
                     } content: {
-                        CeptraDropdownSectionHeader(title: "Dependencies (\(pm.rawValue))")
-                        CeptraDropdownItem(
-                            title: "Install Dependencies",
-                            subtitle: PackageManagerSupport.commandPreview(for: .install, packageManager: pm),
-                            systemImage: "arrow.down.circle"
-                        ) {
-                            appState.runDependencyAction(.install)
-                        }
-                        CeptraDropdownItem(
-                            title: "Update Dependencies",
-                            subtitle: PackageManagerSupport.commandPreview(for: .update, packageManager: pm),
-                            systemImage: "arrow.triangle.2.circlepath"
-                        ) {
-                            appState.runDependencyAction(.update)
-                        }
-                        CeptraDropdownItem(
-                            title: "Clean Install",
-                            subtitle: PackageManagerSupport.commandPreview(for: .cleanInstall, packageManager: pm),
-                            systemImage: "sparkles"
-                        ) {
-                            appState.runDependencyAction(.cleanInstall)
-                        }
-                        CeptraDropdownItem(
-                            title: "Check Outdated",
-                            subtitle: PackageManagerSupport.commandPreview(for: .outdated, packageManager: pm),
-                            systemImage: "clock.badge.exclamationmark"
-                        ) {
-                            appState.runDependencyAction(.outdated)
+                        CeptraDropdownSectionHeader(title: suggestions.dependenciesHeader)
+                        ForEach(suggestions.dependencyItems) { item in
+                            CeptraDropdownItem(
+                                title: item.title,
+                                subtitle: item.commandPreview,
+                                systemImage: item.iconName
+                            ) {
+                                appState.runDependencyAction(item.action)
+                            }
                         }
 
-                        CeptraDropdownDivider()
-                        CeptraDropdownSectionHeader(title: "Frameworks & Browsers")
-                        CeptraDropdownItem(
-                            title: "Update @playwright/test",
-                            subtitle: PackageManagerSupport.commandPreview(for: .upgradePlaywright, packageManager: pm),
-                            systemImage: "theatermasks",
-                            iconColor: CeptraTheme.success
-                        ) {
-                            appState.runDependencyAction(.upgradePlaywright)
-                        }
-                        CeptraDropdownItem(
-                            title: "Update CodeceptJS",
-                            subtitle: PackageManagerSupport.commandPreview(for: .upgradeCodeceptJS, packageManager: pm),
-                            systemImage: "arrow.up.circle",
-                            iconColor: CeptraTheme.accent
-                        ) {
-                            appState.runDependencyAction(.upgradeCodeceptJS)
-                        }
-                        CeptraDropdownItem(
-                            title: "Install Playwright Browsers",
-                            subtitle: PackageManagerSupport.commandPreview(for: .installPlaywrightBrowsers, packageManager: pm),
-                            systemImage: "globe"
-                        ) {
-                            appState.runDependencyAction(.installPlaywrightBrowsers)
+                        if !suggestions.frameworkItems.isEmpty {
+                            CeptraDropdownDivider()
+                            CeptraDropdownSectionHeader(title: suggestions.frameworkHeader)
+                            ForEach(suggestions.frameworkItems) { item in
+                                CeptraDropdownItem(
+                                    title: item.title,
+                                    subtitle: item.commandPreview,
+                                    systemImage: item.iconName,
+                                    iconColor: item.iconName == "globe" ? CeptraTheme.cyan : CeptraTheme.success
+                                ) {
+                                    appState.runDependencyAction(item.action)
+                                }
+                            }
                         }
 
-                        if !ws.packageScripts.isEmpty {
+                        if !suggestions.quickCommandItems.isEmpty {
+                            CeptraDropdownDivider()
+                            CeptraDropdownSectionHeader(title: suggestions.quickCommandsHeader)
+                            ForEach(suggestions.quickCommandItems) { item in
+                                CeptraDropdownItem(
+                                    title: item.title,
+                                    subtitle: item.commandPreview,
+                                    systemImage: item.iconName,
+                                    iconColor: CeptraTheme.accent
+                                ) {
+                                    appState.runDependencyAction(item.action)
+                                }
+                            }
+                        }
+
+                        if !suggestions.environment.isPython && !ws.packageScripts.isEmpty {
                             CeptraDropdownDivider()
                             CeptraDropdownSectionHeader(title: "package.json Scripts (\(ws.packageScripts.count))")
                             ForEach(ws.packageScripts) { script in
@@ -241,8 +227,8 @@ struct ConsoleDrawerView: View {
                     }
                     .fixedSize()
                     .disabled(appState.isRunning)
-                    .help("Install / update dependencies or run package.json scripts")
-                    .accessibilityLabel("Package Manager and Scripts")
+                    .help("Pre-suggested \(suggestions.environment.displayName) dependencies & commands")
+                    .accessibilityLabel("Environment Dependencies and Suggested Commands")
                 }
 
                 if !appState.consoleLogs.isEmpty {
@@ -306,7 +292,7 @@ struct ConsoleDrawerView: View {
                         LazyVStack(alignment: .leading, spacing: 2) {
                             let logFontSize = min(20.0, max(9.5, 11.5 * appState.editorZoomScale))
                             if filteredLogs.isEmpty {
-                                Text("Ready. Press ⌘R to run tests, use the \(appState.workspace?.packageManager.rawValue ?? "npm") menu to update dependencies, or run any shell command below.")
+                                Text(appState.terminalSuggestions.emptyLogHint)
                                     .font(.system(size: logFontSize, design: .monospaced))
                                     .foregroundStyle(CeptraTheme.textMuted)
                                     .padding(12)
@@ -436,7 +422,7 @@ struct ConsoleDrawerView: View {
     }
 
     private var commandInputBar: some View {
-        let pm = appState.workspace?.packageManager.rawValue ?? "npm"
+        let suggestions = appState.terminalSuggestions
         let sysMode = appState.isSystemConsoleMode
         let termName = appState.activeTerminalDisplayName
         return HStack(spacing: 8) {
@@ -445,9 +431,7 @@ struct ConsoleDrawerView: View {
                 .foregroundStyle(sysMode ? CeptraTheme.cyan : CeptraTheme.accent)
 
             TextField(
-                sysMode
-                    ? "Run command in \(termName) (e.g. \(pm) update, npx playwright install)…"
-                    : "Run workspace command (e.g. \(pm) update, \(pm) install -D codeceptjs@latest, npx playwright install)…",
+                suggestions.inputPlaceholder(systemTerminalName: sysMode ? termName : nil),
                 text: $appState.commandInputText
             )
                 .textFieldStyle(.plain)
@@ -459,10 +443,10 @@ struct ConsoleDrawerView: View {
                     submitCustomCommand()
                 }
 
-            if !appState.commandHistory.isEmpty {
-                CeptraGlassDropdown(arrowEdge: .top, minWidth: 260, maxWidth: 380) { isOpen in
+            if appState.workspace != nil {
+                CeptraGlassDropdown(arrowEdge: .top, minWidth: 280, maxWidth: 400) { isOpen in
                     HStack(spacing: 4) {
-                        Image(systemName: "clock.arrow.circlepath")
+                        Image(systemName: appState.commandHistory.isEmpty ? "sparkles" : "clock.arrow.circlepath")
                             .font(.system(size: 10.5))
                         Image(systemName: "chevron.down")
                             .font(.system(size: 8, weight: .semibold))
@@ -487,22 +471,36 @@ struct ConsoleDrawerView: View {
                         isRecentHovered = hovering
                     }
                 } content: {
-                    CeptraDropdownSectionHeader(title: "Recent Commands")
-                    ForEach(appState.commandHistory.prefix(12), id: \.self) { cmd in
+                    if !appState.commandHistory.isEmpty {
+                        CeptraDropdownSectionHeader(title: "Recent Commands")
+                        ForEach(appState.commandHistory.prefix(8), id: \.self) { cmd in
+                            CeptraDropdownItem(
+                                title: cmd,
+                                systemImage: "terminal",
+                                isMonospaced: true
+                            ) {
+                                appState.commandInputText = cmd
+                                appState.runDependencyAction(.customShell(command: cmd))
+                            }
+                        }
+                        CeptraDropdownDivider()
+                    }
+                    CeptraDropdownSectionHeader(title: "Suggested (\(suggestions.environment.displayName))")
+                    ForEach(suggestions.allSuggestions) { item in
                         CeptraDropdownItem(
-                            title: cmd,
-                            systemImage: "terminal",
-                            isMonospaced: true
+                            title: item.title,
+                            subtitle: item.commandPreview,
+                            systemImage: item.iconName
                         ) {
-                            appState.commandInputText = cmd
-                            appState.runDependencyAction(.customShell(command: cmd))
+                            appState.commandInputText = item.commandPreview
+                            appState.runDependencyAction(item.action)
                         }
                     }
                 }
                 .fixedSize()
                 .disabled(appState.isRunning)
-                .help("Recent Commands")
-                .accessibilityLabel("Recent Commands")
+                .help("Suggested (\(suggestions.environment.displayName)) & Recent Commands")
+                .accessibilityLabel("Suggested and Recent Commands")
             }
 
             if appState.isRunning {

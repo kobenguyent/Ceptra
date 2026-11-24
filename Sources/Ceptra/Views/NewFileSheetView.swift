@@ -161,15 +161,18 @@ struct NewFileSheetView: View {
         }
         .onAppear {
             let isTS = appState.workspace?.config.isTypeScript ?? false
-            let isPW = appState.isPlaywrightWorkspace
+            let fw = appState.activeFramework
             if let initial = appState.newFileInitialDirectory {
                 directory = initial
                 hasCustomDirectoryOverride = true
-                selectedKind = inferredDefaultKind(forDirectory: initial, isTypeScript: isTS, isPlaywright: isPW)
+                selectedKind = inferredDefaultKind(forDirectory: initial, isTypeScript: isTS, framework: fw)
             } else {
-                if isPW {
+                switch fw {
+                case .playwrightPython:
+                    selectedKind = .playwrightPythonTest
+                case .playwright:
                     selectedKind = isTS ? .playwrightTSTest : .playwrightJSTest
-                } else {
+                case .codeceptJS:
                     selectedKind = isTS ? .tsTest : .jsTest
                 }
                 directory = selectedKind.suggestedDirectory
@@ -181,19 +184,24 @@ struct NewFileSheetView: View {
         }
     }
 
-    private func inferredDefaultKind(forDirectory dir: String, isTypeScript: Bool, isPlaywright: Bool) -> ScaffoldTemplateKind {
+    private func inferredDefaultKind(forDirectory dir: String, isTypeScript: Bool, framework: TestFrameworkKind) -> ScaffoldTemplateKind {
         let lower = dir.lowercased()
         if lower.isEmpty { return .blankFile }
         let last = (lower as NSString).lastPathComponent
         if ["tests", "test", "e2e", "specs", "spec"].contains(last) {
-            if isPlaywright {
-                return isTypeScript ? .playwrightTSTest : .playwrightJSTest
+            switch framework {
+            case .playwrightPython: return .playwrightPythonTest
+            case .playwright: return isTypeScript ? .playwrightTSTest : .playwrightJSTest
+            case .codeceptJS: return isTypeScript ? .tsTest : .jsTest
             }
-            return isTypeScript ? .tsTest : .jsTest
         }
         if last == "features" { return .gherkinFeature }
         if ["pages", "pageobjects", "fragments"].contains(last) {
-            return isPlaywright ? .playwrightPageObject : .pageObject
+            switch framework {
+            case .playwrightPython: return .playwrightPythonPageObject
+            case .playwright: return .playwrightPageObject
+            case .codeceptJS: return .pageObject
+            }
         }
         if last == "helpers" { return .customHelper }
         return .blankFile

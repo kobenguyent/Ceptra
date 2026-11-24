@@ -164,7 +164,7 @@ public enum CodeFoldingEngine {
             raw = detectCStyleRegions(in: text, includeImports: lang != "json", lineIndex: index)
         case "gherkin":
             raw = detectGherkinRegions(in: text, lineIndex: index)
-        case "yaml":
+        case "yaml", "python":
             raw = detectIndentationRegions(in: text, commentPrefix: "#", lineIndex: index)
         case "markdown":
             raw = detectMarkdownRegions(in: text, lineIndex: index)

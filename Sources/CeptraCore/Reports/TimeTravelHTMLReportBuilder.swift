@@ -100,7 +100,8 @@ public enum TimeTravelHTMLReportBuilder {
         }
         let hasWebStepText = steps.contains { step in
             let t = step.text
-            return t.hasPrefix("page.") || t.hasPrefix("locator(") || t.hasPrefix("getBy") ||
+            return t.hasPrefix("page.") || t.hasPrefix("locator(") || t.hasPrefix("locator.") ||
+                t.hasPrefix("getBy") || t.hasPrefix("get_by_") || t.hasPrefix("wait_for_") ||
                 t == "Navigate" || t.hasPrefix("Navigate ") ||
                 t == "Click" || t.hasPrefix("Click ") ||
                 t == "Fill" || t.hasPrefix("Fill ") ||
@@ -844,7 +845,7 @@ public enum TimeTravelHTMLReportBuilder {
       const STEPS = Array.isArray(REPORT.steps) ? REPORT.steps : [];
       const ASSETS = REPORT.assets || {};
       const REPORT_MODE = META.reportMode || 'web';
-      const API_SOURCES = new Set(['http', 'https', 'fetch', 'rest', 'graphql', 'playwright-api']);
+      const API_SOURCES = new Set(['http', 'https', 'fetch', 'rest', 'graphql', 'playwright-api', 'playwright-python-api']);
       function isApiExchangeEntry(req) {
         if (!req) return false;
         if (req.source && API_SOURCES.has(String(req.source).toLowerCase())) return true;
@@ -1106,9 +1107,23 @@ public enum TimeTravelHTMLReportBuilder {
         return `const res = await request.${fn}(${urlStr});\nawait expect(res).toBeOK();`;
       }
 
+      function buildPlaywrightPythonSnippet(req) {
+        const m = (req.method || 'GET').toLowerCase();
+        const fn = ['get', 'post', 'put', 'patch', 'delete', 'head'].includes(m) ? m : 'fetch';
+        const urlStr = JSON.stringify(req.url || '');
+        if (req.requestBody && m !== 'get' && m !== 'head') {
+          const parsed = tryParseJSON(req.requestBody);
+          const payloadArg = parsed.ok
+            ? `data=${JSON.stringify(parsed.value, null, 2)}`
+            : `data=${JSON.stringify(req.requestBody)}`;
+          return `res = api_request_context.${fn}(${urlStr}, ${payloadArg})\nexpect(res).to_be_ok()`;
+        }
+        return `res = api_request_context.${fn}(${urlStr})\nexpect(res).to_be_ok()`;
+      }
+
       function formatAssertionLabel(method) {
         const m = String(method || 'assert').trim();
-        if (/^(?:expect|not\.|to[A-Z])/.test(m)) {
+        if (/^(?:expect|not\.|not_to_|to[A-Z]|to_)/.test(m)) {
           return m.startsWith('expect') ? m : `expect(…).${m}(…)`;
         }
         return `I.${m}(…)`;
@@ -1695,13 +1710,18 @@ public enum TimeTravelHTMLReportBuilder {
           }, lbl));
         }
 
-        const isPlaywrightApi = String(req.source || '').toLowerCase() === 'playwright-api';
+        const reqSource = String(req.source || '').toLowerCase();
+        const isPlaywrightPythonApi = reqSource === 'playwright-python-api';
+        const isPlaywrightApi = reqSource === 'playwright-api';
+        const frameworkCopyBtn = isPlaywrightPythonApi
+          ? el('button', { type: 'button', class: 'tb-btn', text: 'Playwright (Py)', onClick: () => copyText(buildPlaywrightPythonSnippet(req), 'Playwright Python snippet') })
+          : (isPlaywrightApi
+            ? el('button', { type: 'button', class: 'tb-btn', text: 'Playwright', onClick: () => copyText(buildPlaywrightSnippet(req), 'Playwright snippet') })
+            : el('button', { type: 'button', class: 'tb-btn', text: 'CodeceptJS', onClick: () => copyText(buildCodeceptSnippet(req), 'CodeceptJS snippet') }));
         const actionBtns = el('div', { class: 'tb-group' }, [
           el('button', { type: 'button', class: 'tb-btn', text: 'Copy cURL', onClick: () => copyText(buildCurlCommand(req), 'cURL command') }),
           el('button', { type: 'button', class: 'tb-btn', text: 'Copy fetch()', onClick: () => copyText(buildFetchSnippet(req), 'fetch() snippet') }),
-          isPlaywrightApi
-            ? el('button', { type: 'button', class: 'tb-btn', text: 'Playwright', onClick: () => copyText(buildPlaywrightSnippet(req), 'Playwright snippet') })
-            : el('button', { type: 'button', class: 'tb-btn', text: 'CodeceptJS', onClick: () => copyText(buildCodeceptSnippet(req), 'CodeceptJS snippet') }),
+          frameworkCopyBtn,
           el('button', {
             type: 'button',
             class: 'tb-btn primary',

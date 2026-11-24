@@ -52,6 +52,19 @@ public enum CommandBuilder {
                 secretEnvironmentOverrides: secretEnvironmentOverrides
             )
         }
+        if effectiveFramework == .playwrightPython {
+            return buildPlaywrightPython(
+                mode: mode,
+                options: options,
+                workspaceRoot: workspaceRoot,
+                configFilePath: configFilePath,
+                toolchain: toolchain,
+                debugOptions: debugOptions,
+                traceOutputDirectory: traceOutputDirectory,
+                colorOutput: colorOutput,
+                secretEnvironmentOverrides: secretEnvironmentOverrides
+            )
+        }
 
         var args: [String] = toolchain.prefixArguments
         let allowNoColors = !colorOutput
@@ -589,6 +602,295 @@ public enum CommandBuilder {
             return String(path.dropFirst(prefix.count))
         }
         return path
+    }
+
+    // MARK: - Playwright Python (pytest-playwright) Command Builder
+
+    private static func buildPlaywrightPython(
+        mode: CodeceptRunMode,
+        options: RunOptions,
+        workspaceRoot: URL,
+        configFilePath: String?,
+        toolchain: ResolvedToolchain,
+        debugOptions: DebugLaunchOptions?,
+        traceOutputDirectory: URL?,
+        colorOutput: Bool,
+        secretEnvironmentOverrides: [String: String]
+    ) -> BuiltCommand {
+        var executable = toolchain.runnerExecutable
+        var args: [String] = toolchain.prefixArguments
+        var isTestExecution = false
+        var explicitBrowsersOverridden = false
+        var explicitWorkersSet = false
+
+        let pwOutputDir = workspaceRoot.appendingPathComponent("test-results", isDirectory: true).path
+
+        switch mode {
+        case .runAll:
+            isTestExecution = true
+            appendPytestCommonFlags(to: &args, options: options, configFilePath: configFilePath, colorOutput: colorOutput)
+
+        case .runFile(let relativePath):
+            args.append(resolvePlaywrightTestArgument(relativePath, workspaceRoot: workspaceRoot))
+            isTestExecution = true
+            appendPytestCommonFlags(to: &args, options: options, configFilePath: configFilePath, colorOutput: colorOutput)
+
+        case .runScenario(let relativePath, let scenarioTitle):
+            if let relativePath, !relativePath.isEmpty {
+                args.append(resolvePlaywrightTestArgument(relativePath, workspaceRoot: workspaceRoot))
+            }
+            isTestExecution = true
+            appendPytestCommonFlags(
+                to: &args,
+                options: options,
+                configFilePath: configFilePath,
+                colorOutput: colorOutput,
+                overrideKeyword: scenarioTitle
+            )
+
+        case .runTag(let tag):
+            let cleanMarker = tag.hasPrefix("@") ? String(tag.dropFirst()) : tag
+            isTestExecution = true
+            appendPytestCommonFlags(
+                to: &args,
+                options: options,
+                configFilePath: configFilePath,
+                colorOutput: colorOutput,
+                overrideMarker: cleanMarker
+            )
+
+        case .runLastFailed:
+            args.append("--lf")
+            isTestExecution = true
+            appendPytestCommonFlags(to: &args, options: options, configFilePath: configFilePath, colorOutput: colorOutput)
+
+        case .runWorkers(let count, _, let selectedRuns, _, let lastFailed):
+            args.append(contentsOf: ["-n", String(max(1, count))])
+            explicitWorkersSet = true
+            let cleanBrowsers = selectedRuns
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !cleanBrowsers.isEmpty {
+                explicitBrowsersOverridden = true
+                for browser in cleanBrowsers {
+                    args.append(contentsOf: ["--browser", browser])
+                }
+            }
+            if lastFailed {
+                args.append("--lf")
+            }
+            isTestExecution = true
+            appendPytestCommonFlags(
+                to: &args,
+                options: options,
+                configFilePath: configFilePath,
+                colorOutput: colorOutput,
+                skipSelectedBrowsers: explicitBrowsersOverridden
+            )
+
+        case .runMultiple(let suites, let runAll):
+            let cleanBrowsers = suites
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !runAll && !cleanBrowsers.isEmpty {
+                explicitBrowsersOverridden = true
+                for browser in cleanBrowsers {
+                    args.append(contentsOf: ["--browser", browser])
+                }
+            } else {
+                explicitBrowsersOverridden = true
+                for browser in ["chromium", "firefox", "webkit"] {
+                    args.append(contentsOf: ["--browser", browser])
+                }
+            }
+            isTestExecution = true
+            appendPytestCommonFlags(
+                to: &args,
+                options: options,
+                configFilePath: configFilePath,
+                colorOutput: colorOutput,
+                skipSelectedBrowsers: explicitBrowsersOverridden
+            )
+
+        case .dryRun(let relativePath):
+            if let relativePath, !relativePath.isEmpty {
+                args.append(resolvePlaywrightTestArgument(relativePath, workspaceRoot: workspaceRoot))
+            }
+            args.append(contentsOf: ["--co", "-q"])
+            appendPytestConfigFlag(to: &args, configFilePath: configFilePath)
+            let grep = options.grepPattern.trimmingCharacters(in: .whitespaces)
+            if !grep.isEmpty {
+                args.append(contentsOf: ["-k", options.invertGrep ? "not (\(grep))" : grep])
+            }
+
+        case .checkEnvironment:
+            args.append("--version")
+
+        case .generateDefinitions:
+            let pwCLI = NodeToolchainResolver.resolvePlaywrightPythonCLI(toolchain: toolchain)
+            executable = pwCLI.executable
+            args = pwCLI.prefixArguments + ["codegen", "--target", "python-pytest"]
+
+        case .listActions:
+            args.append(contentsOf: ["--co", "-q"])
+            appendPytestConfigFlag(to: &args, configFilePath: configFilePath)
+
+        case .playwrightCodegen(let url):
+            let pwCLI = NodeToolchainResolver.resolvePlaywrightPythonCLI(toolchain: toolchain)
+            executable = pwCLI.executable
+            args = pwCLI.prefixArguments + ["codegen", "--target", "python-pytest"]
+            if let url, !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                args.append(url.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+
+        case .playwrightShowReport(let reportDir):
+            let pwCLI = NodeToolchainResolver.resolvePlaywrightPythonCLI(toolchain: toolchain)
+            executable = pwCLI.executable
+            args = pwCLI.prefixArguments + ["show-trace"]
+            if let reportDir, !reportDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                args.append(reportDir.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+
+        var env = ProcessInfo.processInfo.environment
+        var envOverrides: [String: String] = [:]
+        env["PATH"] = toolchain.searchPath
+        env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        if !colorOutput {
+            env["FORCE_COLOR"] = "0"
+            env.removeValue(forKey: "NO_COLOR")
+        } else {
+            env.removeValue(forKey: "NO_COLOR")
+            if env["FORCE_COLOR"] == "0" {
+                env.removeValue(forKey: "FORCE_COLOR")
+            }
+        }
+        for (key, value) in options.environmentVariables where !key.trimmingCharacters(in: .whitespaces).isEmpty {
+            let trimmedKey = key.trimmingCharacters(in: .whitespaces)
+            env[trimmedKey] = value
+            envOverrides[trimmedKey] = value
+        }
+        for (key, value) in secretEnvironmentOverrides where !key.trimmingCharacters(in: .whitespaces).isEmpty {
+            let trimmedKey = key.trimmingCharacters(in: .whitespaces)
+            env[trimmedKey] = value
+        }
+
+        if isTestExecution && (options.debug || debugOptions?.enabled == true) {
+            env["PWDEBUG"] = "1"
+            envOverrides["PWDEBUG"] = "1"
+            if debugOptions?.headedBrowser == true && !args.contains("--headed") {
+                args.append("--headed")
+            }
+            if !explicitWorkersSet && !args.contains("-n") {
+                args.append("-s")
+            }
+        }
+
+        // Zero-config Python Time-Travel plugin wiring in Built-in Console mode
+        if isTestExecution && !colorOutput,
+           let traceOutputDirectory,
+           options.timeTravelTrace,
+           supportsTimeTravelTrace(mode),
+           let pluginDir = PlaywrightPythonTimeTravelLoader.ensurePluginDirectoryURL() {
+            env["CEPTRA_TIME_TRAVEL_DIR"] = traceOutputDirectory.path
+            env["CEPTRA_PW_OUTPUT_DIR"] = pwOutputDir
+            envOverrides["CEPTRA_TIME_TRAVEL_DIR"] = traceOutputDirectory.path
+            envOverrides["CEPTRA_PW_OUTPUT_DIR"] = pwOutputDir
+
+            let existingPyPath = (env["PYTHONPATH"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let pyPathParts = [pluginDir.path, workspaceRoot.standardizedFileURL.path, existingPyPath].filter { !$0.isEmpty }
+            let mergedPyPath = pyPathParts.joined(separator: ":")
+            env["PYTHONPATH"] = mergedPyPath
+            envOverrides["PYTHONPATH"] = mergedPyPath
+
+            if options.playwrightTraceMode == .configDefault && !args.contains(where: { $0.hasPrefix("--tracing") }) {
+                args.append("--tracing=on")
+            }
+            if !args.contains(where: { $0.hasPrefix("--output") }) {
+                args.append(contentsOf: ["--output", pwOutputDir])
+            }
+            args.append(contentsOf: ["-p", PlaywrightPythonTimeTravelLoader.pluginModuleName])
+        }
+
+        let displayArgs = args.map { displayQuote($0) }
+        let execDisplayName = URL(fileURLWithPath: executable).lastPathComponent
+        let displayParts = (execDisplayName == "env" && !displayArgs.isEmpty)
+            ? displayArgs
+            : ([execDisplayName] + displayArgs)
+
+        return BuiltCommand(
+            executablePath: executable,
+            arguments: args,
+            workingDirectory: workspaceRoot,
+            environment: env,
+            environmentOverrides: envOverrides,
+            displayCommand: displayParts.joined(separator: " ")
+        )
+    }
+
+    private static func appendPytestConfigFlag(to args: inout [String], configFilePath: String?) {
+        guard let configFilePath, !configFilePath.isEmpty else { return }
+        let ext = URL(fileURLWithPath: configFilePath).pathExtension.lowercased()
+        if ["ini", "toml", "cfg"].contains(ext) {
+            args.append(contentsOf: ["-c", configFilePath])
+        }
+    }
+
+    private static func appendPytestCommonFlags(
+        to args: inout [String],
+        options: RunOptions,
+        configFilePath: String?,
+        colorOutput: Bool,
+        overrideKeyword: String? = nil,
+        overrideMarker: String? = nil,
+        skipSelectedBrowsers: Bool = false
+    ) {
+        args.append("-v")
+        if !colorOutput {
+            args.append("--color=no")
+        }
+        appendPytestConfigFlag(to: &args, configFilePath: configFilePath)
+        if options.playwrightHeaded {
+            args.append("--headed")
+        }
+        if options.bailOnFail {
+            args.append("-x")
+        }
+        if options.playwrightTraceMode != .configDefault {
+            let pyTraceVal: String
+            switch options.playwrightTraceMode {
+            case .on, .onFirstRetry: pyTraceVal = "on"
+            case .retainOnFailure: pyTraceVal = "retain-on-failure"
+            case .off: pyTraceVal = "off"
+            case .configDefault: pyTraceVal = "on"
+            }
+            args.append("--tracing=\(pyTraceVal)")
+        }
+        if !skipSelectedBrowsers && !options.playwrightSelectedProjects.isEmpty {
+            for browser in options.playwrightSelectedProjects {
+                let clean = browser.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !clean.isEmpty {
+                    args.append(contentsOf: ["--browser", clean])
+                }
+            }
+        }
+        if let overrideMarker, !overrideMarker.isEmpty {
+            args.append(contentsOf: ["-m", overrideMarker])
+        }
+        if let overrideKeyword, !overrideKeyword.isEmpty {
+            args.append(contentsOf: ["-k", overrideKeyword])
+        } else if overrideMarker == nil {
+            let grep = options.grepPattern.trimmingCharacters(in: .whitespaces)
+            if !grep.isEmpty {
+                if grep.hasPrefix("@") {
+                    let marker = String(grep.dropFirst())
+                    args.append(contentsOf: ["-m", options.invertGrep ? "not \(marker)" : marker])
+                } else {
+                    args.append(contentsOf: ["-k", options.invertGrep ? "not (\(grep))" : grep])
+                }
+            }
+        }
     }
 
     private static func appendCommonRunFlags(

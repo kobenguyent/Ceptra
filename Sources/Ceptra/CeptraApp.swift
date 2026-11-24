@@ -63,6 +63,9 @@ struct CeptraApp: App {
                     Button("Playwright Test Project (TypeScript)…") {
                         appState.createSamplePlaywrightWorkspacePanel()
                     }
+                    Button("Playwright Python Project (pytest)…") {
+                        appState.createSamplePlaywrightPythonWorkspacePanel()
+                    }
                     Button("CodeceptJS 4.x Project…") {
                         appState.createSampleWorkspacePanel()
                     }
@@ -187,7 +190,11 @@ struct CeptraApp: App {
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(!appState.isActiveTabExecutableTestFile || appState.isRunning)
 
-                Button(appState.isPlaywrightWorkspace ? "List Tests (playwright test --list)" : "Dry Run (Discover & Validate)") {
+                Button(
+                    appState.isPlaywrightPythonWorkspace
+                        ? "Collect Tests (pytest --co)"
+                        : (appState.isPlaywrightWorkspace ? "List Tests (playwright test --list)" : "Dry Run (Discover & Validate)")
+                ) {
                     appState.run(mode: .dryRun(relativePath: nil))
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
@@ -200,7 +207,11 @@ struct CeptraApp: App {
 
                 Divider()
 
-                Button(appState.isPlaywrightWorkspace ? "Run Workers (--workers)" : "Run Workers (run-workers)") {
+                Button(
+                    appState.isPlaywrightPythonWorkspace
+                        ? "Run Workers (pytest -n)"
+                        : (appState.isPlaywrightWorkspace ? "Run Workers (--workers)" : "Run Workers (run-workers)")
+                ) {
                     appState.runWorkersWithCurrentOptions()
                 }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
@@ -211,13 +222,21 @@ struct CeptraApp: App {
                 }
                 .disabled(appState.workspace == nil)
 
-                Button(appState.isPlaywrightWorkspace ? "Run All Projects" : "Run Multiple — All Suites (run-multiple --all)") {
+                Button(
+                    appState.isPlaywrightPythonWorkspace
+                        ? "Run All Browsers"
+                        : (appState.isPlaywrightWorkspace ? "Run All Projects" : "Run Multiple — All Suites (run-multiple --all)")
+                ) {
                     appState.run(mode: .runMultiple(suites: [], runAll: true))
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
                 .disabled(appState.workspace == nil || appState.isRunning)
 
-                Button(appState.isPlaywrightWorkspace ? "Configure Projects Run…" : "Configure Multiple Run…") {
+                Button(
+                    appState.isPlaywrightPythonWorkspace
+                        ? "Configure Browsers Run…"
+                        : (appState.isPlaywrightWorkspace ? "Configure Projects Run…" : "Configure Multiple Run…")
+                ) {
                     appState.presentParallelRunSheet(tab: .multiple)
                 }
                 .disabled(appState.workspace == nil)
@@ -233,17 +252,17 @@ struct CeptraApp: App {
                 Divider()
 
                 if appState.isPlaywrightWorkspace {
-                    Button("Record with Playwright Codegen…") {
+                    Button(appState.isPlaywrightPythonWorkspace ? "Record with Playwright Codegen (Python)…" : "Record with Playwright Codegen…") {
                         appState.launchPlaywrightCodegen()
                     }
                     .disabled(appState.workspace == nil || appState.isRunning)
 
-                    Button("Open Playwright HTML Report") {
+                    Button(appState.isPlaywrightPythonWorkspace ? "Open Playwright Trace Viewer" : "Open Playwright HTML Report") {
                         appState.openPlaywrightHTMLReport()
                     }
                     .disabled(appState.workspace == nil)
 
-                    Button("Check Playwright Version") {
+                    Button(appState.isPlaywrightPythonWorkspace ? "Check Pytest & Playwright Version" : "Check Playwright Version") {
                         appState.run(mode: .checkEnvironment)
                     }
                     .disabled(appState.workspace == nil || appState.isRunning)
@@ -265,28 +284,27 @@ struct CeptraApp: App {
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(appState.workspace == nil)
 
-                Menu("Dependencies & Commands") {
-                    Button("Install Dependencies") {
-                        appState.runDependencyAction(.install)
+                Menu("Dependencies & Commands (\(appState.terminalSuggestions.badgeTitle))") {
+                    ForEach(appState.terminalSuggestions.dependencyItems) { item in
+                        Button("\(item.title) (\(item.commandPreview))") {
+                            appState.runDependencyAction(item.action)
+                        }
                     }
-                    Button("Update Dependencies") {
-                        appState.runDependencyAction(.update)
+                    if !appState.terminalSuggestions.frameworkItems.isEmpty {
+                        Divider()
+                        ForEach(appState.terminalSuggestions.frameworkItems) { item in
+                            Button("\(item.title) (\(item.commandPreview))") {
+                                appState.runDependencyAction(item.action)
+                            }
+                        }
                     }
-                    Button("Clean Install (Lockfile)") {
-                        appState.runDependencyAction(.cleanInstall)
-                    }
-                    Button("Check Outdated Packages") {
-                        appState.runDependencyAction(.outdated)
-                    }
-                    Divider()
-                    Button("Update @playwright/test (@latest)") {
-                        appState.runDependencyAction(.upgradePlaywright)
-                    }
-                    Button("Update CodeceptJS (@latest)") {
-                        appState.runDependencyAction(.upgradeCodeceptJS)
-                    }
-                    Button("Install Playwright Browsers") {
-                        appState.runDependencyAction(.installPlaywrightBrowsers)
+                    if !appState.terminalSuggestions.quickCommandItems.isEmpty {
+                        Divider()
+                        ForEach(appState.terminalSuggestions.quickCommandItems) { item in
+                            Button("\(item.title) (\(item.commandPreview))") {
+                                appState.runDependencyAction(item.action)
+                            }
+                        }
                     }
                 }
                 .disabled(appState.workspace == nil || appState.isRunning)

@@ -492,6 +492,13 @@ private struct TopStudioBar: View {
                         appState.createSamplePlaywrightWorkspacePanel()
                     }
                     CeptraDropdownItem(
+                        title: "Create Sample Playwright Python Workspace…",
+                        systemImage: "chevron.left.forwardslash.chevron.right",
+                        iconColor: CeptraTheme.cyan
+                    ) {
+                        appState.createSamplePlaywrightPythonWorkspacePanel()
+                    }
+                    CeptraDropdownItem(
                         title: "Create Sample CodeceptJS 4.x Workspace…",
                         systemImage: "sparkles",
                         iconColor: CeptraTheme.accent
@@ -733,7 +740,9 @@ private struct RunSplitMenuPopover: View {
                     appState.run(mode: .runLastFailed)
                 }
                 menuRow(
-                    appState.isPlaywrightWorkspace ? "List Tests (playwright test --list)" : "Dry Run (Validate & List)",
+                    appState.isPlaywrightPythonWorkspace
+                        ? "Collect Tests (pytest --co)"
+                        : (appState.isPlaywrightWorkspace ? "List Tests (playwright test --list)" : "Dry Run (Validate & List)"),
                     icon: "checklist",
                     shortcut: "⌘⇧D"
                 ) {
@@ -741,7 +750,11 @@ private struct RunSplitMenuPopover: View {
                 }
 
                 CeptraDropdownDivider()
-                CeptraDropdownSectionHeader(title: appState.isPlaywrightWorkspace ? "Debug, Workers & Projects" : "Debug & Parallel")
+                CeptraDropdownSectionHeader(
+                    title: appState.isPlaywrightPythonWorkspace
+                        ? "Debug, Workers & Browsers"
+                        : (appState.isPlaywrightWorkspace ? "Debug, Workers & Projects" : "Debug & Parallel")
+                )
                 menuRow(
                     appState.isActiveTabExecutableTestFile ? "Debug Active Test File" : "Debug All Tests",
                     icon: "ladybug.fill",
@@ -755,9 +768,11 @@ private struct RunSplitMenuPopover: View {
                     }
                 }
                 menuRow(
-                    appState.isPlaywrightWorkspace
-                        ? "Run Workers (--workers=\(appState.runOptions.workerCount))"
-                        : "Run Workers (\(appState.runOptions.workerCount)× \(appState.runOptions.workerStrategy.rawValue))",
+                    appState.isPlaywrightPythonWorkspace
+                        ? "Run Workers (pytest -n \(appState.runOptions.workerCount))"
+                        : (appState.isPlaywrightWorkspace
+                            ? "Run Workers (--workers=\(appState.runOptions.workerCount))"
+                            : "Run Workers (\(appState.runOptions.workerCount)× \(appState.runOptions.workerStrategy.rawValue))"),
                     icon: "cpu",
                     color: CeptraTheme.cyan,
                     shortcut: "⌘⇧W"
@@ -768,7 +783,9 @@ private struct RunSplitMenuPopover: View {
                     appState.presentParallelRunSheet(tab: .workers)
                 }
                 menuRow(
-                    appState.isPlaywrightWorkspace ? "Run All Projects" : "Run Multiple — All Suites",
+                    appState.isPlaywrightPythonWorkspace
+                        ? "Run All Browsers"
+                        : (appState.isPlaywrightWorkspace ? "Run All Projects" : "Run Multiple — All Suites"),
                     icon: "square.stack.3d.up",
                     color: CeptraTheme.success,
                     shortcut: "⌘⇧M"
@@ -778,7 +795,9 @@ private struct RunSplitMenuPopover: View {
                 if let suites = appState.workspace?.config.multipleSuites, !suites.isEmpty {
                     ForEach(suites) { suite in
                         menuRow(
-                            appState.isPlaywrightWorkspace ? "Project: \(suite.name)" : "Multiple: \(suite.name)",
+                            appState.isPlaywrightPythonWorkspace
+                                ? "Browser: \(suite.name)"
+                                : (appState.isPlaywrightWorkspace ? "Project: \(suite.name)" : "Multiple: \(suite.name)"),
                             icon: "play.square.stack",
                             color: CeptraTheme.accent
                         ) {
@@ -787,7 +806,9 @@ private struct RunSplitMenuPopover: View {
                     }
                 }
                 menuRow(
-                    appState.isPlaywrightWorkspace ? "Configure Projects Run…" : "Configure Multiple Run…",
+                    appState.isPlaywrightPythonWorkspace
+                        ? "Configure Browsers Run…"
+                        : (appState.isPlaywrightWorkspace ? "Configure Projects Run…" : "Configure Multiple Run…"),
                     icon: "square.stack.3d.up.fill"
                 ) {
                     appState.presentParallelRunSheet(tab: .multiple)
@@ -885,7 +906,21 @@ private struct RunSplitMenuPopover: View {
                 }
 
                 CeptraDropdownDivider()
-                if appState.isPlaywrightWorkspace {
+                if appState.isPlaywrightPythonWorkspace {
+                    CeptraDropdownSectionHeader(title: "Playwright Python CLI Tools")
+                    menuRow("Record with Codegen (python-pytest)", icon: "record.circle", color: CeptraTheme.failure) {
+                        appState.launchPlaywrightCodegen()
+                    }
+                    menuRow("Open Playwright Trace Viewer", icon: "doc.richtext", color: CeptraTheme.accent) {
+                        appState.openPlaywrightHTMLReport()
+                    }
+                    menuRow("Check Pytest & Playwright Version", icon: "stethoscope") {
+                        appState.run(mode: .checkEnvironment)
+                    }
+                    menuRow("Collect Tests (pytest --co)", icon: "list.bullet.rectangle") {
+                        appState.run(mode: .listActions)
+                    }
+                } else if appState.isPlaywrightWorkspace {
                     CeptraDropdownSectionHeader(title: "Playwright CLI Tools")
                     menuRow("Record with Codegen (playwright codegen)", icon: "record.circle", color: CeptraTheme.failure) {
                         appState.launchPlaywrightCodegen()
@@ -1326,8 +1361,8 @@ private struct BottomModuleStatusStrip: View {
                                     let label = displayPath(path, relativeTo: ws.rootURL)
                                     let cfgSummary = ws.discoveredConfigs.first(where: { $0.configFilePath == path })
                                     let helperSubtitle = cfgSummary.flatMap { cfg -> String? in
-                                        let prefix = cfg.framework == .playwright ? "Playwright" : "CodeceptJS"
-                                        let names = cfg.framework == .playwright
+                                        let prefix = cfg.framework.shortName
+                                        let names = cfg.framework.isPlaywrightFamily
                                             ? cfg.playwrightProjects
                                             : cfg.helpers.map(\.name)
                                         return names.isEmpty ? prefix : "\(prefix) · \(names.joined(separator: ", "))"
@@ -1942,7 +1977,11 @@ private struct RunOptionsPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(appState.isPlaywrightWorkspace ? "Playwright Test Run Options" : "CodeceptJS 4.x Run Options")
+            Text(
+                appState.isPlaywrightPythonWorkspace
+                    ? "Playwright Python Run Options"
+                    : (appState.isPlaywrightWorkspace ? "Playwright Test Run Options" : "CodeceptJS 4.x Run Options")
+            )
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(CeptraTheme.textPrimary)
 
