@@ -1,0 +1,20 @@
+{
+  "name": "ceptra-mobilewright-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CodeceptJS 4.x + @codeceptjs/mobilewright demo & smoke-test suite for Ceptra IDE",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "codeceptjs run --steps",
+    "test:ios": "codeceptjs run --steps -c codecept.ios.conf.js",
+    "test:android": "codeceptjs run --steps -c codecept.android.conf.js",
+    "doctor": "mobilewright doctor"
+  },
+  "devDependencies": {
+    "@codeceptjs/mobilewright": "^0.1.0",
+    "codeceptjs": "^4.2.0"
+  }
+}

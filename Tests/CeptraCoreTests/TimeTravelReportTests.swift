@@ -841,4 +841,273 @@ final class TimeTravelReportTests: XCTestCase {
         let checkOut = String(data: checkPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         XCTAssertEqual(checkProc.terminationStatus, 0, "API Replay HTML JS syntax check failed: \(checkOut)")
     }
+
+    func testTimeTravelRecorderCapturesMobilewrightScreenScreenshotsViewTreeAndTargetBounds() throws {
+        let fm = FileManager.default
+        let sandbox = fm.temporaryDirectory.appendingPathComponent("ceptra-mw-replay-\(UUID().uuidString)", isDirectory: true)
+        let traceDir = sandbox.appendingPathComponent("trace-out", isDirectory: true)
+        let mockCodeceptDir = sandbox.appendingPathComponent("node_modules/codeceptjs", isDirectory: true)
+        try fm.createDirectory(at: traceDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: mockCodeceptDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: sandbox) }
+
+        let pluginURL = try XCTUnwrap(TimeTravelRecorderLoader.ensurePluginFileURL(baseDirectory: sandbox))
+
+        let toolchain = NodeToolchainResolver.resolve(workspaceRoot: sandbox)
+        guard let nodePath = toolchain.nodePath else {
+            throw XCTSkip("Node.js not installed on host")
+        }
+
+        // Mock codeceptjs with a Mobilewright helper exposing `screen` and `driver`
+        let mockCodeceptJS = #"""
+        const EventEmitter = require('node:events');
+        const zlib = require('node:zlib');
+        const dispatcher = new EventEmitter();
+
+        function crc32(buf) {
+          let c = 0xffffffff;
+          for (let i = 0; i < buf.length; i++) {
+            c ^= buf[i];
+            for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+          }
+          return (c ^ 0xffffffff) >>> 0;
+        }
+        function pngChunk(type, data) {
+          const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+          const t = Buffer.from(type, 'ascii');
+          const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([t, data])), 0);
+          return Buffer.concat([len, t, data, crc]);
+        }
+        function makeSolidPNG(w, h, r, g, b) {
+          const sig = Buffer.from([137,80,78,71,13,10,26,10]);
+          const ihdr = Buffer.alloc(13);
+          ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+          ihdr[8] = 8; ihdr[9] = 2;
+          const row = Buffer.alloc(1 + w * 3);
+          row[0] = 0;
+          for (let x = 0; x < w; x++) {
+            row[1 + x * 3] = r; row[2 + x * 3] = g; row[3 + x * 3] = b;
+          }
+          const raw = Buffer.concat(Array.from({ length: h }, () => row));
+          const idat = zlib.deflateSync(raw);
+          return Buffer.concat([sig, pngChunk('IHDR', ihdr), pngChunk('IDAT', idat), pngChunk('IEND', Buffer.alloc(0))]);
+        }
+
+        const viewTreeNodes = [
+          {
+            type: 'FrameLayout',
+            role: 'window',
+            isVisible: true,
+            isEnabled: true,
+            bounds: { x: 0, y: 0, width: 400, height: 800 },
+            children: [
+              {
+                type: 'TextView',
+                role: 'header',
+                text: 'Products',
+                isVisible: true,
+                isEnabled: true,
+                bounds: { x: 16, y: 48, width: 200, height: 32 },
+                children: []
+              },
+              {
+                type: 'EditText',
+                role: 'textfield',
+                identifier: 'com.saucelabs.mydemoapp.rn:id/username',
+                testId: 'Username input field',
+                label: 'Username',
+                value: 'bob@example.com',
+                isVisible: true,
+                isEnabled: true,
+                bounds: { x: 20, y: 180, width: 360, height: 44 },
+                children: []
+              },
+              {
+                type: 'Button',
+                role: 'button',
+                identifier: 'com.saucelabs.mydemoapp.rn:id/loginBtn',
+                testId: 'Login button',
+                label: 'Login button',
+                text: 'Sign In',
+                isVisible: true,
+                isEnabled: true,
+                bounds: { x: 20, y: 260, width: 360, height: 48 },
+                children: []
+              }
+            ]
+          }
+        ];
+
+        const mobilewrightHelper = {
+          platform: 'android',
+          options: { platform: 'android', app: 'com.saucelabs.mydemoapp.rn' },
+          driver: {
+            async getViewHierarchy() { return viewTreeNodes; },
+            async getScreenSize() { return { width: 400, height: 800, scale: 2 }; },
+            async screenshot() { return makeSolidPNG(40, 80, 24, 34, 56); }
+          },
+          screen: {
+            async viewTree() { return viewTreeNodes; },
+            async screenshot(opts) {
+              const buf = makeSolidPNG(40, 80, 24, 34, 56);
+              if (opts && opts.path) require('node:fs').writeFileSync(opts.path, buf);
+              return buf;
+            }
+          }
+        };
+
+        module.exports = {
+          event: {
+            dispatcher,
+            suite: { before: 'suite.before', after: 'suite.after' },
+            test: {
+              before: 'test.before',
+              after: 'test.after',
+              passed: 'test.passed',
+              failed: 'test.failed',
+              skipped: 'test.skipped'
+            },
+            step: {
+              before: 'step.before',
+              after: 'step.after',
+              started: 'step.started',
+              finished: 'step.finished',
+              passed: 'step.passed',
+              failed: 'step.failed'
+            },
+            all: { result: 'all.result' }
+          },
+          container: {
+            helpers: () => ({ Mobilewright: mobilewrightHelper })
+          }
+        };
+        """#
+        try mockCodeceptJS.write(to: mockCodeceptDir.appendingPathComponent("index.js"), atomically: true, encoding: .utf8)
+
+        let driverScript = sandbox.appendingPathComponent("run-mobilewright-trace.js")
+        let driverSource = """
+        const codeceptjs = require('codeceptjs');
+        const plugin = require(\( try String(data: JSONSerialization.data(withJSONObject: [pluginURL.path]), encoding: .utf8)!.dropFirst().dropLast() ));
+        plugin();
+
+        (async () => {
+          const { event } = codeceptjs;
+          const test = {
+            title: 'logs in on mobile @mobile',
+            parent: { title: 'Sauce Labs Store' },
+            file: '/repo/demo/demo_test.js',
+            tags: ['@mobile']
+          };
+          event.dispatcher.emit(event.suite.before, { title: 'Sauce Labs Store' });
+          event.dispatcher.emit(event.test.before, test);
+
+          const tapStep = {
+            name: 'tap',
+            args: ['~Login button'],
+            toString: () => 'I tap "~Login button"'
+          };
+          event.dispatcher.emit(event.step.started, tapStep);
+          await new Promise((r) => setTimeout(r, 35));
+          event.dispatcher.emit(event.step.passed, tapStep);
+          event.dispatcher.emit(event.step.finished, tapStep);
+          await new Promise((r) => setTimeout(r, 60));
+
+          event.dispatcher.emit(event.test.passed, test);
+          event.dispatcher.emit(event.test.after, test);
+          event.dispatcher.emit(event.all.result);
+          await new Promise((r) => setTimeout(r, 60));
+        })();
+        """
+        try driverSource.write(to: driverScript, atomically: true, encoding: .utf8)
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: nodePath)
+        proc.arguments = [driverScript.path]
+        proc.currentDirectoryURL = sandbox
+        var env = ProcessInfo.processInfo.environment
+        env["CEPTRA_TIME_TRAVEL_DIR"] = traceDir.path
+        proc.environment = env
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        try proc.run()
+        proc.waitUntilExit()
+
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(proc.terminationStatus, 0, "Mobilewright mock run failed: \(out)")
+
+        let loaded = TimeTravelTraceMerger.loadWorkerTraces(from: traceDir)
+        let sc = try XCTUnwrap(loaded.first)
+        let step = try XCTUnwrap(sc.steps.first)
+        XCTAssertEqual(step.targetSelector, "~Login button")
+
+        let diag = try XCTUnwrap(step.diagnostics)
+        XCTAssertEqual(diag.pageURL, "mobilewright://android/com.saucelabs.mydemoapp.rn")
+        XCTAssertTrue(diag.beforeScreenshotDataURI?.hasPrefix("data:image/png;base64,") == true, "Expected beforeScreenshotDataURI PNG")
+        XCTAssertTrue(diag.afterScreenshotDataURI?.hasPrefix("data:image/png;base64,") == true, "Expected afterScreenshotDataURI PNG")
+
+        let dom = try XCTUnwrap(diag.domSnapshot)
+        XCTAssertTrue(dom.html.contains("Login button"), "Expected accessibility tree in domSnapshot.html")
+        XCTAssertEqual(dom.matchedCount, 1)
+        XCTAssertTrue(dom.targetOuterHTML?.contains("Sign In") == true)
+
+        let bbox = try XCTUnwrap(dom.targetBoundingBox)
+        XCTAssertEqual(bbox.x, 20)
+        XCTAssertEqual(bbox.y, 260)
+        XCTAssertEqual(bbox.width, 360)
+        XCTAssertEqual(bbox.height, 48)
+        XCTAssertEqual(bbox.viewportWidth, 400)
+        XCTAssertEqual(bbox.viewportHeight, 800)
+
+        // End-to-end verification against examples/mobilewright-demo if installed
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let demoDir = repoRoot.appendingPathComponent("examples/mobilewright-demo", isDirectory: true)
+        if fm.fileExists(atPath: demoDir.appendingPathComponent("node_modules/@codeceptjs/mobilewright").path) {
+            let demoWS = WorkspaceScanner.scan(rootURL: demoDir)
+            XCTAssertEqual(demoWS.config.projectName, "ceptra-mobilewright-demo")
+            XCTAssertEqual(demoWS.discoveredConfigs.count, 3)
+            let mw = try XCTUnwrap(demoWS.config.helpers.first(where: { $0.name == "Mobilewright" }))
+            XCTAssertTrue(mw.isBuiltIn)
+            XCTAssertEqual(mw.summary, "android · Ceptra Virtual Phone · com.saucelabs.mydemoapp.rn")
+
+            let demoToolchain = NodeToolchainResolver.resolve(workspaceRoot: demoDir)
+            let demoTraceDir = sandbox.appendingPathComponent("live-demo-trace", isDirectory: true)
+            try fm.createDirectory(at: demoTraceDir, withIntermediateDirectories: true)
+
+            var runOpts = RunOptions()
+            runOpts.showSteps = true
+            runOpts.timeTravelTrace = true
+            let built = CommandBuilder.build(
+                mode: .runAll,
+                options: runOpts,
+                workspaceRoot: demoDir,
+                configFilePath: demoWS.config.configFilePath,
+                toolchain: demoToolchain,
+                traceOutputDirectory: demoTraceDir
+            )
+            let demoProc = Process()
+            demoProc.executableURL = URL(fileURLWithPath: built.executablePath)
+            demoProc.arguments = built.arguments
+            demoProc.currentDirectoryURL = built.workingDirectory
+            demoProc.environment = built.environment
+            let demoPipe = Pipe()
+            demoProc.standardOutput = demoPipe
+            demoProc.standardError = demoPipe
+            try demoProc.run()
+            demoProc.waitUntilExit()
+            let demoOut = String(data: demoPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            XCTAssertEqual(demoProc.terminationStatus, 0, "Live examples/mobilewright-demo execution failed:\n\(demoOut)")
+
+            let liveTraces = TimeTravelTraceMerger.loadWorkerTraces(from: demoTraceDir)
+            XCTAssertEqual(liveTraces.count, 4, "Expected 4 traced Mobilewright scenarios")
+            let authSc = try XCTUnwrap(liveTraces.first(where: { $0.scenarioTitle.contains("@auth") }))
+            let tapLoginStep = try XCTUnwrap(authSc.steps.first(where: { $0.text.contains("tap") && $0.text.contains("Login button") }))
+            XCTAssertNotNil(tapLoginStep.diagnostics?.beforeScreenshotDataURI)
+            XCTAssertNotNil(tapLoginStep.diagnostics?.afterScreenshotDataURI)
+            XCTAssertEqual(tapLoginStep.diagnostics?.domSnapshot?.targetBoundingBox?.y, 460)
+        }
+    }
 }

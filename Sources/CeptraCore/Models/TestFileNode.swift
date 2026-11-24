@@ -92,7 +92,8 @@ public struct ParsedStep: Identifiable, Codable, Equatable, Hashable, Sendable {
         }
         let lower = action.lowercased()
         let compact = lower.replacingOccurrences(of: "_", with: "")
-        if lower == "step" && (lowerActor == "test" || lowerActor == "flow") {
+        if (lower == "step" && (lowerActor == "test" || lowerActor == "flow"))
+            || ["retryto", "tryto", "within", "session", "eachelement", "pause", "runonios", "runonandroid", "runonweb"].contains(compact) {
             return .control
         }
         if lowerActor == "expect" || lowerActor == "assert"
@@ -118,19 +119,21 @@ public struct ParsedStep: Identifiable, Codable, Equatable, Hashable, Sendable {
         if compact.hasPrefix("amon") || compact == "goto" || compact == "reload"
             || compact == "goback" || compact == "goforward" || compact == "setviewportsize"
             || compact.contains("url") || compact.contains("refresh") || compact.contains("back")
-            || compact.contains("tab") || compact.contains("switch") {
+            || compact.contains("tab") || compact.contains("switch")
+            || ["launchapp", "closeapp", "installapp", "removeapp"].contains(compact) {
             return .navigation
         }
         if compact.hasPrefix("wait") || compact.hasPrefix("retry") {
             return .wait
         }
-        if compact.contains("click") || compact.contains("fill") || compact.contains("type")
+        if compact.contains("click") || compact.contains("tap") || compact.contains("swipe")
+            || compact.contains("fill") || compact.contains("type")
             || compact.contains("press") || compact.contains("check") || compact.contains("select")
             || compact.contains("attach") || compact.contains("drag") || compact.contains("scroll")
             || compact.contains("hover") || compact.contains("clear") || compact.contains("focus")
-            || compact.hasPrefix("getby") || compact == "locator" || compact == "tap"
+            || compact.hasPrefix("getby") || compact == "locator"
             || compact == "dblclick" || compact == "uncheck" || compact == "setinputfiles"
-            || compact == "screenshot" {
+            || compact == "screenshot" || compact == "setorientation" {
             return .interaction
         }
         if ["retryto", "tryto", "within", "session", "eachelement", "pause"].contains(compact) {

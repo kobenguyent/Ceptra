@@ -14,9 +14,16 @@ struct MainStudioView: View {
     @State private var inspectorDragStartWidth: CGFloat = 348
     @State private var isResizingInspector = false
 
+    @State private var mobileSidebarWidth: CGFloat = 396
+
     @State private var consoleBodyHeight: CGFloat = 190
     @State private var consoleDragStartHeight: CGFloat = 190
     @State private var isResizingConsole = false
+
+    @State private var mobileInspectorBodyHeight: CGFloat = 330
+    @State private var mobileInspectorDragStartHeight: CGFloat = 330
+    @State private var isResizingMobileInspector = false
+    @State private var isMobileInspectorExpanded = true
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -80,6 +87,10 @@ struct MainStudioView: View {
             AIProviderSettingsSheetView()
                 .environmentObject(appState)
         }
+        .sheet(isPresented: $appState.showingMobileDeviceWizard) {
+            MobileDeviceSetupWizardSheetView()
+                .environmentObject(appState)
+        }
         .sheet(item: $appState.pendingAIDiffPreview) { preview in
             AIDiffPreviewSheetView(preview: preview)
                 .environmentObject(appState)
@@ -108,6 +119,50 @@ struct MainStudioView: View {
             }
             .frame(minWidth: 880, minHeight: 580)
         }
+        .onChange(of: appState.isMobileStudioVisible) { _, isVisible in
+            guard isVisible else { return }
+            isMobileInspectorExpanded = true
+            ensureSpaciousMobileStudioWindowSize()
+        }
+    }
+
+    private func ensureSpaciousMobileStudioWindowSize() {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else {
+            return
+        }
+        // Skip resizing if the window is currently in native macOS Full Screen
+        if window.styleMask.contains(.fullScreen) {
+            return
+        }
+        let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let targetWidth = min(1440.0, visibleFrame.width - 24.0)
+        let targetHeight = min(880.0, visibleFrame.height - 24.0)
+
+        var frame = window.frame
+        let newWidth = max(frame.width, targetWidth)
+        let newHeight = max(frame.height, targetHeight)
+        guard newWidth > frame.width + 1 || newHeight > frame.height + 1 else { return }
+
+        // Keep top-left anchored smoothly, then clamp strictly inside visibleFrame
+        let deltaH = newHeight - frame.height
+        frame.origin.y -= deltaH
+        frame.size.width = newWidth
+        frame.size.height = newHeight
+
+        if frame.maxX > visibleFrame.maxX {
+            frame.origin.x = max(visibleFrame.minX, visibleFrame.maxX - frame.width)
+        }
+        if frame.minX < visibleFrame.minX {
+            frame.origin.x = visibleFrame.minX
+        }
+        if frame.minY < visibleFrame.minY {
+            frame.origin.y = visibleFrame.minY
+        }
+        if frame.maxY > visibleFrame.maxY {
+            frame.origin.y = max(visibleFrame.minY, visibleFrame.maxY - frame.height)
+        }
+
+        window.setFrame(frame, display: true, animate: !reduceMotion)
     }
 
     // MARK: - Three Soft-Edged Vertical Windows
@@ -118,44 +173,58 @@ struct MainStudioView: View {
             let gapW: CGFloat = 8
             let usableW = max(0, rootGeo.size.width - outerPadding * 2)
 
-            let minLeftW: CGFloat = 228
-            let maxLeftW: CGFloat = max(minLeftW, min(380, usableW * 0.32))
-            let effectiveLeftW = min(max(sidebarWidth, minLeftW), maxLeftW)
+            let showMobileLeft = appState.isMobileStudioVisible && appState.mobilePhoneDockSide == .left
+            let showMobileRight = appState.isMobileStudioVisible && appState.mobilePhoneDockSide == .right
+            let leftColumnVisible = showMobileLeft || appState.isSidebarVisible
+            let rightColumnVisible = showMobileRight || appState.isRightSidebarVisible
+
+            let minLeftW: CGFloat = showMobileLeft ? 320 : 228
+            let maxLeftW: CGFloat = max(minLeftW, min(showMobileLeft ? 520 : 380, usableW * (showMobileLeft ? 0.44 : 0.32)))
+            let desiredLeftW = showMobileLeft ? mobileSidebarWidth : sidebarWidth
+            let effectiveLeftW = min(max(desiredLeftW, minLeftW), maxLeftW)
             let leftCursor: CeptraSplitResizeHandle.CursorDirection =
                 effectiveLeftW <= minLeftW + 0.5
                     ? .onlyTrailingOrDown
                     : (effectiveLeftW >= maxLeftW - 0.5 ? .onlyLeadingOrUp : .both)
 
-            let minRightW: CGFloat = 296
-            let leftReserve: CGFloat = appState.isSidebarVisible ? (effectiveLeftW + gapW) : 0
+            let minRightW: CGFloat = showMobileRight ? 320 : 296
+            let leftReserve: CGFloat = leftColumnVisible ? (effectiveLeftW + gapW) : 0
             let centerMinReserve: CGFloat = 300 + gapW
             let availableForRight = max(minRightW, usableW - leftReserve - centerMinReserve)
             let maxRightW: CGFloat = max(minRightW, min(760, min(usableW * 0.56, availableForRight)))
-            let effectiveRightW = min(max(rightInspectorWidth, minRightW), maxRightW)
+            let desiredRightW = showMobileRight ? mobileSidebarWidth : rightInspectorWidth
+            let effectiveRightW = min(max(desiredRightW, minRightW), maxRightW)
             let rightCursor: CeptraSplitResizeHandle.CursorDirection =
                 effectiveRightW <= minRightW + 0.5
                     ? .onlyLeadingOrUp
                     : (effectiveRightW >= maxRightW - 0.5 ? .onlyTrailingOrDown : .both)
 
             HStack(spacing: 0) {
-                // WINDOW 1 (LEFT): Soft-Edged Smart Explorer (strictly locked to effectiveLeftW)
-                SidebarExplorerView()
-                    .ceptraPaneWindow(subtle: true)
-                    .frame(minWidth: effectiveLeftW, idealWidth: effectiveLeftW, maxWidth: effectiveLeftW)
-                    .clipped()
-                    .opacity(appState.isSidebarVisible ? 1 : 0)
-                    .offset(x: appState.isSidebarVisible || reduceMotion ? 0 : -10)
-                    .frame(
-                        minWidth: appState.isSidebarVisible ? effectiveLeftW : 0,
-                        idealWidth: appState.isSidebarVisible ? effectiveLeftW : 0,
-                        maxWidth: appState.isSidebarVisible ? effectiveLeftW : 0,
-                        alignment: .trailing
-                    )
-                    .clipped()
-                    .allowsHitTesting(appState.isSidebarVisible)
-                    .accessibilityHidden(!appState.isSidebarVisible)
+                // WINDOW 1 (LEFT): Dedicated Mobile Phone Sidebar (when docked Left) OR Smart Explorer
+                Group {
+                    if showMobileLeft {
+                        MobilePhoneSidebarView()
+                            .ceptraPaneWindow(subtle: true)
+                    } else {
+                        SidebarExplorerView()
+                            .ceptraPaneWindow(subtle: true)
+                    }
+                }
+                .frame(minWidth: effectiveLeftW, idealWidth: effectiveLeftW, maxWidth: effectiveLeftW)
+                .clipped()
+                .opacity(leftColumnVisible ? 1 : 0)
+                .offset(x: leftColumnVisible || reduceMotion ? 0 : -10)
+                .frame(
+                    minWidth: leftColumnVisible ? effectiveLeftW : 0,
+                    idealWidth: leftColumnVisible ? effectiveLeftW : 0,
+                    maxWidth: leftColumnVisible ? effectiveLeftW : 0,
+                    alignment: .trailing
+                )
+                .clipped()
+                .allowsHitTesting(leftColumnVisible)
+                .accessibilityHidden(!leftColumnVisible)
 
-                if appState.isSidebarVisible {
+                if leftColumnVisible {
                     CeptraSplitResizeHandle(
                         axis: .horizontal,
                         cursorDirection: leftCursor,
@@ -165,14 +234,23 @@ struct MainStudioView: View {
                             sidebarDragStartWidth = effectiveLeftW
                         },
                         onDragChanged: { delta in
-                            sidebarWidth = min(max(sidebarDragStartWidth + delta, minLeftW), maxLeftW)
+                            let next = min(max(sidebarDragStartWidth + delta, minLeftW), maxLeftW)
+                            if showMobileLeft {
+                                mobileSidebarWidth = next
+                            } else {
+                                sidebarWidth = next
+                            }
                         },
                         onDragEnd: {
                             isResizingSidebar = false
                         },
                         onDoubleClick: {
                             withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                                sidebarWidth = 264
+                                if showMobileLeft {
+                                    mobileSidebarWidth = 396
+                                } else {
+                                    sidebarWidth = 264
+                                }
                             }
                         }
                     )
@@ -184,7 +262,7 @@ struct MainStudioView: View {
                     .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
                     .layoutPriority(1)
 
-                if appState.isRightSidebarVisible {
+                if rightColumnVisible {
                     CeptraSplitResizeHandle(
                         axis: .horizontal,
                         cursorDirection: rightCursor,
@@ -194,35 +272,51 @@ struct MainStudioView: View {
                             inspectorDragStartWidth = effectiveRightW
                         },
                         onDragChanged: { delta in
-                            rightInspectorWidth = min(max(inspectorDragStartWidth - delta, minRightW), maxRightW)
+                            let next = min(max(inspectorDragStartWidth - delta, minRightW), maxRightW)
+                            if showMobileRight {
+                                mobileSidebarWidth = next
+                            } else {
+                                rightInspectorWidth = next
+                            }
                         },
                         onDragEnd: {
                             isResizingInspector = false
                         },
                         onDoubleClick: {
                             withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                                rightInspectorWidth = 348
+                                if showMobileRight {
+                                    mobileSidebarWidth = 396
+                                } else {
+                                    rightInspectorWidth = 348
+                                }
                             }
                         }
                     )
                     .frame(width: gapW)
                 }
 
-                // WINDOW 3 (RIGHT): Soft-Edged Single-Slot Inspector (strictly locked to effectiveRightW)
-                RightInspectorWindowView()
-                    .frame(minWidth: effectiveRightW, idealWidth: effectiveRightW, maxWidth: effectiveRightW)
-                    .clipped()
-                    .opacity(appState.isRightSidebarVisible ? 1 : 0)
-                    .offset(x: appState.isRightSidebarVisible || reduceMotion ? 0 : 10)
-                    .frame(
-                        minWidth: appState.isRightSidebarVisible ? effectiveRightW : 0,
-                        idealWidth: appState.isRightSidebarVisible ? effectiveRightW : 0,
-                        maxWidth: appState.isRightSidebarVisible ? effectiveRightW : 0,
-                        alignment: .leading
-                    )
-                    .clipped()
-                    .allowsHitTesting(appState.isRightSidebarVisible)
-                    .accessibilityHidden(!appState.isRightSidebarVisible)
+                // WINDOW 3 (RIGHT): Dedicated Mobile Phone Sidebar (when docked Right) OR Single-Slot Inspector
+                Group {
+                    if showMobileRight {
+                        MobilePhoneSidebarView()
+                            .ceptraPaneWindow(subtle: true)
+                    } else {
+                        RightInspectorWindowView()
+                    }
+                }
+                .frame(minWidth: effectiveRightW, idealWidth: effectiveRightW, maxWidth: effectiveRightW)
+                .clipped()
+                .opacity(rightColumnVisible ? 1 : 0)
+                .offset(x: rightColumnVisible || reduceMotion ? 0 : 10)
+                .frame(
+                    minWidth: rightColumnVisible ? effectiveRightW : 0,
+                    idealWidth: rightColumnVisible ? effectiveRightW : 0,
+                    maxWidth: rightColumnVisible ? effectiveRightW : 0,
+                    alignment: .leading
+                )
+                .clipped()
+                .allowsHitTesting(rightColumnVisible)
+                .accessibilityHidden(!rightColumnVisible)
             }
             .padding(.horizontal, outerPadding)
             .padding(.top, 2)
@@ -230,11 +324,15 @@ struct MainStudioView: View {
             .frame(width: rootGeo.size.width, height: rootGeo.size.height, alignment: .leading)
             .animation(
                 isResizingSidebar ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
-                value: appState.isSidebarVisible
+                value: leftColumnVisible
             )
             .animation(
                 isResizingInspector ? nil : CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
-                value: appState.isRightSidebarVisible
+                value: rightColumnVisible
+            )
+            .animation(
+                CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion),
+                value: appState.mobilePhoneDockSide
             )
         }
     }
@@ -253,8 +351,50 @@ struct MainStudioView: View {
                     ? .onlyLeadingOrUp
                     : (effectiveConsoleBody >= maxConsoleBody - 0.5 ? .onlyTrailingOrDown : .both)
 
+            let minMobileInspectorBody: CGFloat = 156
+            let consoleReserve: CGFloat = appState.isConsoleVisible ? (effectiveConsoleBody + ConsoleDrawerView.headerHeight + handleH) : 0
+            let maxMobileInspectorBody = max(
+                minMobileInspectorBody,
+                min(440, colGeo.size.height - consoleReserve - 220)
+            )
+            let effectiveMobileInspectorBody = min(max(mobileInspectorBodyHeight, minMobileInspectorBody), maxMobileInspectorBody)
+            let mobileInspectorCursor: CeptraSplitResizeHandle.CursorDirection =
+                effectiveMobileInspectorBody <= minMobileInspectorBody + 0.5
+                    ? .onlyTrailingOrDown
+                    : (effectiveMobileInspectorBody >= maxMobileInspectorBody - 0.5 ? .onlyLeadingOrUp : .both)
+
             VStack(spacing: 0) {
                 EditorTabBar()
+
+                if appState.isMobileStudioVisible {
+                    MobileElementInspectorPanel(
+                        isExpanded: $isMobileInspectorExpanded,
+                        bodyHeight: effectiveMobileInspectorBody
+                    )
+                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+
+                    if isMobileInspectorExpanded {
+                        CeptraSplitResizeHandle(
+                            axis: .vertical,
+                            cursorDirection: mobileInspectorCursor,
+                            onDragStart: {
+                                isResizingMobileInspector = true
+                                mobileInspectorDragStartHeight = effectiveMobileInspectorBody
+                            },
+                            onDragChanged: { delta in
+                                mobileInspectorBodyHeight = min(max(mobileInspectorDragStartHeight + delta, minMobileInspectorBody), maxMobileInspectorBody)
+                            },
+                            onDragEnd: {
+                                isResizingMobileInspector = false
+                            },
+                            onDoubleClick: {
+                                withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                                    mobileInspectorBodyHeight = 330
+                                }
+                            }
+                        )
+                    }
+                }
 
                 if appState.debugPhase.isActive {
                     HStack {
@@ -1041,6 +1181,10 @@ private struct ToolsControlPopover: View {
                         get: { appState.isRightSidebarVisible && appState.activeRightTab == .ai },
                         set: { _ in appState.toggleRightTab(.ai) }
                     ))
+                    moduleSwitchRow("Mobile Phone Studio", subtitle: "Real-device mirror, inspector & recorder", shortcut: "⌘⌥M", isOn: Binding(
+                        get: { appState.isMobileStudioVisible },
+                        set: { _ in appState.toggleMobileStudio() }
+                    ))
                 }
 
                 Divider().overlay(CeptraTheme.border)
@@ -1060,6 +1204,10 @@ private struct ToolsControlPopover: View {
 
                 // Quick Editor & Workspace Actions
                 VStack(spacing: 3) {
+                    quickActionRow("Connect Mobile Device…", icon: "iphone.and.arrow.forward") {
+                        appState.showingToolsPopover = false
+                        appState.openMobileDeviceWizard()
+                    }
                     quickActionRow("Command Palette…", icon: "magnifyingglass", shortcut: "⌘K") {
                         appState.showingToolsPopover = false
                         appState.showingCommandPalette = true
@@ -1332,6 +1480,11 @@ private struct BottomModuleStatusStrip: View {
                     dockPill("AI", isOn: appState.isAIStreaming || (appState.isRightSidebarVisible && appState.activeRightTab == .ai)) {
                         withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
                             appState.toggleRightTab(.ai)
+                        }
+                    }
+                    dockPill("Mobile", isOn: appState.isMobileStudioVisible) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleMobileStudio()
                         }
                     }
                 }

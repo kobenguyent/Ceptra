@@ -200,6 +200,47 @@ final class AppState: ObservableObject {
     @Published var showingReportsSheet: Bool = false
     @Published var showingCodeSnapshotSheet: Bool = false
     @Published var codeSnapshotDraft: CodeSnapshotDraft? = nil
+    @Published var showingMobileDeviceWizard: Bool = false
+    @Published var isMobileStudioVisible: Bool = false
+    @Published var mobileWizardStep: Int = 1
+    @Published var mobileWizardTargetKind: MobileWizardTargetKind = .androidReal
+    @Published var mobileDoctorReport: MobileDoctorReport? = nil
+    @Published var isMobileDoctorRunning: Bool = false
+    @Published var isMobilePrerequisiteInstalling: Bool = false
+    @Published var mobilePrerequisiteStatusLine: String = ""
+    @Published var mobileDevices: [MobileDeviceDescriptor] = []
+    @Published var isMobileDevicesRefreshing: Bool = false
+    @Published var selectedMobileDeviceID: String? = nil
+    @Published var connectedMobileDevice: MobileDeviceDescriptor? = nil
+    @Published var mobileProvisioningProfilePath: String = ""
+    @Published var isMobileAgentInstalling: Bool = false
+    @Published var mobileAgentStatusReady: Bool = false
+    @Published var mobileInstalledApps: [MobileInstalledApp] = []
+    @Published var selectedMobileAppId: String = "com.saucelabs.mydemoapp.rn"
+    @Published var mobileSnapshot: MobileScreenSnapshot? = nil
+    @Published var isMobileSnapshotLoading: Bool = false
+    @Published var mobileSelectedNodeID: String? = nil
+    @Published var mobileHoveredNodeID: String? = nil
+    @Published var mobileOrientation: MobileDeviceOrientation = .portrait
+    @Published var mobileCanvasInteractionMode: MobileCanvasInteractionMode = .interact
+    @Published var showMobileWireframeBounds: Bool = false
+    @Published var isMobileLiveStreamActive: Bool = true
+    @Published var isMobileGestureExecuting: Bool = false
+    @Published var mobileRecordToEditor: Bool = true
+    @Published var mobileFillInputText: String = "bob@example.com"
+    @Published var mobileRecordedSteps: [MobileRecordedStep] = []
+    @Published var mobileLastError: String? = nil
+    @Published var mobileCaptureAgentRequired: Bool = false
+    @Published var mobileCaptureErrorDetail: String? = nil
+    @Published var mobileDiscoveredProvisioningProfiles: [URL] = []
+    @Published var mobileDiscoveredProfiles: [MobileProvisioningProfileInfo] = []
+    @Published var pendingPluggedInDevicePrompt: MobileDeviceDescriptor? = nil
+    @Published var dismissedPluggedInDeviceIDs: Set<String> = []
+    @Published var isMobileAutoSetupRunning: Bool = false
+    @Published var mobileAutoSetupStatusText: String = ""
+    @Published var mobilePreviewCartCount: Int = 1
+    @Published var mobilePreviewUsername: String = ""
+    @Published var mobilePreviewPasswordFilled: Bool = false
     @Published var bannerMessage: String? = nil
     @Published var bannerIsError: Bool = false
     @Published var zoomHUDText: String? = nil
@@ -217,6 +258,10 @@ final class AppState: ObservableObject {
     let ollamaManager = OllamaManager()
     let aiSecretStore: AISecretStore = MacOSKeychainSecretStore()
     let aiConversationStore = AIConversationStore()
+    let mobileDeviceBridge: any MobileDeviceTransport = MobileCLIDeviceBridge()
+    var mobileRefreshTask: Task<Void, Never>? = nil
+    var mobileUSBMonitorTask: Task<Void, Never>? = nil
+    var mobileLiveStreamTask: Task<Void, Never>? = nil
     var aiStreamTask: Task<Void, Never>? = nil
     var aiActiveStreamID: UUID = UUID()
     var ollamaPullTask: Task<Void, Never>? = nil
@@ -2079,6 +2124,7 @@ final class AppState: ObservableObject {
             // Stop child servers/subprocesses cleanly before handing off to the detached updater
             stopCodeceptUIServer()
             cancelAllAIBackgroundTasks()
+            cancelMobileStudioTasks()
             if isRunning {
                 stopActiveRun()
             }

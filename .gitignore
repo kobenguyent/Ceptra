@@ -9,3 +9,7 @@ DerivedData/
 *.zip
 *.icns
 *~
+node_modules/
+**/node_modules/
+examples/**/output/
+

@@ -30,7 +30,7 @@ struct ConsoleDrawerView: View {
             switch filterMode {
             case .all: break
             case .steps: if !entry.isStep && !entry.isHighlight { return false }
-            case .errors: if !entry.isError && !entry.text.contains("✖") && !entry.text.contains("FAIL") { return false }
+            case .errors: if !isActualErrorLine(entry) { return false }
             }
             if !query.isEmpty && !entry.text.lowercased().contains(query) { return false }
             return true
@@ -192,6 +192,16 @@ struct ConsoleDrawerView: View {
                                 ) {
                                     appState.runDependencyAction(item.action)
                                 }
+                            }
+                        }
+                        if appState.activeFramework != .playwrightPython {
+                            let pm = appState.workspace?.packageManager ?? .npm
+                            CeptraDropdownItem(
+                                title: "Run Mobilewright Doctor",
+                                subtitle: PackageManagerSupport.commandPreview(for: .runMobilewrightDoctor, packageManager: pm),
+                                systemImage: "iphone"
+                            ) {
+                                appState.runDependencyAction(.runMobilewrightDoctor)
                             }
                         }
 
@@ -565,14 +575,44 @@ struct ConsoleDrawerView: View {
         appState.runDependencyAction(.customShell(command: appState.commandInputText))
     }
 
-    private func lineColor(for entry: ConsoleLogEntry) -> Color {
-        if entry.isError { return CeptraTheme.failure }
+    private func isActualErrorLine(_ entry: ConsoleLogEntry) -> Bool {
         let t = entry.text.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { return false }
+        let lower = t.lowercased()
+
+        // Explicit success / CLI progress lines (brew, npm, git, curl often emit these on stderr)
+        if t.hasPrefix("✔") || t.hasPrefix("✓") || t.hasPrefix("OK |") || t.hasPrefix("==>") || t.hasPrefix("🍺") {
+            return false
+        }
+        if lower.hasPrefix("npm notice") || lower.hasPrefix("npm warn") || lower.hasPrefix("warning:") || lower.hasPrefix("warn:") {
+            return false
+        }
+
+        // Real error indicators (strictly reserved for actual failures/errors)
+        if t.hasPrefix("✖") || t.hasPrefix("✗") || t.hasPrefix("FAIL |") || t.hasPrefix("FAIL ") {
+            return true
+        }
+        let errorMarkers = [
+            "error:", "err!", "fatal:", "command failed", "exited with code",
+            "exception", "traceback", "assertionerror", "syntaxerror", "typeerror",
+            "referenceerror", "enoent", "eacces", "eperm", "cannot find", "not found",
+            "permission denied", "failed to ", "unable to "
+        ]
+        if errorMarkers.contains(where: { lower.contains($0) }) {
+            return true
+        }
+        return false
+    }
+
+    private func lineColor(for entry: ConsoleLogEntry) -> Color {
+        let t = entry.text.trimmingCharacters(in: .whitespaces)
+        if isActualErrorLine(entry) { return CeptraTheme.failure }
         if t.hasPrefix("↗ ") { return CeptraTheme.cyan }
         if t.hasPrefix("$ ") { return CeptraTheme.accent }
-        if t.hasPrefix("✔") || t.hasPrefix("OK |") { return CeptraTheme.success }
-        if t.hasPrefix("✖") || t.hasPrefix("FAIL |") { return CeptraTheme.failure }
+        if t.hasPrefix("✔") || t.hasPrefix("✓") || t.hasPrefix("OK |") || t.hasPrefix("==>") || t.hasPrefix("🍺") {
+            return CeptraTheme.success
+        }
         if entry.isStep { return CeptraTheme.cyan.opacity(0.92) }
-        return CeptraTheme.textPrimary.opacity(0.88)
+        return CeptraTheme.textPrimary.opacity(0.9)
     }
 }

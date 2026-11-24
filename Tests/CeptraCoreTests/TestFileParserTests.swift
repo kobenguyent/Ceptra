@@ -94,4 +94,35 @@ final class TestFileParserTests: XCTestCase {
         XCTAssertEqual(feature.scenarios[0].steps[0].category, .gherkin)
         XCTAssertEqual(feature.scenarios[1].modifier, .outline)
     }
+
+    func testClassifiesMobilewrightStepsAccurately() {
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "tap"), .interaction)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "doubleTap"), .interaction)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "longPress"), .interaction)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "tapXY"), .interaction)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "swipeUp"), .interaction)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "swipeDown"), .interaction)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "swipeLeft"), .interaction)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "swipeRight"), .interaction)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "scrollIntoView"), .interaction)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "setOrientation"), .interaction)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "pressButton"), .interaction)
+
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "launchApp"), .navigation)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "closeApp"), .navigation)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "installApp"), .navigation)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "removeApp"), .navigation)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "openUrl"), .navigation)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "goBack"), .navigation)
+
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "seeAppIsInstalled"), .assertion)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "seeAppIsNotInstalled"), .assertion)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "seeOrientationIs"), .assertion)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "dontSeeInField"), .assertion)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "dontSeeCheckboxIsChecked"), .assertion)
+
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "waitForEnabled"), .wait)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "runOnIOS"), .control)
+        XCTAssertEqual(ParsedStep.classify(actor: "I", action: "runOnAndroid"), .control)
+    }
 }

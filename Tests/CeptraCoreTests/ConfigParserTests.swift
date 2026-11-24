@@ -530,4 +530,61 @@ final class ConfigParserTests: XCTestCase {
         XCTAssertEqual(CodeceptRunMode.runScenario(relativePath: "tests/web/tests/login_test.ts", scenarioTitle: "Login").targetFilePath, "tests/web/tests/login_test.ts")
         XCTAssertNil(CodeceptRunMode.runAll.targetFilePath)
     }
+
+    func testParsesMobilewrightHelperInJSAndJSONConfigs() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("ceptra-mobilewright-cfg-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let jsConfig = """
+        export const config = {
+          name: 'mobilewright-demo',
+          tests: './*_test.js',
+          output: './output',
+          helpers: {
+            Mobilewright: {
+              require: '@codeceptjs/mobilewright',
+              platform: 'android',
+              app: 'com.saucelabs.mydemoapp.rn',
+              deviceName: 'Pixel 8',
+              installApps: './test/data/MyRNDemoApp.apk',
+              actionTimeout: 10000,
+              waitForTimeout: 10000,
+              animations: 'off',
+            },
+          },
+        };
+        """
+        let jsConfigURL = root.appendingPathComponent("codecept.conf.js")
+        try jsConfig.write(to: jsConfigURL, atomically: true, encoding: .utf8)
+
+        let parsedJS = ConfigParser.parseWorkspaceConfig(rootURL: root)
+        let mwHelper = try XCTUnwrap(parsedJS.helpers.first(where: { $0.name == "Mobilewright" }))
+        XCTAssertTrue(mwHelper.isBuiltIn, "Mobilewright should be recognized as a built-in CodeceptJS helper")
+        XCTAssertEqual(mwHelper.requirePath, "@codeceptjs/mobilewright")
+        XCTAssertEqual(mwHelper.summary, "android · Pixel 8 · com.saucelabs.mydemoapp.rn")
+
+        let jsonConfig = """
+        {
+          "name": "mobilewright-ios-json",
+          "tests": "./*_test.js",
+          "output": "./output",
+          "helpers": {
+            "Mobilewright": {
+              "require": "@codeceptjs/mobilewright",
+              "platform": "ios",
+              "app": "com.apple.Preferences"
+            }
+          }
+        }
+        """
+        let jsonConfigURL = root.appendingPathComponent("codecept.ios.json")
+        try jsonConfig.write(to: jsonConfigURL, atomically: true, encoding: .utf8)
+
+        let parsedJSON = ConfigParser.parseWorkspaceConfig(rootURL: root, explicitConfigPath: "codecept.ios.json")
+        let iosHelper = try XCTUnwrap(parsedJSON.helpers.first(where: { $0.name == "Mobilewright" }))
+        XCTAssertTrue(iosHelper.isBuiltIn)
+        XCTAssertEqual(iosHelper.summary, "ios · com.apple.Preferences")
+    }
 }

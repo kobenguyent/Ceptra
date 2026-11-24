@@ -185,8 +185,8 @@ public enum AISkillRegistry {
             Requirements:
             1. Match the active file's module format (ESM `import` vs CommonJS) and TypeScript/JavaScript style.
             2. Reuse existing workspace `I.*` custom steps and PageObjects whenever available.
-            3. Use resilient semantic locators (`data-testid`, accessible roles/labels, visible text) — avoid brittle nth-child CSS or deep XPath selectors.
-            4. Avoid arbitrary `I.wait(n)` sleeps; prefer explicit assertions (`I.waitForElement`, `I.waitForVisible`, `I.see`).
+            3. Use resilient semantic locators matching `${HELPER}`: for Web helpers (`Playwright`/`WebDriver`), use `data-testid`, accessible roles/labels, or visible text (avoid brittle nth-child CSS or deep XPath); for `Mobilewright`, use native accessibility locators (`~accessibilityId`, `#id`, `{ role, name }`, `{ android, ios }`, or adjacent field labels — never CSS or XPath).
+            4. Avoid arbitrary `I.wait(n)` sleeps; prefer explicit assertions (`I.waitForElement`, `I.waitForVisible`, `I.waitForText`, `I.see`).
             5. Return the final runnable code inside a single clean fenced code block ready for Preview & Apply.
 
             User goal: $ARGUMENTS
@@ -205,9 +205,9 @@ public enum AISkillRegistry {
             Audit the attached CodeceptJS code (or selection) for flakiness, brittle selectors, race conditions, or assertion gaps, and provide a hardened replacement.
 
             Checklist:
-            1. Replace fragile CSS/XPath chains with semantic locators (`[data-testid="..."]`, accessible labels, button text, or strict `locate()` expressions).
-            2. Replace fixed `I.wait(...)` calls with deterministic waits (`I.waitForVisible`, `I.waitForInvisible`, `I.waitForResponse`, `I.waitInUrl`).
-            3. Fix missing `await` on async helper calls (`grabTextFrom`, `grabAttributeFrom`, `sendGetRequest`, etc.).
+            1. Replace fragile selectors with semantic locators matching `${HELPER}`: for Web (`[data-testid="..."]`, accessible labels, button text, or strict `locate()` expressions); for `Mobilewright` (`~accessibilityId`, `#id`, `{ role, name }`, `{ android, ios }`, or adjacent field labels — never CSS or XPath).
+            2. Replace fixed `I.wait(...)` calls with deterministic waits (`I.waitForVisible`, `I.waitForInvisible`, `I.waitForText`, `I.waitForResponse`, `I.waitInUrl`).
+            3. Fix missing `await` on async helper calls (`grabTextFrom`, `grabAttributeFrom`, `grabSource`, `sendGetRequest`, etc.).
             4. Keep changes minimal and preserve test intent. Return the updated code in a fenced code block.
 
             Focus notes: $ARGUMENTS

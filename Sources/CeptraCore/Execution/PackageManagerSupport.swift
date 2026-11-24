@@ -26,6 +26,7 @@ public enum DependencyAction: Equatable, Hashable, Sendable {
     case upgradeCodeceptJS
     case upgradePlaywright
     case installPlaywrightBrowsers
+    case runMobilewrightDoctor
     case runScript(name: String)
     case customShell(command: String)
 
@@ -38,6 +39,7 @@ public enum DependencyAction: Equatable, Hashable, Sendable {
         case .upgradeCodeceptJS: return "Update CodeceptJS (@latest)"
         case .upgradePlaywright: return "Update @playwright/test (@latest)"
         case .installPlaywrightBrowsers: return "Install Playwright Browsers"
+        case .runMobilewrightDoctor: return "Run Mobilewright Doctor"
         case .runScript(let name): return "Script: \(name)"
         case .customShell(let cmd):
             let trimmed = cmd.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -301,6 +303,14 @@ public enum PackageManagerSupport {
             case .yarn: args = ["playwright", "install"]
             }
 
+        case .runMobilewrightDoctor:
+            pmExecName = packageManager.execRunnerName
+            switch packageManager {
+            case .npm, .bun: args = ["mobilewright", "doctor"]
+            case .pnpm: args = ["exec", "mobilewright", "doctor"]
+            case .yarn: args = ["mobilewright", "doctor"]
+            }
+
         case .runScript(let name):
             pmExecName = packageManager.executableName
             args = ["run", name]
@@ -383,7 +393,7 @@ public enum PackageManagerSupport {
                 return BuiltCommand(executablePath: uvBin, arguments: ["sync", "--upgrade-package", "pytest-playwright", "--upgrade-package", "playwright"], workingDirectory: workspaceRoot, environment: env, environmentOverrides: envOverrides, displayCommand: "uv sync --upgrade-package pytest-playwright --upgrade-package playwright")
             case .installPlaywrightBrowsers:
                 return BuiltCommand(executablePath: uvBin, arguments: ["run", "playwright", "install"], workingDirectory: workspaceRoot, environment: env, environmentOverrides: envOverrides, displayCommand: "uv run playwright install")
-            case .upgradeCodeceptJS, .runScript, .customShell:
+            case .upgradeCodeceptJS, .runMobilewrightDoctor, .runScript, .customShell:
                 return BuiltCommand(executablePath: uvBin, arguments: ["sync"], workingDirectory: workspaceRoot, environment: env, environmentOverrides: envOverrides, displayCommand: "uv sync")
             }
         }
@@ -403,7 +413,7 @@ public enum PackageManagerSupport {
                 return BuiltCommand(executablePath: poetryBin, arguments: ["update", "pytest-playwright", "playwright"], workingDirectory: workspaceRoot, environment: env, environmentOverrides: envOverrides, displayCommand: "poetry update pytest-playwright playwright")
             case .installPlaywrightBrowsers:
                 return BuiltCommand(executablePath: poetryBin, arguments: ["run", "playwright", "install"], workingDirectory: workspaceRoot, environment: env, environmentOverrides: envOverrides, displayCommand: "poetry run playwright install")
-            case .upgradeCodeceptJS, .runScript, .customShell:
+            case .upgradeCodeceptJS, .runMobilewrightDoctor, .runScript, .customShell:
                 return BuiltCommand(executablePath: poetryBin, arguments: ["install"], workingDirectory: workspaceRoot, environment: env, environmentOverrides: envOverrides, displayCommand: "poetry install")
             }
         }
@@ -490,7 +500,7 @@ public enum PackageManagerSupport {
                 displayCommand: "\(pyDisplay) -m pip list --outdated"
             )
 
-        case .update, .upgradeCodeceptJS, .runScript, .customShell:
+        case .update, .upgradeCodeceptJS, .runMobilewrightDoctor, .runScript, .customShell:
             if !hasLocalVenv {
                 let bootstrapPy = pythonExec == "/usr/bin/env" ? "python3" : CommandBuilder.shellSingleQuote(pythonExec)
                 return makeZsh(
@@ -801,6 +811,13 @@ public enum PackageManagerSupport {
             case .pnpm: return "pnpm exec playwright install"
             case .yarn: return "yarn playwright install"
             case .bun: return "bunx playwright install"
+            }
+        case .runMobilewrightDoctor:
+            switch packageManager {
+            case .npm: return "npx mobilewright doctor"
+            case .pnpm: return "pnpm exec mobilewright doctor"
+            case .yarn: return "yarn mobilewright doctor"
+            case .bun: return "bunx mobilewright doctor"
             }
         case .runScript(let name): return "\(packageManager.rawValue) run \(name)"
         case .customShell(let cmd): return cmd

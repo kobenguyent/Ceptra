@@ -108,6 +108,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var modulePreferences: WorkspaceModulePreferences
     public var codeSnapshotStyle: CodeSnapshotStyle
     public var aiSettings: AISettings
+    public var mobilePhoneDockSide: MobilePhoneDockSide
+    public var mobileResolutionPresetID: String
 
     public init(
         recentProjectPaths: [String] = [],
@@ -128,7 +130,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         appearance: WorkspaceAppearance = .dark,
         modulePreferences: WorkspaceModulePreferences = WorkspaceModulePreferences(),
         codeSnapshotStyle: CodeSnapshotStyle = CodeSnapshotStyle(),
-        aiSettings: AISettings = AISettings()
+        aiSettings: AISettings = AISettings(),
+        mobilePhoneDockSide: MobilePhoneDockSide = .left,
+        mobileResolutionPresetID: String = "iphone-17-pro"
     ) {
         self.recentProjectPaths = recentProjectPaths
         self.workspaceConfigPaths = workspaceConfigPaths
@@ -149,6 +153,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.modulePreferences = modulePreferences
         self.codeSnapshotStyle = codeSnapshotStyle
         self.aiSettings = aiSettings
+        self.mobilePhoneDockSide = mobilePhoneDockSide
+        self.mobileResolutionPresetID = mobileResolutionPresetID
     }
 
     public init(from decoder: Decoder) throws {
@@ -172,6 +178,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.modulePreferences = try c.decodeIfPresent(WorkspaceModulePreferences.self, forKey: .modulePreferences) ?? WorkspaceModulePreferences()
         self.codeSnapshotStyle = try c.decodeIfPresent(CodeSnapshotStyle.self, forKey: .codeSnapshotStyle) ?? CodeSnapshotStyle()
         self.aiSettings = try c.decodeIfPresent(AISettings.self, forKey: .aiSettings) ?? AISettings()
+        self.mobilePhoneDockSide = try c.decodeIfPresent(MobilePhoneDockSide.self, forKey: .mobilePhoneDockSide) ?? .left
+        self.mobileResolutionPresetID = try c.decodeIfPresent(String.self, forKey: .mobileResolutionPresetID) ?? "iphone-17-pro"
     }
 
     public mutating func recordRecentProject(_ path: String) {

@@ -162,6 +162,7 @@ struct NewFileSheetView: View {
         .onAppear {
             let isTS = appState.workspace?.config.isTypeScript ?? false
             let fw = appState.activeFramework
+            let isMobilewright = appState.workspace?.config.helpers.contains(where: { $0.name.lowercased().contains("mobilewright") }) ?? false
             if let initial = appState.newFileInitialDirectory {
                 directory = initial
                 hasCustomDirectoryOverride = true
@@ -173,7 +174,11 @@ struct NewFileSheetView: View {
                 case .playwright:
                     selectedKind = isTS ? .playwrightTSTest : .playwrightJSTest
                 case .codeceptJS:
-                    selectedKind = isTS ? .tsTest : .jsTest
+                    if isMobilewright && !isTS {
+                        selectedKind = .mobilewrightTest
+                    } else {
+                        selectedKind = isTS ? .tsTest : .jsTest
+                    }
                 }
                 directory = selectedKind.suggestedDirectory
                 hasCustomDirectoryOverride = false
@@ -186,13 +191,18 @@ struct NewFileSheetView: View {
 
     private func inferredDefaultKind(forDirectory dir: String, isTypeScript: Bool, framework: TestFrameworkKind) -> ScaffoldTemplateKind {
         let lower = dir.lowercased()
+        let isMobilewright = appState.workspace?.config.helpers.contains(where: { $0.name.lowercased().contains("mobilewright") }) ?? false
         if lower.isEmpty { return .blankFile }
         let last = (lower as NSString).lastPathComponent
         if ["tests", "test", "e2e", "specs", "spec"].contains(last) {
             switch framework {
             case .playwrightPython: return .playwrightPythonTest
             case .playwright: return isTypeScript ? .playwrightTSTest : .playwrightJSTest
-            case .codeceptJS: return isTypeScript ? .tsTest : .jsTest
+            case .codeceptJS:
+                if isMobilewright && !isTypeScript {
+                    return .mobilewrightTest
+                }
+                return isTypeScript ? .tsTest : .jsTest
             }
         }
         if last == "features" { return .gherkinFeature }

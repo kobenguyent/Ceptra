@@ -46,6 +46,7 @@ struct CeptraApp: App {
                         Task { @MainActor in
                             appState?.stopCodeceptUIServer()
                             appState?.cancelAllAIBackgroundTasks()
+                            appState?.cancelMobileStudioTasks()
                         }
                     }
                 }
@@ -331,6 +332,9 @@ struct CeptraApp: App {
                             }
                         }
                     }
+                    Button("Run Mobilewright Doctor") {
+                        appState.runDependencyAction(.runMobilewrightDoctor)
+                    }
                 }
                 .disabled(appState.workspace == nil || appState.isRunning)
 
@@ -503,6 +507,17 @@ struct CeptraApp: App {
                     appState.toggleRightTab(.ai)
                 }
                 .keyboardShortcut("a", modifiers: [.command, .option])
+                .disabled(appState.workspace == nil)
+
+                Button(appState.isMobileStudioVisible ? "Hide Mobilewright Phone Studio" : "Show Mobilewright Phone Studio") {
+                    appState.toggleMobileStudio()
+                }
+                .keyboardShortcut("m", modifiers: [.command, .option])
+                .disabled(appState.workspace == nil)
+
+                Button("Connect Mobile Device…") {
+                    appState.openMobileDeviceWizard()
+                }
                 .disabled(appState.workspace == nil)
 
                 Button("Configure AI Providers…") {

@@ -619,4 +619,35 @@ final class CommandBuilderAndOutputParserTests: XCTestCase {
         XCTAssertTrue(out.contains("RUNTIME_ENV=hello-system-console"), "Expected env export in output: \(out)")
         XCTAssertTrue(out.contains("Finished with exit code 0"), "Expected exit summary in output: \(out)")
     }
+
+    func testBuildsMobilewrightDoctorDependencyCommandAcrossPackageManagers() {
+        let root = URL(fileURLWithPath: "/tmp/mobilewright-demo")
+        let toolchain = NodeToolchainResolver.resolve(workspaceRoot: root)
+
+        XCTAssertEqual(
+            PackageManagerSupport.commandPreview(for: .runMobilewrightDoctor, packageManager: .npm),
+            "npx mobilewright doctor"
+        )
+        XCTAssertEqual(
+            PackageManagerSupport.commandPreview(for: .runMobilewrightDoctor, packageManager: .pnpm),
+            "pnpm exec mobilewright doctor"
+        )
+        XCTAssertEqual(
+            PackageManagerSupport.commandPreview(for: .runMobilewrightDoctor, packageManager: .yarn),
+            "yarn mobilewright doctor"
+        )
+        XCTAssertEqual(
+            PackageManagerSupport.commandPreview(for: .runMobilewrightDoctor, packageManager: .bun),
+            "bunx mobilewright doctor"
+        )
+
+        let npmCmd = PackageManagerSupport.buildCommand(
+            action: .runMobilewrightDoctor,
+            packageManager: .npm,
+            workspaceRoot: root,
+            toolchain: toolchain
+        )
+        XCTAssertEqual(npmCmd.displayCommand, "npx mobilewright doctor")
+        XCTAssertTrue(npmCmd.arguments.suffix(2) == ["mobilewright", "doctor"])
+    }
 }

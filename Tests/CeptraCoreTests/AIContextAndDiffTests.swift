@@ -148,4 +148,11 @@ final class AIContextAndDiffTests: XCTestCase {
         )
         XCTAssertEqual(replaced, "Feature('Login');")
     }
+
+    func testContextAssemblerInjectsMobilewrightAccessibilityLocatorRulesWhenActive() {
+        let sysPrompt = AIContextAssembler.buildSystemPrompt(helperDisplayName: "Mobilewright (android · com.example.app)")
+        XCTAssertTrue(sysPrompt.contains("Mobilewright"), "Expected Mobilewright in system prompt")
+        XCTAssertTrue(sysPrompt.contains("~"), "Expected ~accessibilityId locator guidance for Mobilewright")
+        XCTAssertTrue(sysPrompt.contains("XPath and CSS"), "Expected explicit ban on XPath and CSS for Mobilewright")
+    }
 }
