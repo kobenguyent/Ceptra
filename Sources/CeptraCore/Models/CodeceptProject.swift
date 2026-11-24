@@ -63,7 +63,7 @@ public struct CodeceptHelperInfo: Identifiable, Codable, Equatable, Hashable, Se
     }
 
     public static let knownBuiltIns: Set<String> = [
-        "Playwright", "Puppeteer", "WebDriver", "Appium", "CDPBrowser",
+        "Playwright", "Puppeteer", "WebDriver", "Appium", "Mobilewright", "Detox", "CDPBrowser",
         "Obscura", "Lightpanda", "Moli", "Kitesurf",
         "REST", "GraphQL", "JSONResponse", "ApiDataFactory",
         "GraphQLDataFactory", "FileSystem", "Decision"

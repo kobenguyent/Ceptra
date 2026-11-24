@@ -1850,13 +1850,43 @@ public enum IntelliSenseEngine {
         CompletionItem(label: "seeResponseContainsJson", insertText: "seeResponseContainsJson({})", signature: "(json)", detail: "Assert JSON subset", kind: .action, cursorBackOffset: 2),
         CompletionItem(label: "seeResponseContainsKeys", insertText: "seeResponseContainsKeys([''])", signature: "(keys)", detail: "Assert top-level JSON keys", kind: .action, cursorBackOffset: 3),
         CompletionItem(label: "seeResponseMatchesJsonSchema", insertText: "seeResponseMatchesJsonSchema()", signature: "(schema)", detail: "Validate JSON schema", kind: .action, cursorBackOffset: 1),
-        // Utilities
+        //Utilities
         CompletionItem(label: "retry", insertText: "retry(2)", signature: "(opts)", detail: "Retry chained step", kind: .action, cursorBackOffset: 1),
         CompletionItem(label: "saveScreenshot", insertText: "saveScreenshot('shot.png')", signature: "(fileName, fullPage?)", detail: "Capture screenshot", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "saveElementScreenshot", insertText: "saveElementScreenshot('', 'element.png')", signature: "(locator, fileName)", detail: "Capture element screenshot", kind: .action, cursorBackOffset: 18),
         CompletionItem(label: "setCookie", insertText: "setCookie({ name: '', value: '' })", signature: "(cookie)", detail: "Set browser cookie", kind: .action, cursorBackOffset: 15),
         CompletionItem(label: "clearCookie", insertText: "clearCookie()", signature: "(name?)", detail: "Clear browser cookies", kind: .action),
         CompletionItem(label: "switchTo", insertText: "switchTo('')", signature: "(locator?)", detail: "Switch into iframe", kind: .action, cursorBackOffset: 2),
-        CompletionItem(label: "executeScript", insertText: "executeScript(() => {\n  \n})", signature: "(fn, args?)", detail: "Run JS in browser context", kind: .action, cursorBackOffset: 3)
+        CompletionItem(label: "executeScript", insertText: "executeScript(() => {\n  \n})", signature: "(fn, args?)", detail: "Run JS in browser context", kind: .action, cursorBackOffset: 3),
+        // Mobilewright & Mobile Gestures / Device / Lifecycle
+        CompletionItem(label: "tap", insertText: "tap('')", signature: "(locator, context?)", detail: "Mobilewright: Tap element or text", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "doubleTap", insertText: "doubleTap('')", signature: "(locator, context?)", detail: "Mobilewright: Double-tap element", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "longPress", insertText: "longPress('', 2)", signature: "(locator, sec?)", detail: "Mobilewright: Long-press element", kind: .action, cursorBackOffset: 5),
+        CompletionItem(label: "tapXY", insertText: "tapXY(100, 200)", signature: "(x, y)", detail: "Mobilewright: Tap screen coordinates", kind: .action, cursorBackOffset: 1),
+        CompletionItem(label: "swipeUp", insertText: "swipeUp()", signature: "(locator?, distance?, duration?)", detail: "Mobilewright: Swipe up on screen/element", kind: .action),
+        CompletionItem(label: "swipeDown", insertText: "swipeDown()", signature: "(locator?, distance?, duration?)", detail: "Mobilewright: Swipe down on screen/element", kind: .action),
+        CompletionItem(label: "swipeLeft", insertText: "swipeLeft()", signature: "(locator?, distance?, duration?)", detail: "Mobilewright: Swipe left on screen/element", kind: .action),
+        CompletionItem(label: "swipeRight", insertText: "swipeRight()", signature: "(locator?, distance?, duration?)", detail: "Mobilewright: Swipe right on screen/element", kind: .action),
+        CompletionItem(label: "scrollIntoView", insertText: "scrollIntoView('')", signature: "(locator, maxSwipes?)", detail: "Mobilewright: Scroll until element visible", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "installApp", insertText: "installApp('')", signature: "(path)", detail: "Mobilewright: Install .apk / .app / .ipa", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "removeApp", insertText: "removeApp('')", signature: "(appId)", detail: "Mobilewright: Uninstall app by bundle/package ID", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "launchApp", insertText: "launchApp()", signature: "(appId?)", detail: "Mobilewright: Launch app to foreground", kind: .action),
+        CompletionItem(label: "closeApp", insertText: "closeApp()", signature: "(appId?)", detail: "Mobilewright: Terminate app", kind: .action),
+        CompletionItem(label: "seeAppIsInstalled", insertText: "seeAppIsInstalled('')", signature: "(appId)", detail: "Mobilewright: Assert app is installed", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "seeAppIsNotInstalled", insertText: "seeAppIsNotInstalled('')", signature: "(appId)", detail: "Mobilewright: Assert app is not installed", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "openUrl", insertText: "openUrl('')", signature: "(url)", detail: "Mobilewright: Open URL or deep link", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "setOrientation", insertText: "setOrientation('LANDSCAPE')", signature: "('PORTRAIT'|'LANDSCAPE')", detail: "Mobilewright: Set device orientation", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "grabOrientation", insertText: "grabOrientation()", signature: "()", detail: "Mobilewright: Grab PORTRAIT or LANDSCAPE", kind: .action),
+        CompletionItem(label: "seeOrientationIs", insertText: "seeOrientationIs('PORTRAIT')", signature: "('PORTRAIT'|'LANDSCAPE')", detail: "Mobilewright: Assert device orientation", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "pressButton", insertText: "pressButton('HOME')", signature: "(button)", detail: "Mobilewright: Press hardware button", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "goBack", insertText: "goBack()", signature: "()", detail: "Mobilewright: Navigate back", kind: .action),
+        CompletionItem(label: "grabSource", insertText: "grabSource()", signature: "()", detail: "Mobilewright: Grab accessibility tree JSON", kind: .action),
+        CompletionItem(label: "grabNumberOfVisibleElements", insertText: "grabNumberOfVisibleElements('')", signature: "(locator)", detail: "Grab visible element count", kind: .action, cursorBackOffset: 2),
+        CompletionItem(label: "runOnIOS", insertText: "runOnIOS(() => {\n  \n})", signature: "(fn)", detail: "Mobilewright: Run steps only on iOS", kind: .action, cursorBackOffset: 3),
+        CompletionItem(label: "runOnAndroid", insertText: "runOnAndroid(() => {\n  \n})", signature: "(fn)", detail: "Mobilewright: Run steps only on Android", kind: .action, cursorBackOffset: 3),
+        CompletionItem(label: "waitForEnabled", insertText: "waitForEnabled('', 5)", signature: "(locator, sec?)", detail: "Wait until element is enabled", kind: .action, cursorBackOffset: 5),
+        CompletionItem(label: "dontSeeInField", insertText: "dontSeeInField('', '')", signature: "(field, value)", detail: "Assert field does not equal value", kind: .action, cursorBackOffset: 6),
+        CompletionItem(label: "dontSeeCheckboxIsChecked", insertText: "dontSeeCheckboxIsChecked('')", signature: "(locator)", detail: "Assert checkbox/switch is unchecked", kind: .action, cursorBackOffset: 2)
     ]
 
     // MARK: - Curated Playwright Test (@playwright/test) Catalog

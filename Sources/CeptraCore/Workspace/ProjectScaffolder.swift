@@ -9,6 +9,7 @@ public enum ScaffoldTemplateKind: String, CaseIterable, Identifiable, Sendable {
     case playwrightPythonPageObject = "Playwright Python Page Object (*_page.py)"
     case jsTest = "CodeceptJS Test (.js)"
     case tsTest = "CodeceptJS Test (.ts)"
+    case mobilewrightTest = "Mobilewright Test (.js)"
     case gherkinFeature = "Gherkin Feature (.feature)"
     case pageObject = "CodeceptJS Page Object (.js)"
     case customHelper = "Custom Helper (.js)"
@@ -23,7 +24,7 @@ public enum ScaffoldTemplateKind: String, CaseIterable, Identifiable, Sendable {
         case .playwrightPageObject: return "Page.ts"
         case .playwrightPythonTest: return ".py"
         case .playwrightPythonPageObject: return "_page.py"
-        case .jsTest: return "_test.js"
+        case .jsTest, .mobilewrightTest: return "_test.js"
         case .tsTest: return "_test.ts"
         case .gherkinFeature: return ".feature"
         case .pageObject: return "Page.js"
@@ -34,7 +35,7 @@ public enum ScaffoldTemplateKind: String, CaseIterable, Identifiable, Sendable {
     public var suggestedDirectory: String {
         switch self {
         case .blankFile: return ""
-        case .playwrightTSTest, .playwrightJSTest, .playwrightPythonTest, .jsTest, .tsTest: return "tests"
+        case .playwrightTSTest, .playwrightJSTest, .playwrightPythonTest, .jsTest, .tsTest, .mobilewrightTest: return "tests"
         case .gherkinFeature: return "features"
         case .playwrightPageObject, .playwrightPythonPageObject, .pageObject: return "pages"
         case .customHelper: return "helpers"
@@ -216,6 +217,29 @@ public enum ProjectScaffolder {
               if (res.status !== 200) {
                 throw new Error(`Expected 200, received ${res.status}`);
               }
+            });
+            """
+
+        case .mobilewrightTest:
+            return """
+            import { secret } from 'codeceptjs';
+
+            Feature('\(title) @mobile');
+
+            Scenario('loads main screen and interacts via accessibility tree @smoke', ({ I }) => {
+              I.waitForText('Products', 20);
+              I.see('\(title)');
+              I.tap('~store button');
+              I.saveScreenshot('01-home.png');
+            });
+
+            Scenario('fills form by adjacent label and rotates orientation', ({ I }) => {
+              I.fillField('Username', 'bob@example.com');
+              I.fillField('Password', secret('10203040'));
+              I.tap({ role: 'button', name: 'Sign In' });
+              I.setOrientation('LANDSCAPE');
+              I.seeOrientationIs('LANDSCAPE');
+              I.setOrientation('PORTRAIT');
             });
             """
 
@@ -897,6 +921,19 @@ public struct CodeSnippetItem: Identifiable, Sendable {
             session('reviewer', () => {
               I.amOnPage('/dashboard');
               I.see('Pending Approval');
+            });
+            """
+        ),
+        CodeSnippetItem(
+            id: "mobilewright",
+            title: "Mobilewright Scenario",
+            subtitle: "iOS & Android native scenario via @codeceptjs/mobilewright",
+            body: """
+            Scenario('navigates mobile app @mobile', ({ I }) => {
+              I.waitForText('Products', 20);
+              I.fillField('Username', 'bob@example.com');
+              I.tap('~Login button');
+              I.seeOrientationIs('PORTRAIT');
             });
             """
         )

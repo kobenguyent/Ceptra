@@ -571,4 +571,41 @@ final class EditorIntelligenceTests: XCTestCase {
         XCTAssertEqual(realFile?.isExecutableTestFile, true)
         XCTAssertTrue(ws.testFiles.contains { $0.name == "real.TEST.ts" })
     }
+
+    func testMobilewrightIntelliSenseActionsAndScaffoldTemplate() {
+        let index = WorkspaceCompletionIndex()
+        let expectedActions = [
+            "tap", "doubleTap", "longPress", "tapXY",
+            "swipeUp", "swipeDown", "swipeLeft", "swipeRight", "scrollIntoView",
+            "installApp", "removeApp", "launchApp", "closeApp",
+            "seeAppIsInstalled", "seeAppIsNotInstalled", "openUrl",
+            "setOrientation", "grabOrientation", "seeOrientationIs",
+            "pressButton", "goBack", "saveElementScreenshot", "grabSource",
+            "runOnIOS", "runOnAndroid", "waitForEnabled",
+            "dontSeeInField", "dontSeeCheckboxIsChecked"
+        ]
+
+        for action in expectedActions {
+            let prefix = String(action.prefix(min(5, action.count)))
+            let src = "I.\(prefix)"
+            let res = IntelliSenseEngine.completions(
+                in: src,
+                cursorUTF16Offset: (src as NSString).length,
+                language: "javascript",
+                sourceFileURL: nil,
+                workspace: nil,
+                index: index
+            )
+            XCTAssertTrue(
+                res?.items.contains(where: { $0.label == action }) == true,
+                "Expected IntelliSenseEngine to complete Mobilewright action I.\(action)"
+            )
+        }
+
+        let mobileTemplate = ProjectScaffolder.renderTemplate(kind: .mobilewrightTest, name: "Sauce Store")
+        XCTAssertTrue(mobileTemplate.contains("Feature('Sauce Store"))
+        XCTAssertTrue(mobileTemplate.contains("I.waitForText("))
+        XCTAssertTrue(mobileTemplate.contains("I.tap(") || mobileTemplate.contains("I.click("))
+        XCTAssertTrue(CodeSnippetItem.builtInSnippets.contains(where: { $0.id == "mobilewright" }))
+    }
 }

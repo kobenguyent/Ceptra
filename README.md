@@ -5,7 +5,7 @@
 <h1 align="center">Ceptra</h1>
 
 <p align="center">
-  <strong>Native macOS IDE for CodeceptJS 4.x &amp; Playwright Test.</strong><br/>
+  <strong>Native macOS IDE for CodeceptJS 4.x, Playwright Test (TS/JS &amp; Python) &amp; Mobilewright.</strong><br/>
   Built in SwiftUI &amp; AppKit — zero Electron overhead, zero third-party Swift dependencies.
 </p>
 
@@ -15,9 +15,10 @@
   </a>
   <img src="https://img.shields.io/badge/macOS-14.0%2B-111827?style=flat-square&logo=apple&logoColor=white" alt="macOS 14+" />
   <img src="https://img.shields.io/badge/CodeceptJS-4.x-f59e0b?style=flat-square&logoColor=white" alt="CodeceptJS 4.x" />
-  <img src="https://img.shields.io/badge/Playwright-Test-2ead33?style=flat-square&logoColor=white" alt="Playwright Test" />
+  <img src="https://img.shields.io/badge/Playwright-TS%20%7C%20JS%20%7C%20Python-2ead33?style=flat-square&logoColor=white" alt="Playwright Test & Python" />
+  <img src="https://img.shields.io/badge/Mobilewright-iOS%20%26%20Android-0ea5e9?style=flat-square&logoColor=white" alt="Mobilewright iOS & Android" />
   <img src="https://img.shields.io/badge/Swift-5.9%2B%20Native-f97316?style=flat-square&logo=swift&logoColor=white" alt="Pure Swift" />
-  <img src="https://img.shields.io/badge/Runtime-Node.js%20%7C%20Bun-10b981?style=flat-square&logoColor=white" alt="Node.js & Bun" />
+  <img src="https://img.shields.io/badge/Runtime-Node.js%20%7C%20Bun%20%7C%20Python-10b981?style=flat-square&logoColor=white" alt="Node.js, Bun & Python" />
   <a href="LICENSE">
     <img src="https://img.shields.io/github/license/kobenguyent/Ceptra?style=flat-square&color=6366f1" alt="License" />
   </a>
@@ -39,16 +40,17 @@
 
 ## Why Ceptra?
 
-Running **CodeceptJS 4.x** or **Playwright Test (`@playwright/test`)** across TypeScript, ESM, browser projects, and REST/GraphQL suites usually means juggling an editor, terminal tabs, ad-hoc logs, and config flags. **Ceptra** brings both frameworks into one native macOS workspace:
+Running **CodeceptJS 4.x**, **Playwright Test (`@playwright/test` &amp; `pytest-playwright`)**, or **Mobilewright (`@codeceptjs/mobilewright`)** across TypeScript, Python, ESM, mobile devices, and REST/GraphQL suites usually means juggling an editor, Appium/simulators, terminal tabs, ad-hoc logs, and config flags. **Ceptra** brings all of them into one native macOS workspace:
 
 | Challenge | How Ceptra Solves It |
 | --- | --- |
-| **Slow, memory-hungry editors** | Native **SwiftUI + AppKit** (`TextKit 1`) — fast startup, crisp typography, smooth pinch &amp; scroll zoom, zero Electron footprint. |
-| **First-class Playwright Test &amp; CodeceptJS** | Auto-detects `playwright.config.{ts,js,mjs,cjs}` &amp; `codecept.conf.*`, parses `test.describe`/`test`/`test.step`/`page.*`/`expect` &amp; `Feature`/`Scenario`, embeds **Playwright UI Mode** (`playwright test --ui`) &amp; `@codeceptjs/ui`, plus **Playwright Codegen**, `--project` / `--workers` / `--headed` / `--trace` controls, and curated `page.*` / `expect().*` / `request.*` / `I.*` IntelliSense. |
-| **Blind test failures** | **Zero-config Web &amp; API Time-Travel Replay** — automatic step screenshots, DOM snapshots, HTTP/fetch capture, Playwright step/attachment capture, JSON tree &amp; timing waterfall, exported as a single offline HTML file. |
+| **Slow, memory-hungry editors** | Native **SwiftUI + AppKit** (`TextKit 1`) — fast startup, crisp typography, smooth pinch &amp; scroll zoom, tab context menus, zero Electron footprint. |
+| **First-class CodeceptJS &amp; Playwright (TS/JS + Python)** | Auto-detects `codecept.conf.*`, `playwright.config.{ts,js,mjs,cjs}`, and Python `pytest.ini`/`pyproject.toml` (`uv`, `poetry`, `.venv`), embeds **Playwright UI Mode** &amp; `@codeceptjs/ui`, plus **Playwright Codegen**, `--project`/`--workers`/`--headed`/`--trace` controls, and framework-aware IntelliSense. |
+| **Native iOS &amp; Android mobile testing** | **Mobilewright Device Studio** (`⌘⌥M`) — guided 4-step Connect Device Wizard, live phone mirror sidebar with **Touch &amp; Swipe** / **Inspect** / **Wireframe** modes, exact hardware viewport calibration, ranked zero-CSS/XPath locators, and live step recording without an Appium server. |
+| **Blind test failures** | **Zero-config Web, API &amp; Mobile Time-Travel Replay** — automatic step screenshots, DOM/view-tree snapshots, HTTP/fetch capture, Playwright step/attachment capture, JSON tree &amp; timing waterfall, exported as a single offline HTML file. |
 | **Painful debugging** | **Built-in CDP Step-Through Debugger** (`⌘⇧B`) with gutter breakpoints, conditional breakpoints, logpoints, locals, watch expressions, `PWDEBUG=1` Inspector support, and CodeceptJS's interactive `pause()` shell. |
-| **Monorepo config mistakes** | **Automatic per-file `-c` config resolution** — detects every `codecept.conf.*` and `playwright.config.*` even in mixed monorepos, picks the owning config &amp; framework toolchain automatically, and switches between **Node.js &amp; Bun** or **Built-in &amp; System Console** in one click. |
-| **Authoring &amp; fixing tests** | **Multi-Provider AI Assistant &amp; `/commands`** (`⌘⌥A`) — framework-aware prompts for Playwright Test &amp; CodeceptJS with **Local Ollama**, Cloud APIs, or local CLI agents, multimodal attachments, portable `SKILL.md` skills, and 3-tier workspace permission controls. |
+| **Monorepo config mistakes** | **Automatic per-file `-c` config resolution** — detects every `codecept.conf.*`, `playwright.config.*`, and Python test root even in mixed monorepos, picks the owning config &amp; toolchain automatically, and switches between **Node.js, Bun, &amp; Python** or **Built-in &amp; System Console** in one click. |
+| **Authoring &amp; fixing tests** | **Multi-Provider AI Assistant &amp; `/commands`** (`⌘⌥A`) — framework-aware prompts for CodeceptJS, Playwright TS/JS, Playwright Python, and Mobilewright with **Local Ollama**, Cloud APIs, or local CLI agents, multimodal attachments, portable `SKILL.md` skills, and 3-tier workspace permission controls. |
 | **Sharing test snippets** | **Code Block Screenshots** (`⌘⌥P` / `⌘⌥⇧P`) — 1-step 2×/3× Retina PNG snapshots of any selection or enclosing `test()` / `Scenario()` block with gradients, themes, and macOS chrome. |
 
 ---
@@ -71,7 +73,16 @@ Run any Web or API test and scrub backward and forward through every step — di
 
 ---
 
-### 2. Interactive Step-Through CDP Debugger (`⌘⇧B`)
+### 2. Mobilewright Device Studio (`⌘⌥M`) — Live Mirror &amp; Appium-Style Inspector
+Test native **iOS** and **Android** apps with [`@codeceptjs/mobilewright`](https://mobilewright.dev) directly inside Ceptra — no Appium server required:
+
+- **Guided 4-Step Connect Device Wizard**: Categorized **Virtual Devices** (**iOS Simulator** — free, zero signing; **Android Emulator**) vs **Physical Devices** (**Real Android USB**, **Real iPhone / iPad**), built-in `mobilewright doctor` with 1-click prerequisite installs, searchable `iPhone` / `iPad` / `All` simulator filters, and automatic `.mobileprovision` wildcard profile validation.
+- **Smooth Live Phone Mirror &amp; Gestures**: Fast core framebuffer capture on iOS Simulators (`xcrun simctl io`), 2-stage post-action settle refresh, idle auto-stream that automatically re-syncs the UI tree when screen content changes, **Touch &amp; Swipe** mode (click-to-tap + live drag-to-swipe directional arrow), 1-click directional swipe pad (`↑ ↓ ← →`), and iOS edge back-swipe.
+- **Appium-Style Precision Inspector**: Exact hardware viewport calibration (`mobilecli device info` + pixel fallback) so floating iOS permission alerts and modals align pixel-accurately, optional **Wireframe Bounds** overlay, ranked Mobilewright locators (`~accessibilityId`, `#resourceId`, `{ role, name }` — zero CSS/XPath), automatic `secret()` masking for password fields, live **Rec** step recording into the active editor, and a 1-click cross-platform **Sample Test** generator (plus a zero-device demo in [`examples/mobilewright-demo/`](examples/mobilewright-demo/)).
+
+---
+
+### 3. Interactive Step-Through CDP Debugger (`⌘⇧B`)
 Debug CodeceptJS tests line-by-line in the editor with Chrome DevTools Protocol integration and source-mapped TypeScript support:
 
 - Toggle breakpoints in the gutter or right-click to add **Conditional Breakpoints** and non-pausing **Logpoints**.
@@ -84,7 +95,7 @@ Debug CodeceptJS tests line-by-line in the editor with Chrome DevTools Protocol 
 
 ---
 
-### 3. Native AI Assistant, Universal `/commands` &amp; `SKILL.md` (`⌘⌥A`)
+### 4. Native AI Assistant, Universal `/commands` &amp; `SKILL.md` (`⌘⌥A`)
 Write scenarios, harden flaky locators, and diagnose Replay traces using local models, cloud APIs, or local CLI tools:
 
 - **Local Ollama, Cloud APIs &amp; CLI Agents**:
@@ -103,7 +114,7 @@ Write scenarios, harden flaky locators, and diagnose Replay traces using local m
 
 ---
 
-### 4. Code Block Screenshots (`⌘⌥P` / `⌘⌥⇧P`)
+### 5. Code Block Screenshots (`⌘⌥P` / `⌘⌥⇧P`)
 Turn any selected lines — or the enclosing `Scenario()`, `Feature`, function, or Gherkin block at your caret — into a **2× / 3× Retina PNG** inside the IDE:
 
 - **1-Step Quick Copy (`⌘⌥⇧P`)** or right-click → **Quick Copy Screenshot** copies the PNG straight to your macOS clipboard (`⌘V` into Slack, GitHub, Notion, or Keynote).
@@ -119,7 +130,7 @@ Turn any selected lines — or the enclosing `Scenario()`, `Feature`, function, 
 
 ---
 
-### 5. Adaptive Light &amp; Dark Themes · Multi-Config Monorepo Intelligence
+### 6. Adaptive Light &amp; Dark Themes · Multi-Config Monorepo Intelligence
 Supports **Obsidian Dark**, **Paper Light**, and **Match macOS**:
 
 - **Multi-Config Monorepo Support**: Automatically discovers every `codecept.conf.*` across nested packages (`tests/web/`, `tests/api/`, `configs/`), resolves the owning `-c` config per file on Run/Debug/Dry-Run, and auto-syncs the status bar helper (`Playwright` ↔ `REST`) and IntelliSense as you switch tabs.
@@ -132,8 +143,9 @@ Supports **Obsidian Dark**, **Paper Light**, and **Match macOS**:
 
 ---
 
-### 6. CodeceptJS 4.x Editor &amp; Runner Craft
-- **Gutter Scenario Play Buttons**: Click any `Scenario()` in the gutter to run it immediately and see live pass/fail badges &amp; durations.
+### 7. Editor &amp; Runner Craft (CodeceptJS, Playwright TS/JS &amp; Python)
+- **Gutter Scenario &amp; Test Play Buttons**: Click any `Scenario()`, `test()`, or Python `def test_*` in the gutter to run it immediately and see live pass/fail badges &amp; durations.
+- **Tab Context Menu**: Right-click any editor tab to close, close others, close to the right, close saved, copy path, or reveal in Finder.
 - **PyCharm-Style Symbol Navigation**: `⌘+Click` / `⌃+Click` / `F12` jumps across imports, `require()`, TypeScript path aliases, barrel re-exports, `include` Page Objects, custom `I.*` steps, Gherkin step definitions, and usages — with Back/Forward history (`⌃-` / `⌃⇧-`).
 - **Smart IntelliSense &amp; Code Folding**: Auto-complete on `.`, `@`, `/` or `Ctrl+Space` for `I.*` actions, `steps.d.ts`, Page Objects, and `@tags`; non-destructive folding (`⌘⌥[` / `⌘⌥]`) for JS/TS/JSON/Gherkin/YAML/Markdown/XML.
 - **Parallel Execution**: **`run-workers`** (`⌘⇧W` — `--by pool|test|suite`, `--serial`, `--last-failed`) and **`run-multiple`** (`⌘⇧M` — parsed `suite:browser` targets).
@@ -168,13 +180,14 @@ cd Ceptra
   ```
 - Build distributable `.dmg`, `.zip`, and `SHA256SUMS.txt` locally:
   ```bash
-  ./scripts/package-app.sh --version 1.12.0 --arch native
+  ./scripts/package-app.sh --version 1.16.0 --arch native
   # or universal (arm64 + x86_64):
-  ./scripts/package-app.sh --version 1.12.0 --arch universal
+  ./scripts/package-app.sh --version 1.16.0 --arch universal
   ```
-- Run the test suite:
+- Run the Swift unit test suite or the offline Mobilewright demo:
   ```bash
   swift test --parallel
+  cd examples/mobilewright-demo && npm install && npx codeceptjs run --steps
   ```
 
 ---
@@ -198,6 +211,7 @@ cd Ceptra
 | `⌘⇧B` | Debug current test file (CDP breakpoints &amp; stepping) |
 | `⌘⇧W` / `⌘⇧M` | Run parallel workers (`run-workers`) / Run multiple suites (`run-multiple`) |
 | `⌘⌥A` | Toggle AI Assistant Inspector (`/commands` &amp; `SKILL.md`) |
+| `⌘⌥M` | Toggle Mobilewright Device Studio (Live Mirror &amp; Inspector) |
 | `⌘⌥P` / `⌘⌥⇧P` | Open Code Screenshot Studio / 1-Step Quick Copy Retina PNG |
 | `⌘⌥T` / `⌘⌥U` / `⌘⌥O` | Toggle Replay Inspector / CodeceptUI Live / Flow Outline |
 | `⌘+Click` / `F12` | Go to declaration, import target, `I.*` step, or usages |
@@ -210,7 +224,8 @@ See all shortcuts in [**docs/SHORTCUTS.md**](docs/SHORTCUTS.md).
 ## Requirements
 
 - **macOS 14.0 (Sonoma)** or later (Apple Silicon &amp; Intel)
-- **Node.js** (or **Bun**) + **CodeceptJS 4.x** in your test workspace (or installed globally)
+- **Node.js** (22.12+ recommended for Mobilewright) or **Bun** for CodeceptJS 4.x / Playwright Test, or **Python 3** (`uv` / `poetry` / `.venv`) for `pytest-playwright`
+- **Xcode iOS Simulator** (free, zero signing) or **ADB** (`brew install android-platform-tools`) when using Mobilewright live device mirroring
 - **Swift 5.9+** (Xcode or Command Line Tools) only if building from source
 
 ---

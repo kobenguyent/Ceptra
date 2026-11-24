@@ -460,9 +460,15 @@ public enum ConfigParser {
                 let req = obj["require"] as? String
                 let url = (obj["url"] as? String) ?? (obj["endpoint"] as? String)
                 let browser = obj["browser"] as? String
+                let platform = obj["platform"] as? String
+                let deviceName = (obj["deviceName"] as? String) ?? (obj["deviceId"] as? String) ?? (obj["device"] as? String)
+                let app = obj["app"] as? String
                 var parts: [String] = []
-                if let browser { parts.append(browser) }
-                if let url { parts.append(url) }
+                if let browser, !browser.isEmpty { parts.append(browser) }
+                if let platform, !platform.isEmpty { parts.append(platform) }
+                if let deviceName, !deviceName.isEmpty { parts.append(deviceName) }
+                if let app, !app.isEmpty { parts.append(app) }
+                if let url, !url.isEmpty { parts.append(url) }
                 if let req, parts.isEmpty { parts.append(req) }
                 helpers.append(CodeceptHelperInfo(
                     name: key,
@@ -1113,9 +1119,17 @@ public enum ConfigParser {
             let url = extractStringProperty(named: "url", in: body)
                 ?? extractStringProperty(named: "endpoint", in: body)
             let browser = extractStringProperty(named: "browser", in: body)
+            let platform = extractStringProperty(named: "platform", in: body)
+            let deviceName = extractStringProperty(named: "deviceName", in: body)
+                ?? extractStringProperty(named: "deviceId", in: body)
+                ?? extractStringProperty(named: "device", in: body)
+            let app = extractStringProperty(named: "app", in: body)
             var summaryParts: [String] = []
-            if let browser { summaryParts.append(browser) }
-            if let url { summaryParts.append(url) }
+            if let browser, !browser.isEmpty { summaryParts.append(browser) }
+            if let platform, !platform.isEmpty { summaryParts.append(platform) }
+            if let deviceName, !deviceName.isEmpty { summaryParts.append(deviceName) }
+            if let app, !app.isEmpty { summaryParts.append(app) }
+            if let url, !url.isEmpty { summaryParts.append(url) }
             if let requirePath, summaryParts.isEmpty { summaryParts.append(requirePath) }
             let summary = summaryParts.isEmpty ? nil : summaryParts.joined(separator: " · ")
             return CodeceptHelperInfo(

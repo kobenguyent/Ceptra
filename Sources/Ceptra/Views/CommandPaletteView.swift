@@ -258,6 +258,24 @@ struct CommandPaletteView: View {
                 action: { appState.openRightTab(.ai) }
             ),
             PaletteItem(
+                id: "act-mobile-wizard",
+                title: "Connect Mobile Device…",
+                subtitle: "Step-by-step wizard for Real iPhone, Android USB & iOS Simulators",
+                icon: "iphone.and.arrow.forward",
+                iconColor: CeptraTheme.success,
+                badge: "Mobile",
+                action: { appState.openMobileDeviceWizard() }
+            ),
+            PaletteItem(
+                id: "act-mobile-studio",
+                title: appState.isMobileStudioVisible ? "Hide Mobilewright Phone Studio" : "Show Mobilewright Phone Studio",
+                subtitle: "Dockable live device mirror, App Source inspector & I.* step recorder",
+                icon: "iphone",
+                iconColor: CeptraTheme.accent,
+                badge: "⌘⌥M",
+                action: { appState.toggleMobileStudio() }
+            ),
+            PaletteItem(
                 id: "act-ai-diagnose",
                 title: "Ask AI to Diagnose Last Failure",
                 subtitle: "Analyze console errors & failing Replay DOM/Network trace",

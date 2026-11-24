@@ -48,6 +48,8 @@ public enum TimeTravelRecorderLoader {
 
     const LOCATOR_METHODS = new Set([
       'click', 'doubleClick', 'rightClick', 'forceClick', 'clickLink',
+      'tap', 'doubleTap', 'longPress', 'scrollIntoView', 'saveElementScreenshot',
+      'swipeUp', 'swipeDown', 'swipeLeft', 'swipeRight',
       'fillField', 'appendField', 'clearField', 'selectOption', 'checkOption',
       'uncheckOption', 'attachFile', 'focus', 'blur', 'moveCursorTo', 'scrollTo',
       'seeElement', 'dontSeeElement', 'seeElementInDOM', 'dontSeeElementInDOM',
@@ -226,8 +228,19 @@ public enum TimeTravelRecorderLoader {
       }
       if (arg && typeof arg === 'object') {
         if (typeof arg.css === 'string') return arg.css;
+        if (typeof arg.testId === 'string') return '~' + arg.testId;
         if (typeof arg.id === 'string') return arg.id.startsWith('#') ? arg.id : '#' + arg.id;
         if (typeof arg.xpath === 'string') return arg.xpath;
+        if (typeof arg.role === 'string') {
+          const rName = typeof arg.name === 'string' ? arg.name : (typeof arg.text === 'string' ? arg.text : '');
+          return rName ? `role=${arg.role}[name="${rName}"]` : `role=${arg.role}`;
+        }
+        if (typeof arg.label === 'string') return `~${arg.label}`;
+        if (typeof arg.placeholder === 'string') return arg.placeholder;
+        if (typeof arg.text === 'string') return arg.text;
+        if (typeof arg.android === 'string' || typeof arg.ios === 'string') {
+          return normalizeLocator(arg.android || arg.ios);
+        }
         if (typeof arg.name === 'string') return `[name="${arg.name}"]`;
         if (typeof arg.pw === 'string') return arg.pw;
         if (typeof arg.value === 'string') return arg.value;
@@ -276,6 +289,55 @@ public enum TimeTravelRecorderLoader {
         if (h && h.page) return { helperName: name, helper: h, page: h.page };
       }
       return null;
+    }
+
+    function getActiveMobileTarget(container) {
+      if (!container || typeof container.helpers !== 'function') return null;
+      let helpers;
+      try { helpers = container.helpers(); } catch { return null; }
+      if (!helpers || typeof helpers !== 'object') return null;
+
+      const preferred = ['Mobilewright', 'Appium', 'Detox'];
+      for (const name of preferred) {
+        const h = helpers[name];
+        if (h && (h.screen || h.driver || h.device)) {
+          return {
+            helperName: name,
+            helper: h,
+            screen: h.screen || (h.device && h.device.screen) || null,
+            driver: h.driver || (h.screen && h.screen.driver) || null,
+            device: h.device || null
+          };
+        }
+      }
+      for (const [name, h] of Object.entries(helpers)) {
+        if (h && !h.page && (h.screen || h.driver || h.device)) {
+          return {
+            helperName: name,
+            helper: h,
+            screen: h.screen || (h.device && h.device.screen) || null,
+            driver: h.driver || (h.screen && h.screen.driver) || null,
+            device: h.device || null
+          };
+        }
+      }
+      return null;
+    }
+
+    function getMobileVirtualURL(mobile) {
+      if (!mobile || !mobile.helper) return null;
+      const h = mobile.helper;
+      const opts = (h && h.options && typeof h.options === 'object') ? h.options : {};
+      const platform = h.platform || opts.platform || 'device';
+      const app = opts.app || (mobile.driver && mobile.driver.foreground) || 'app';
+      return `mobilewright://${platform}/${app}`;
+    }
+
+    function withBoundedTimeout(promise, ms) {
+      return Promise.race([
+        Promise.resolve(promise),
+        new Promise((resolve) => setTimeout(() => resolve(null), ms))
+      ]).catch(() => null);
     }
 
     function parseHttpRequestArgs(defaultProtocol, args) {
@@ -329,8 +391,184 @@ public enum TimeTravelRecorderLoader {
         const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf, 'base64');
         if (b.length === 0) return null;
         const isPNG = b.length >= 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47;
+        const isJPEG = b.length >= 3 && b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF;
+        if (!isPNG && !isJPEG) return null;
         const mime = isPNG ? 'image/png' : 'image/jpeg';
         return `data:${mime};base64,${b.toString('base64')}`;
+      } catch {
+        return null;
+      }
+    }
+
+    async function captureMobileScreenshot(mobile) {
+      if (!mobile) return null;
+      try {
+        let buf = null;
+        if (mobile.driver && typeof mobile.driver.screenshot === 'function') {
+          buf = await withBoundedTimeout(mobile.driver.screenshot(), 2500);
+        }
+        if (!buf && mobile.screen && typeof mobile.screen.screenshot === 'function') {
+          buf = await withBoundedTimeout(mobile.screen.screenshot({}), 2500);
+        }
+        if (!buf) return null;
+        const b = Buffer.isBuffer(buf) ? buf : (typeof buf === 'string' ? Buffer.from(buf, 'base64') : null);
+        if (!b || b.length < 4) return null;
+        const isPNG = b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47;
+        const isJPEG = b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF;
+        if (!isPNG && !isJPEG) return null;
+        const mime = isPNG ? 'image/png' : 'image/jpeg';
+        return `data:${mime};base64,${b.toString('base64')}`;
+      } catch {
+        return null;
+      }
+    }
+
+    function matchMobileNodesInTree(roots, targetSelector) {
+      const flat = [];
+      function walk(list) {
+        if (!Array.isArray(list)) return;
+        for (const n of list) {
+          if (!n || typeof n !== 'object') continue;
+          flat.push(n);
+          if (Array.isArray(n.children)) walk(n.children);
+        }
+      }
+      walk(Array.isArray(roots) ? roots : (roots ? [roots] : []));
+      if (!targetSelector || typeof targetSelector !== 'string') return { matches: [], flat };
+
+      const sel = targetSelector.trim();
+      if (!sel) return { matches: [], flat };
+      const visibleNodes = flat.filter((n) => n.isVisible !== false);
+      const pool = visibleNodes.length > 0 ? visibleNodes : flat;
+      const matches = [];
+
+      const roleMatch = sel.match(/^role=([A-Za-z0-9_-]+)(?:\[name="([^"]+)"\])?$/i);
+      if (roleMatch) {
+        const wantRole = roleMatch[1].toLowerCase();
+        const wantName = (roleMatch[2] || '').toLowerCase();
+        for (const n of pool) {
+          const r = String(n.role || n.type || '').toLowerCase();
+          const txt = String(n.label || n.text || n.value || n.testId || n.identifier || '').toLowerCase();
+          if (r.includes(wantRole) && (!wantName || txt === wantName || txt.includes(wantName))) {
+            matches.push(n);
+          }
+        }
+      } else if (sel.startsWith('~')) {
+        const needle = sel.slice(1).toLowerCase();
+        for (const n of pool) {
+          const id = String(n.testId || n.identifier || '').toLowerCase();
+          const lbl = String(n.label || '').toLowerCase();
+          if (id === needle || lbl === needle || id.endsWith(':id/' + needle)) {
+            matches.push(n);
+          }
+        }
+      } else if (sel.startsWith('#')) {
+        const needle = sel.slice(1).toLowerCase();
+        for (const n of pool) {
+          const id = String(n.testId || n.identifier || '').toLowerCase();
+          if (id === needle || id.endsWith(':id/' + needle)) {
+            matches.push(n);
+          }
+        }
+      } else {
+        const needle = sel.toLowerCase();
+        for (const n of pool) {
+          const fields = [n.testId, n.identifier, n.label, n.text, n.placeholder, n.value]
+            .filter(Boolean)
+            .map((v) => String(v).trim().toLowerCase());
+          if (fields.some((f) => f === needle)) {
+            matches.push(n);
+          }
+        }
+        if (matches.length === 0) {
+          for (const n of pool) {
+            const fields = [n.label, n.text, n.placeholder, n.testId, n.identifier]
+              .filter(Boolean)
+              .map((v) => String(v).trim().toLowerCase());
+            if (fields.some((f) => f.includes(needle))) {
+              matches.push(n);
+            }
+          }
+        }
+      }
+      return { matches, flat };
+    }
+
+    function formatMobileNodeTag(n) {
+      if (!n || typeof n !== 'object') return '<Node />';
+      const tag = String(n.type || n.role || 'View').replace(/[^A-Za-z0-9_.-]/g, '') || 'View';
+      const attrs = [];
+      if (n.role) attrs.push(`role="${String(n.role)}"`);
+      if (n.testId) attrs.push(`testId="${String(n.testId)}"`);
+      if (n.identifier) attrs.push(`id="${String(n.identifier)}"`);
+      if (n.label) attrs.push(`label="${String(n.label)}"`);
+      if (n.text) attrs.push(`text="${String(n.text)}"`);
+      if (n.value !== undefined && n.value !== null && n.value !== '') attrs.push(`value="${String(n.value)}"`);
+      if (n.placeholder) attrs.push(`placeholder="${String(n.placeholder)}"`);
+      if (n.bounds && typeof n.bounds === 'object') {
+        attrs.push(`bounds="[${n.bounds.x ?? 0},${n.bounds.y ?? 0} ${n.bounds.width ?? 0}x${n.bounds.height ?? 0}]"`);
+      }
+      return `<${tag}${attrs.length ? ' ' + attrs.join(' ') : ''} />`;
+    }
+
+    async function captureMobileViewTreeSnapshot(mobile, targetSelector) {
+      if (!mobile) return null;
+      try {
+        let tree = null;
+        if (mobile.driver && typeof mobile.driver.getViewHierarchy === 'function') {
+          tree = await withBoundedTimeout(mobile.driver.getViewHierarchy(), 2500);
+        }
+        if (!tree && mobile.screen && typeof mobile.screen.viewTree === 'function') {
+          tree = await withBoundedTimeout(mobile.screen.viewTree(), 2500);
+        }
+        if (!tree) return null;
+
+        let screenSize = null;
+        if (mobile.driver && typeof mobile.driver.getScreenSize === 'function') {
+          screenSize = await withBoundedTimeout(mobile.driver.getScreenSize(), 1500);
+        }
+        const roots = Array.isArray(tree) ? tree : [tree];
+        const { matches } = matchMobileNodesInTree(roots, targetSelector);
+
+        let viewportWidth = (screenSize && typeof screenSize.width === 'number') ? screenSize.width : null;
+        let viewportHeight = (screenSize && typeof screenSize.height === 'number') ? screenSize.height : null;
+        if ((!viewportWidth || !viewportHeight) && roots[0] && roots[0].bounds) {
+          viewportWidth = viewportWidth || roots[0].bounds.width || null;
+          viewportHeight = viewportHeight || roots[0].bounds.height || null;
+        }
+
+        let targetOuterHTML = null;
+        let targetBoundingBox = null;
+        if (matches.length > 0) {
+          const first = matches[0];
+          targetOuterHTML = formatMobileNodeTag(first);
+          const b = first.bounds;
+          if (b && typeof b === 'object' && (b.width > 0 || b.height > 0)) {
+            targetBoundingBox = {
+              x: Math.round((Number(b.x) || 0) * 10) / 10,
+              y: Math.round((Number(b.y) || 0) * 10) / 10,
+              width: Math.round((Number(b.width) || 0) * 10) / 10,
+              height: Math.round((Number(b.height) || 0) * 10) / 10,
+              viewportWidth,
+              viewportHeight
+            };
+          }
+        }
+
+        const jsonTree = JSON.stringify(tree, null, 2);
+        const h = mobile.helper || {};
+        const opts = (h.options && typeof h.options === 'object') ? h.options : {};
+        const platform = h.platform || opts.platform || 'mobile';
+        const app = opts.app || '';
+        return {
+          html: truncate(jsonTree, MAX_DOM_CHARS),
+          url: getMobileVirtualURL(mobile),
+          title: app ? `${platform} · ${app}` : platform,
+          targetSelector: targetSelector || null,
+          targetOuterHTML: truncate(targetOuterHTML, MAX_TARGET_HTML_CHARS),
+          targetBoundingBox,
+          matchedCount: matches.length
+        };
       } catch {
         return null;
       }
@@ -1153,6 +1391,7 @@ public enum TimeTravelRecorderLoader {
 
         const active = getActivePage(container);
         if (active && active.page) attachPageListeners(active.page);
+        const mobile = (!active || !active.page) ? getActiveMobileTarget(container) : null;
 
         const method = String((step && (step.name || step.helperMethod)) || '');
         const args = Array.isArray(step && step.args) ? step.args : [];
@@ -1160,7 +1399,7 @@ public enum TimeTravelRecorderLoader {
         const depth = (step && step.metaStep) ? 1 : 0;
         const pageURL = (active && active.page && typeof active.page.url === 'function')
           ? active.page.url()
-          : (lastApiRequestInScenario ? lastApiRequestInScenario.url : null);
+          : (mobile ? getMobileVirtualURL(mobile) : (lastApiRequestInScenario ? lastApiRequestInScenario.url : null));
 
         const stepRecord = {
           text: formatStepText(step),
@@ -1206,6 +1445,14 @@ public enum TimeTravelRecorderLoader {
               }
             })
           );
+        } else if (mobile) {
+          track(
+            captureMobileScreenshot(mobile).then((uri) => {
+              if (uri && !stepRecord.diagnostics.beforeScreenshotDataURI) {
+                stepRecord.diagnostics.beforeScreenshotDataURI = uri;
+              }
+            })
+          );
         }
       }
 
@@ -1223,6 +1470,7 @@ public enum TimeTravelRecorderLoader {
         }
 
         const active = getActivePage(container);
+        const mobile = (!active || !active.page) ? getActiveMobileTarget(container) : null;
         if (active && active.page) {
           try {
             if (typeof active.page.url === 'function') {
@@ -1233,6 +1481,20 @@ public enum TimeTravelRecorderLoader {
             Promise.all([
               captureScreenshot(active.page),
               captureDOMSnapshot(active.page, stepRecord.targetSelector)
+            ]).then(([shot, dom]) => {
+              if (shot) stepRecord.diagnostics.afterScreenshotDataURI = shot;
+              if (dom) stepRecord.diagnostics.domSnapshot = dom;
+              flushSync();
+            })
+          );
+        } else if (mobile) {
+          if (!stepRecord.diagnostics.pageURL) {
+            stepRecord.diagnostics.pageURL = getMobileVirtualURL(mobile);
+          }
+          track(
+            Promise.all([
+              captureMobileScreenshot(mobile),
+              captureMobileViewTreeSnapshot(mobile, stepRecord.targetSelector)
             ]).then(([shot, dom]) => {
               if (shot) stepRecord.diagnostics.afterScreenshotDataURI = shot;
               if (dom) stepRecord.diagnostics.domSnapshot = dom;
