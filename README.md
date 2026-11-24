@@ -80,6 +80,14 @@ Test native **iOS** and **Android** apps with [`@codeceptjs/mobilewright`](https
 - **Smooth Live Phone Mirror &amp; Gestures**: Fast core framebuffer capture on iOS Simulators (`xcrun simctl io`), 2-stage post-action settle refresh, idle auto-stream that automatically re-syncs the UI tree when screen content changes, **Touch &amp; Swipe** mode (click-to-tap + live drag-to-swipe directional arrow), 1-click directional swipe pad (`↑ ↓ ← →`), and iOS edge back-swipe.
 - **Appium-Style Precision Inspector**: Exact hardware viewport calibration (`mobilecli device info` + pixel fallback) so floating iOS permission alerts and modals align pixel-accurately, optional **Wireframe Bounds** overlay, ranked Mobilewright locators (`~accessibilityId`, `#resourceId`, `{ role, name }` — zero CSS/XPath), automatic `secret()` masking for password fields, live **Rec** step recording into the active editor, and a 1-click cross-platform **Sample Test** generator (plus a zero-device demo in [`examples/mobilewright-demo/`](examples/mobilewright-demo/)).
 
+<p align="center">
+  <img src="docs/images/studio-mobilewright.png" alt="Ceptra Mobilewright Device Studio with live iOS Simulator mirror, precision element reticle, wireframe bounds, ranked locators, and test runner" width="100%" />
+</p>
+
+<p align="center">
+  <img src="docs/images/feature-mobilewright-wizard.png" alt="Ceptra Connect Mobile Device wizard categorized into Virtual Devices and Physical Devices with live status badges" width="76%" />
+</p>
+
 ---
 
 ### 3. Interactive Step-Through CDP Debugger (`⌘⇧B`)
