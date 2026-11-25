@@ -1,48 +1,54 @@
 # Monorepos, Runtimes & System Console Guide
 
-Ceptra is built to handle real-world CodeceptJS 4.x repositories out of the box — from single-suite Playwright projects to multi-config TypeScript ESM monorepos.
+Ceptra is built to handle real-world repositories out of the box — from single-suite Playwright or CodeceptJS projects to polyglot TypeScript + Python monorepos.
 
 ---
 
-## Multi-Config Monorepo Auto-Resolution
+## Polyglot & Multi-Config Monorepo Auto-Resolution
 
-Many teams organize API and Web suites under one repository with separate CodeceptJS configs:
+Many teams organize Web, API, Mobile, and Python suites under one repository with separate configs:
 
 ```text
 my-qa-monorepo/
 ├── package.json
-├── common/
-│   └── steps/steps_file.ts
-└── tests/
-    ├── api/
-    │   ├── codecept.conf.ts        # REST + JSONResponse (tests: './tests/**/*.ts')
-    │   └── tests/orders_api_test.ts
-    └── web/
-        ├── codecept.conf.ts        # Playwright (tests: './tests/**/*.ts')
-        └── tests/checkout_test.ts
+├── e2e-codecept/
+│   ├── tests/api/codecept.conf.ts      # CodeceptJS REST + JSONResponse
+│   └── tests/web/codecept.conf.ts      # CodeceptJS Playwright
+├── e2e-playwright-ts/
+│   └── playwright.config.ts            # @playwright/test (chromium, firefox, webkit)
+└── e2e-playwright-py/
+    ├── pytest.ini                      # pytest-playwright (.venv / uv / poetry)
+    └── tests/test_checkout.py
 ```
 
 ### How Ceptra handles this automatically
-1. **Discovery**: Scans standard config names (`codecept.conf.{ts,js,cjs,mjs}`, `codecept.config.*`, `codecept.json`), `-c` / `--config` targets declared in `package.json` scripts, and nested or custom-named configs up to 4 directories deep.
-2. **Per-File Config Matching**: When you run, debug, or dry-run a specific file or scenario, Ceptra matches the file path against every discovered config's `tests` / `gherkin.features` glob and directory ancestry — automatically passing `-c tests/web/codecept.conf.ts` for web tests and `-c tests/api/codecept.conf.ts` for API tests.
+1. **Discovery**: Scans standard configs across all supported frameworks (`codecept.conf.{ts,js,cjs,mjs}`, `codecept.config.*`, `codecept.json`, `playwright.config.{ts,js,mjs,cjs}`, `pytest.ini`, `pyproject.toml`, `tox.ini`, `setup.cfg`), `-c` / `--config` targets declared in `package.json` scripts, and nested configs up to 4 directories deep (ignoring `node_modules`, `.venv`, `.git`, and build folders).
+2. **Per-File Config & Framework Matching**: When you run, debug, or dry-run a specific file or scenario, Ceptra matches the file path against every discovered config's `tests` / `testDir` / `gherkin.features` glob and directory ancestry — automatically choosing the owning config, framework runner (`codeceptjs`, `playwright test`, or `pytest`), and toolchain.
 3. **Environment Overrides Preserved**: If you explicitly pin an environment config (e.g. `configs/staging.conf.ts` vs `configs/prod.conf.ts`) that shares the same `tests` glob, Ceptra respects your pinned choice.
-4. **Live Tab Sync**: In auto-detect mode, switching tabs between suites automatically updates the active config, status bar helper badge (`Playwright` vs `REST`), and IntelliSense completions.
+4. **Live Tab Sync**: In auto-detect mode, switching tabs between suites automatically updates the active config, status bar helper badge (`Playwright`, `Playwright (Py)`, `REST`, `Mobilewright`), IntelliSense completions, and AI prompt context.
 5. **Manual Switching**: Click the helper pill in the bottom-right status bar (or press `⌘⇧C`) to inspect every discovered config with its helper summary, pin a config, or reset to Auto-Detect.
 
 ---
 
-## Node.js vs Bun Runtime Switching
+## Node.js, Bun & Python Runtimes + Adaptive Terminal Suggestions
 
-Switch runtimes anytime from the **Top Bar**, **Run Options**, **Settings (`⌘,`)**, or **CodeceptJS → JavaScript Runtime**:
+Switch JavaScript runtimes anytime from the **Top Bar**, **Run Options**, **Settings (`⌘,`)**, or **Run → JavaScript Runtime**:
 
-- **Node.js (default)**:
-  - Resolves project-local `./node_modules/.bin/codeceptjs` (with fallback to global `codeceptjs` or `npx`).
+- **Node.js (default for JS/TS)**:
+  - Resolves project-local `./node_modules/.bin/codeceptjs` or `./node_modules/.bin/playwright` (with fallback to global binaries or `npx`).
   - Supports **Interactive CDP Step-Through Debugging** (`⌘⇧B`).
   - Includes Ceptra's opt-out **ESM/CJS & TypeScript Compatibility Hook** (enabled by default in Run Options): uses Node's synchronous `module.registerHooks` so extensionless TS imports, `tsconfig.json` path aliases, CommonJS getter exports (e.g. `uuid`), and ESM `node_modules` packages (e.g. `flex-rest`) work smoothly in both `run` and `run-workers`.
   - **CodeceptJS 4.x TypeScript tip**: Under Node.js, CodeceptJS 4.x requires `require: ['tsx/esm']` in each `.ts` suite's `codecept.conf.ts` (along with `"type": "module"` in `package.json`).
 - **Bun**:
-  - Executes CodeceptJS directly via `bun` (`bun <codecept.js>` or `bun x --bun codeceptjs`) with native TypeScript transpilation — no `tsx` loader required.
+  - Executes CodeceptJS or Playwright Test directly via `bun` / `bunx` with native TypeScript transpilation — no `tsx` loader required.
   - **Tip**: Avoid mixing `npm install` and `bun install` in the same `node_modules` tree. If Bun hits a module interop error in a previously `npm`-installed repo, run `rm -rf node_modules && bun install`.
+- **Python (`uv`, `poetry`, `.venv`, `pip`)**:
+  - Resolves project `.venv/bin/pytest`, `uv run pytest`, `poetry run pytest`, or a custom Python binary configured in Settings (`⌘,`).
+  - Automatically bootstraps `.venv` and installs `requirements.txt` on 1-click dependency install when no virtualenv exists yet.
+
+### Adaptive Terminal Pre-Suggested Commands
+
+The built-in Terminal drawer (`⌘J`) automatically detects your active runtime environment (`uv.lock` → `uv`, `poetry.lock` → `poetry`, `.venv` → local virtualenv, `bun` / `pnpm` / `yarn` / `npm`) and adapts all pre-suggested install, browser-install, and quick-command chips so you never see irrelevant commands (for example, Python workspaces show `uv sync` / `.venv/bin/playwright install` / `pytest --co -q` instead of `npm`).
 
 ---
 

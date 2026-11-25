@@ -1,6 +1,6 @@
 # Ceptra Features Guide
 
-A tour of everything built into **Ceptra** — the native macOS IDE crafted specifically for **CodeceptJS 4.x**.
+A complete overview of everything built into **Ceptra** — the native macOS IDE for **CodeceptJS 4.x**, **Playwright (TS/JS & Python)**, **Mobilewright**, and **API Collections**.
 
 ---
 
@@ -8,9 +8,10 @@ A tour of everything built into **Ceptra** — the native macOS IDE crafted spec
 
 Ceptra is built from the ground up in **SwiftUI + AppKit** (macOS 14+, zero Electron, zero third-party Swift packages).
 
-- **Left Pane — Smart Workspace Explorer (`⌘B`)**: Hierarchical project tree with CodeceptJS-aware classification (Test Suites, Gherkin `.feature` files, Page/Step Objects, Helpers, Configs), recursive scenario counts, `@tag` filtering, inline Run/Scenario actions, and file/folder creation at any level (`⌘N` / `⌘⇧N`).
-- **Center Pane — Native Code Editor & Terminal Drawer (`⌘J`)**: Explicit TextKit 1 `NSTextView` with per-tab scroll, cursor, fold, and undo isolation, drag-to-reorder tabs, and a resizable streaming console drawer with package scripts (`npm`/`pnpm`/`yarn`/`bun`) and custom shell input (`⌘⇧K`).
-- **Right Pane — Single-Slot Inspector (`⌘⌥B`)**: Switch cleanly between **Replay** (`⌘⌥T`), **CodeceptUI Live** (`⌘⌥U`), **Flow Outline** (`⌘⌥O`), **Debug & Breakpoints** (`⌘⌥J`), and **AI Assistant** (`⌘⌥A`).
+- **Left Pane — Smart Workspace Explorer (`⌘B`)**: Hierarchical project tree with framework-aware classification (Test Suites, Gherkin `.feature` files, Page/Step Objects, Helpers, `conftest.py`, Configs), recursive scenario counts, `@tag` filtering, inline Run/Scenario actions, right-click **Import into API Studio** for collection/env files, and file/folder creation at any level (`⌘N` / `⌘⇧N`).
+- **Center Pane — Native Code Editor, API Client Studio & Terminal Drawer (`⌘J`)**: Explicit TextKit 1 `NSTextView` with per-tab scroll/cursor/fold/undo isolation, drag-to-reorder tabs, full right-click tab context menus, anchored multi-tab switcher with duplicate-filename hints, 1-click toggle to **API Client Studio (`⌘⌥I`)**, and a resizable streaming console drawer with adaptive runtime-detected quick commands (`uv`/`poetry`/`.venv`/`npm`/`pnpm`/`yarn`/`bun`).
+- **Right Pane — Single-Slot Inspector (`⌘⌥B`)**: Switch cleanly between **Replay** (`⌘⌥T`), **CodeceptUI / Playwright UI Live** (`⌘⌥U`), **Flow Outline** (`⌘⌥O`), **Debug & Breakpoints** (`⌘⌥J`), and **AI Assistant** (`⌘⌥A`).
+- **Mobile Phone Studio (`⌘⌥M`)**: Dockable left/right live iOS Simulator & Android phone mirror with precision element inspection and live step recording.
 - **Adaptive Themes**: Switch between **Obsidian Dark**, **Paper Light**, or **Match macOS** in Settings (`⌘,`) or via the Command Palette (`⌘K`).
 
 <p align="center">
@@ -130,11 +131,26 @@ Ceptra includes a built-in AI Assistant designed for CodeceptJS 4.x authoring, l
 
 ---
 
-## 8. Multi-Config Monorepos, Node/Bun & System Console
+## 8. Built-in API Client Studio (`⌘⌥I`)
+
+Import, edit, run, chain, and export **Postman v2.1**, **Insomnia v4**, **OpenAPI 3.x / Swagger 2.0**, **HAR 1.2**, **`.http`**, **`.env`**, and **cURL** collections and environments directly inside Ceptra — with secret-safe environments, sequential Collection Runner, 1-click Time-Travel Replay HTML export, automated test suite generation, and 3 live runnable examples.
+
+See the full [API Client Studio Guide](guides/api-client-studio.md).
+
+---
+
+## 9. Playwright (TS/JS & Python) & Mobilewright Device Studio
+
+- **Playwright Test & Playwright Python (`pytest-playwright`)**: Starter workspace scaffolding, callback fixture IntelliSense, Codegen, embedded UI Mode, and full Time-Travel Replay (including Python teardown `trace.zip` hydration, delta DOM reconstruction, and in-process `APIRequestContext` capture). See the [Playwright Guide](frameworks/playwright.md).
+- **Mobilewright Device Studio (`⌘⌥M`)**: Guided 4-step Connect Wizard, live iOS Simulator & Android device mirror, touch/swipe gestures, pixel-accurate view tree inspector, ranked zero-XPath locators, and live step recording. See the [Mobilewright Guide](frameworks/mobilewright.md).
+
+---
+
+## 10. Multi-Config Monorepos, Node/Bun/Python & System Console
 
 See the dedicated [Monorepo & Runtimes Guide](MONOREPO-AND-RUNTIMES.md) for full details on:
-- Automatic per-file `-c` config resolution across monorepo suites (`tests/api/` + `tests/web/`).
-- 1-click **Node.js vs Bun** runtime switching.
-- **Built-in Console vs macOS System Console** (Terminal.app, iTerm2, Ghostty, Warp, Kitty, WezTerm, Alacritty).
+- Automatic per-file config resolution across polyglot monorepo suites (`CodeceptJS` + `Playwright TS` + `Playwright Python`).
+- 1-click **Node.js vs Bun** runtime switching and Python virtualenv (`uv`/`poetry`/`.venv`) resolution.
+- Adaptive runtime-detected Terminal pre-suggested commands and **Built-in vs macOS System Console**.
 - Parallel execution via `run-workers` (`⌘⇧W`) and `run-multiple` (`⌘⇧M`).
 - Zero-config ESM/CJS & TypeScript worker compatibility (`module.registerHooks`).

@@ -26,6 +26,7 @@
 </p>
 
 <p align="center">
+  <a href="https://kobenguyent.github.io/Ceptra/"><strong>Living Docs</strong></a> &nbsp;·&nbsp;
   <a href="#why-ceptra">Why Ceptra</a> &nbsp;·&nbsp;
   <a href="#feature-highlights">Features</a> &nbsp;·&nbsp;
   <a href="#quick-start">Quick Start</a> &nbsp;·&nbsp;
@@ -216,10 +217,16 @@ cd Ceptra
 
 ## Documentation
 
+Browse the searchable **Living Documentation** hosted on GitHub Pages at [**kobenguyent.github.io/Ceptra**](https://kobenguyent.github.io/Ceptra/) (auto-deployed from `docs/` via `.github/workflows/docs.yml`), or read any guide directly in Markdown:
+
 | Guide | Contents |
 | --- | --- |
+| [**Living Documentation Site**](https://kobenguyent.github.io/Ceptra/) | Full searchable MkDocs Material portal with Obsidian Dark / Paper Light themes, quick start, guides, and troubleshooting. |
+| [**API Client Studio Guide**](docs/guides/api-client-studio.md) | Postman v2.1, Insomnia v4, OpenAPI 3.x, HAR 1.2, `.http`, `.env` &amp; cURL import/export, variable chaining, secret redaction, and runnable examples. |
+| [**Playwright (TS/JS &amp; Python)**](docs/frameworks/playwright.md) | `@playwright/test` and `pytest-playwright` workflows, Codegen, callback IntelliSense, teardown trace hydration, and Python `APIRequestContext` Replay. |
+| [**Mobilewright Device Studio**](docs/frameworks/mobilewright.md) | 4-step Connect Wizard, live iOS Simulator &amp; Android mirror, Touch/Inspect/Wireframe modes, ranked locators, and step recording. |
 | [**Features Guide**](docs/FEATURES.md) | Time-Travel Web &amp; API Replay, CDP Debugger, Native AI Assistant &amp; `/commands`, Code Block Screenshots, `@codeceptjs/ui` Live, and Editor Intelligence. |
-| [**Monorepos, Runtimes &amp; Console**](docs/MONOREPO-AND-RUNTIMES.md) | Multi-config monorepo auto-resolution (`tests/web` + `tests/api`), Node.js vs Bun setup, TypeScript `tsx/esm`, System Console, and `run-workers`. |
+| [**Monorepos, Runtimes &amp; Console**](docs/MONOREPO-AND-RUNTIMES.md) | Polyglot monorepo auto-resolution, Node.js / Bun / Python (`uv`/`poetry`/`.venv`), adaptive Terminal suggestions, System Console, and `run-workers`. |
 | [**Keyboard Shortcuts**](docs/SHORTCUTS.md) | Categorized reference of every Ceptra shortcut. |
 
 ---

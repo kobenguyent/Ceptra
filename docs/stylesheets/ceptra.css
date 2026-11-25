@@ -1,0 +1,160 @@
+/* Ceptra Living Docs — Obsidian Dark & Paper Light Surface Alignment */
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #0b0d10;
+  --md-default-fg-color: #f1f3f7;
+  --md-default-fg-color--light: #959eb0;
+  --md-default-fg-color--lighter: #5d6678;
+  --md-primary-fg-color: #151820;
+  --md-primary-bg-color: #f1f3f7;
+  --md-accent-fg-color: #5e8eff;
+  --md-typeset-a-color: #5e8eff;
+  --md-code-bg-color: #11141a;
+  --md-code-fg-color: #e6ebf5;
+  --md-footer-bg-color: #080a0d;
+  --md-footer-bg-color--dark: #060709;
+  --ceptra-card-bg: #151820;
+  --ceptra-card-border: rgba(255, 255, 255, 0.09);
+  --ceptra-card-hover-border: rgba(94, 142, 255, 0.45);
+  --ceptra-hero-glow: radial-gradient(ellipse at top, rgba(94, 142, 255, 0.16), transparent 62%);
+}
+
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #ffffff;
+  --md-default-fg-color: #13161c;
+  --md-default-fg-color--light: #4e5666;
+  --md-primary-fg-color: #151820;
+  --md-primary-bg-color: #ffffff;
+  --md-accent-fg-color: #2563eb;
+  --md-typeset-a-color: #2563eb;
+  --md-code-bg-color: #f5f6f9;
+  --ceptra-card-bg: #fafafb;
+  --ceptra-card-border: rgba(15, 23, 42, 0.10);
+  --ceptra-card-hover-border: rgba(37, 99, 235, 0.45);
+  --ceptra-hero-glow: radial-gradient(ellipse at top, rgba(37, 99, 235, 0.08), transparent 62%);
+}
+
+/* Crisp header & tabs */
+.md-header {
+  border-bottom: 1px solid var(--ceptra-card-border);
+}
+
+.md-tabs {
+  border-bottom: 1px solid var(--ceptra-card-border);
+}
+
+/* Hero landing block */
+.ceptra-hero {
+  background: var(--ceptra-hero-glow);
+  border: 1px solid var(--ceptra-card-border);
+  border-radius: 16px;
+  padding: 2.2rem 2rem 1.8rem;
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.ceptra-hero img.ceptra-logo {
+  width: 88px;
+  height: 88px;
+  border-radius: 20px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  margin-bottom: 0.75rem;
+}
+
+.ceptra-hero h1 {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 2.2rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.ceptra-hero p.ceptra-lead {
+  max-width: 680px;
+  margin: 0 auto 1.4rem;
+  font-size: 1.05rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.ceptra-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.7rem;
+  margin-bottom: 1.4rem;
+}
+
+.ceptra-cta-row .md-button {
+  border-radius: 8px;
+  padding: 0.55rem 1.15rem;
+  font-weight: 600;
+}
+
+.ceptra-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.45rem;
+  margin-top: 0.75rem;
+}
+
+.ceptra-badge {
+  display: inline-block;
+  font-family: var(--md-code-font-family);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.2rem 0.58rem;
+  border-radius: 999px;
+  border: 1px solid var(--ceptra-card-border);
+  background: var(--ceptra-card-bg);
+  color: var(--md-default-fg-color--light);
+}
+
+/* Feature grid cards */
+.ceptra-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 0.9rem;
+  margin: 1.25rem 0 1.75rem;
+}
+
+.ceptra-card {
+  display: block;
+  padding: 1.05rem 1.15rem;
+  border-radius: 12px;
+  border: 1px solid var(--ceptra-card-border);
+  background: var(--ceptra-card-bg);
+  text-decoration: none !important;
+  transition: border-color 0.16s ease, transform 0.16s ease;
+}
+
+.ceptra-card:hover {
+  border-color: var(--ceptra-card-hover-border);
+  transform: translateY(-2px);
+}
+
+.ceptra-card h3 {
+  margin: 0 0 0.35rem !important;
+  font-size: 0.95rem !important;
+  color: var(--md-default-fg-color);
+}
+
+.ceptra-card p {
+  margin: 0 !important;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--md-default-fg-color--light);
+}
+
+/* Polished screenshot presentation */
+.md-typeset img.ceptra-shot {
+  border-radius: 12px;
+  border: 1px solid var(--ceptra-card-border);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.24);
+  margin: 0.75rem 0 1.25rem;
+}
+
+/* Crisp tables */
+.md-typeset table:not([class]) {
+  border-radius: 8px;
+  overflow: hidden;
+}

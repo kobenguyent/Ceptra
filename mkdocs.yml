@@ -1,0 +1,109 @@
+site_name: Ceptra Documentation
+site_description: Native macOS IDE for CodeceptJS 4.x, Playwright (TS/JS & Python), Mobilewright & API Collections.
+site_url: https://kobenguyent.github.io/Ceptra/
+repo_url: https://github.com/kobenguyent/Ceptra
+repo_name: kobenguyent/Ceptra
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Ceptra Contributors · MIT License
+
+theme:
+  name: material
+  logo: images/ceptra-icon.png
+  favicon: images/ceptra-icon.png
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to Paper Light theme
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to Obsidian Dark theme
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+
+extra_css:
+  - stylesheets/ceptra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/kobenguyent/Ceptra
+      name: Ceptra on GitHub
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Get Started:
+      - Installation & Updates: getting-started/installation.md
+      - 5-Minute Quick Start: getting-started/quickstart.md
+      - Features Overview: FEATURES.md
+  - Frameworks:
+      - CodeceptJS 4.x: frameworks/codeceptjs.md
+      - Playwright (TS/JS & Python): frameworks/playwright.md
+      - Mobilewright (iOS & Android): frameworks/mobilewright.md
+      - Monorepos & Runtimes: MONOREPO-AND-RUNTIMES.md
+  - Studio Guides:
+      - Time-Travel Replay: guides/time-travel-replay.md
+      - API Client Studio: guides/api-client-studio.md
+      - CDP Step-Through Debugger: guides/debugger.md
+      - AI Assistant & SKILL.md: guides/ai-assistant.md
+      - Editor, Tabs & Screenshots: guides/editor-and-screenshots.md
+  - Reference:
+      - Keyboard Shortcuts: SHORTCUTS.md
+      - Architecture & Security: reference/architecture-and-security.md
+      - Troubleshooting & FAQ: reference/troubleshooting.md
