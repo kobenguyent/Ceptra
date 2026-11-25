@@ -364,82 +364,87 @@ struct MainStudioView: View {
                     : (effectiveMobileInspectorBody >= maxMobileInspectorBody - 0.5 ? .onlyLeadingOrUp : .both)
 
             VStack(spacing: 0) {
-                EditorTabBar()
+                if appState.isAPIStudioVisible {
+                    APIStudioView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    EditorTabBar()
 
-                if appState.isMobileStudioVisible {
-                    MobileElementInspectorPanel(
-                        isExpanded: $isMobileInspectorExpanded,
-                        bodyHeight: effectiveMobileInspectorBody
-                    )
-                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
-
-                    if isMobileInspectorExpanded {
-                        CeptraSplitResizeHandle(
-                            axis: .vertical,
-                            cursorDirection: mobileInspectorCursor,
-                            onDragStart: {
-                                isResizingMobileInspector = true
-                                mobileInspectorDragStartHeight = effectiveMobileInspectorBody
-                            },
-                            onDragChanged: { delta in
-                                mobileInspectorBodyHeight = min(max(mobileInspectorDragStartHeight + delta, minMobileInspectorBody), maxMobileInspectorBody)
-                            },
-                            onDragEnd: {
-                                isResizingMobileInspector = false
-                            },
-                            onDoubleClick: {
-                                withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
-                                    mobileInspectorBodyHeight = 330
-                                }
-                            }
+                    if appState.isMobileStudioVisible {
+                        MobileElementInspectorPanel(
+                            isExpanded: $isMobileInspectorExpanded,
+                            bodyHeight: effectiveMobileInspectorBody
                         )
-                    }
-                }
+                        .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
 
-                if appState.debugPhase.isActive {
-                    HStack {
-                        Spacer(minLength: 0)
-                        DebugFloatingControlBar()
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(CeptraTheme.canvasBG)
-                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
-                }
-
-                if let activeTab = appState.activeTab {
-                    ZStack(alignment: .bottomTrailing) {
-                        editorSurface(for: activeTab)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                        if let hudText = appState.zoomHUDText {
-                            HStack(spacing: 6) {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .foregroundStyle(CeptraTheme.accent)
-                                Text(hudText)
-                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                    .monospacedDigit()
-                                    .contentTransition(.numericText())
-                                    .foregroundStyle(CeptraTheme.textPrimary)
-                            }
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 6)
-                            .background(CeptraTheme.panelBG.opacity(0.94), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .strokeBorder(CeptraTheme.borderStrong, lineWidth: 1)
+                        if isMobileInspectorExpanded {
+                            CeptraSplitResizeHandle(
+                                axis: .vertical,
+                                cursorDirection: mobileInspectorCursor,
+                                onDragStart: {
+                                    isResizingMobileInspector = true
+                                    mobileInspectorDragStartHeight = effectiveMobileInspectorBody
+                                },
+                                onDragChanged: { delta in
+                                    mobileInspectorBodyHeight = min(max(mobileInspectorDragStartHeight + delta, minMobileInspectorBody), maxMobileInspectorBody)
+                                },
+                                onDragEnd: {
+                                    isResizingMobileInspector = false
+                                },
+                                onDoubleClick: {
+                                    withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                                        mobileInspectorBodyHeight = 330
+                                    }
+                                }
                             )
-                            .shadow(color: Color.black.opacity(0.24), radius: 10, y: 4)
-                            .padding(14)
-                            .allowsHitTesting(false)
-                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.94, anchor: .bottomTrailing)))
                         }
                     }
-                    .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: appState.zoomHUDText)
-                } else {
-                    emptyEditorPlaceholder
+
+                    if appState.debugPhase.isActive {
+                        HStack {
+                            Spacer(minLength: 0)
+                            DebugFloatingControlBar()
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(CeptraTheme.canvasBG)
+                        .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                    }
+
+                    if let activeTab = appState.activeTab {
+                        ZStack(alignment: .bottomTrailing) {
+                            editorSurface(for: activeTab)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                            if let hudText = appState.zoomHUDText {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "magnifyingglass")
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                        .foregroundStyle(CeptraTheme.accent)
+                                    Text(hudText)
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                        .monospacedDigit()
+                                        .contentTransition(.numericText())
+                                        .foregroundStyle(CeptraTheme.textPrimary)
+                                }
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 6)
+                                .background(CeptraTheme.panelBG.opacity(0.94), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .strokeBorder(CeptraTheme.borderStrong, lineWidth: 1)
+                                )
+                                .shadow(color: Color.black.opacity(0.24), radius: 10, y: 4)
+                                .padding(14)
+                                .allowsHitTesting(false)
+                                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.94, anchor: .bottomTrailing)))
+                            }
+                        }
+                        .animation(CeptraMotion.resolve(CeptraMotion.micro, reduceMotion: reduceMotion), value: appState.zoomHUDText)
+                    } else {
+                        emptyEditorPlaceholder
+                    }
                 }
 
                 if appState.isConsoleVisible {
@@ -1185,6 +1190,10 @@ private struct ToolsControlPopover: View {
                         get: { appState.isMobileStudioVisible },
                         set: { _ in appState.toggleMobileStudio() }
                     ))
+                    moduleSwitchRow("API Client Studio", subtitle: "Postman, Insomnia, OpenAPI, HAR & cURL", shortcut: "⌘⌥I", isOn: Binding(
+                        get: { appState.isAPIStudioVisible },
+                        set: { _ in appState.toggleAPIStudio() }
+                    ))
                 }
 
                 Divider().overlay(CeptraTheme.border)
@@ -1204,6 +1213,10 @@ private struct ToolsControlPopover: View {
 
                 // Quick Editor & Workspace Actions
                 VStack(spacing: 3) {
+                    quickActionRow("Import API Collection / Environment…", icon: "network") {
+                        appState.showingToolsPopover = false
+                        appState.presentImportAPIFilePanel()
+                    }
                     quickActionRow("Connect Mobile Device…", icon: "iphone.and.arrow.forward") {
                         appState.showingToolsPopover = false
                         appState.openMobileDeviceWizard()
@@ -1485,6 +1498,11 @@ private struct BottomModuleStatusStrip: View {
                     dockPill("Mobile", isOn: appState.isMobileStudioVisible) {
                         withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
                             appState.toggleMobileStudio()
+                        }
+                    }
+                    dockPill("API", isOn: appState.isAPIStudioVisible) {
+                        withAnimation(CeptraMotion.resolve(CeptraMotion.panel, reduceMotion: reduceMotion)) {
+                            appState.toggleAPIStudio()
                         }
                     }
                 }

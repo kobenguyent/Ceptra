@@ -241,6 +241,21 @@ final class AppState: ObservableObject {
     @Published var mobilePreviewCartCount: Int = 1
     @Published var mobilePreviewUsername: String = ""
     @Published var mobilePreviewPasswordFilled: Bool = false
+    // API Client Studio (Postman / Insomnia / OpenAPI / HAR / .http / cURL)
+    @Published var isAPIStudioVisible: Bool = false
+    @Published var apiCollections: [APICollection] = []
+    @Published var apiEnvironments: [APIEnvironment] = []
+    @Published var apiActiveEnvironmentID: UUID? = nil
+    @Published var apiSelectedCollectionID: UUID? = nil
+    @Published var apiSelectedRequestID: UUID? = nil
+    @Published var apiLastResult: APIExecutionResult? = nil
+    @Published var apiCollectionRunSummary: APICollectionRunSummary? = nil
+    @Published var apiCollectionRunProgress: (completed: Int, total: Int)? = nil
+    @Published var apiExecutionHistory: [APIExecutionResult] = []
+    @Published var isAPIRunning: Bool = false
+    @Published var apiRunOptions: APIRunOptions = APIRunOptions()
+    var apiHasLoadedStudio: Bool = false
+
     @Published var bannerMessage: String? = nil
     @Published var bannerIsError: Bool = false
     @Published var zoomHUDText: String? = nil
@@ -258,6 +273,8 @@ final class AppState: ObservableObject {
     let ollamaManager = OllamaManager()
     let aiSecretStore: AISecretStore = MacOSKeychainSecretStore()
     let aiConversationStore = AIConversationStore()
+    let apiStudioStore = APIStudioStore()
+    var apiExecutionTask: Task<Void, Never>? = nil
     let mobileDeviceBridge: any MobileDeviceTransport = MobileCLIDeviceBridge()
     var mobileRefreshTask: Task<Void, Never>? = nil
     var mobileUSBMonitorTask: Task<Void, Never>? = nil
@@ -614,6 +631,7 @@ final class AppState: ObservableObject {
         refreshSelectedReplayTrace()
         loadDebugStateForWorkspace(rootPath: scanned.rootURL.path)
         loadAISessionsForWorkspace(rootPath: scanned.rootURL.path)
+        loadAPIStudioForCurrentWorkspace()
         refreshAISkills()
         refreshArtifacts()
 
@@ -771,6 +789,19 @@ final class AppState: ObservableObject {
         run(mode: .playwrightCodegen(url: workspace?.config.baseURL))
     }
 
+    func recordSyntheticAPIReplay(report: TestRunReport, bundle: TimeTravelTraceBundle) {
+        _ = traceStore.save(bundle: bundle)
+        if workspace != nil {
+            runHistory = historyStore.append(report)
+        } else {
+            runHistory.insert(report, at: 0)
+        }
+        selectedReportID = report.id
+        activeReplayTraceBundle = bundle
+        openRightTab(.replay)
+        showBanner("Loaded API collection run into Time-Travel Replay")
+    }
+
     // MARK: - File & Editor Tabs
 
     func openFile(_ file: WorkspaceFile, jumpToLine: Int? = nil) {
@@ -778,6 +809,9 @@ final class AppState: ObservableObject {
             NSWorkspace.shared.open(file.url)
             showBanner("Opened \(file.name) in default macOS app")
             return
+        }
+        if isAPIStudioVisible {
+            isAPIStudioVisible = false
         }
         if let existing = openTabs.first(where: { $0.filePath == file.path }) {
             if activeTabPath != existing.filePath {

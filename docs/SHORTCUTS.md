@@ -14,6 +14,7 @@ Quick reference for every shortcut in **Ceptra**.
 | `⌘S` | Save active file |
 | `⌘⌥S` | Save all modified files |
 | `⌘W` | Close active tab |
+| `⌘⌥W` | Close other tabs |
 | `⌘⇧[` / `⌘⇧]` | Previous / Next open tab |
 | `⌘,` | Open Ceptra Settings |
 
@@ -74,3 +75,6 @@ Quick reference for every shortcut in **Ceptra**.
 | `⌘⌥O` | Toggle Flow Outline |
 | `⌘⌥J` | Toggle Debug & Breakpoints Inspector |
 | `⌘⌥A` | Toggle AI Assistant Inspector |
+| `⌘⌥M` | Toggle Mobilewright Device Studio (Live Mirror & Inspector) |
+| `⌘⌥I` | Toggle API Client Studio (Postman / Insomnia / OpenAPI / HAR / cURL) |
+| `⌘↩` | Send active request (inside API Client Studio) |

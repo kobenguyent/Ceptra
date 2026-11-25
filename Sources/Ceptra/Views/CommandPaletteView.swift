@@ -331,6 +331,42 @@ struct CommandPaletteView: View {
                 iconColor: CeptraTheme.accent,
                 badge: "Reports",
                 action: { appState.showingReportsSheet = true }
+            ),
+            PaletteItem(
+                id: "act-api-studio",
+                title: appState.isAPIStudioVisible ? "Close API Client Studio" : "Open API Client Studio",
+                subtitle: "Import, edit, run & export Postman, Insomnia, OpenAPI, HAR & cURL collections",
+                icon: "network",
+                iconColor: CeptraTheme.cyan,
+                badge: "⌘⌥I",
+                action: { appState.toggleAPIStudio() }
+            ),
+            PaletteItem(
+                id: "act-api-import",
+                title: "Import API Collection or Environment…",
+                subtitle: "Auto-detect Postman v2.1, Insomnia v4, OpenAPI 3.x, HAR 1.2, .http, or .env",
+                icon: "square.and.arrow.down",
+                iconColor: CeptraTheme.success,
+                badge: "API",
+                action: { appState.presentImportAPIFilePanel() }
+            ),
+            PaletteItem(
+                id: "act-api-load-examples",
+                title: "Load Runnable Example API Collections (REST, Auth, GraphQL)",
+                subtitle: "Populate API Studio with live JSONPlaceholder, HTTPBin & GraphQL collections",
+                icon: "sparkles.rectangle.stack",
+                iconColor: CeptraTheme.cyan,
+                badge: "API",
+                action: { appState.loadAllAPIExamples() }
+            ),
+            PaletteItem(
+                id: "act-api-sample-files",
+                title: "Generate Sample Postman / Insomnia / OpenAPI / .http Files…",
+                subtitle: "Create ready-to-import example files in your workspace or chosen folder",
+                icon: "doc.badge.plus",
+                iconColor: CeptraTheme.accent,
+                badge: "API",
+                action: { appState.generateSampleAPIImportFilesPanel() }
             )
         ])
 

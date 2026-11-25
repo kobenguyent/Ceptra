@@ -783,6 +783,12 @@ private struct ProjectTreeNodeView: View {
                 }
                 Divider()
             }
+            if ["json", "http", "rest", "env"].contains(file.fileExtension.lowercased()) || file.name.lowercased().hasPrefix(".env") {
+                Button("Import into API Studio") {
+                    appState.importAPIFiles(urls: [file.url])
+                }
+                Divider()
+            }
             Button("Copy Relative Path") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(file.relativePath, forType: .string)

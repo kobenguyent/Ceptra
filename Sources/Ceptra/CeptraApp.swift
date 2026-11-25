@@ -84,6 +84,25 @@ struct CeptraApp: App {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(appState.workspace == nil)
 
+                Button("Import API Collection / Environment…") {
+                    appState.presentImportAPIFilePanel()
+                }
+
+                Menu("Create Example API Collections") {
+                    ForEach(APIStudioStore.ExampleTemplate.allCases) { tpl in
+                        Button(tpl.title) {
+                            appState.loadAPIExample(tpl)
+                        }
+                    }
+                    Divider()
+                    Button("Load All 3 Examples into API Studio") {
+                        appState.loadAllAPIExamples()
+                    }
+                    Button("Generate Sample Import Files (Postman / Insomnia / OpenAPI / .http)…") {
+                        appState.generateSampleAPIImportFilesPanel()
+                    }
+                }
+
                 Divider()
 
                 Button("Save") {
@@ -513,6 +532,12 @@ struct CeptraApp: App {
                     appState.toggleMobileStudio()
                 }
                 .keyboardShortcut("m", modifiers: [.command, .option])
+                .disabled(appState.workspace == nil)
+
+                Button(appState.isAPIStudioVisible ? "Hide API Client Studio" : "Show API Client Studio") {
+                    appState.toggleAPIStudio()
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option])
                 .disabled(appState.workspace == nil)
 
                 Button("Connect Mobile Device…") {

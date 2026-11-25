@@ -5,7 +5,7 @@
 <h1 align="center">Ceptra</h1>
 
 <p align="center">
-  <strong>Native macOS IDE for CodeceptJS 4.x, Playwright Test (TS/JS &amp; Python) &amp; Mobilewright.</strong><br/>
+  <strong>Native macOS IDE for CodeceptJS 4.x, Playwright (TS/JS &amp; Python), Mobilewright &amp; API Collections.</strong><br/>
   Built in SwiftUI &amp; AppKit — zero Electron overhead, zero third-party Swift dependencies.
 </p>
 
@@ -17,6 +17,7 @@
   <img src="https://img.shields.io/badge/CodeceptJS-4.x-f59e0b?style=flat-square&logoColor=white" alt="CodeceptJS 4.x" />
   <img src="https://img.shields.io/badge/Playwright-TS%20%7C%20JS%20%7C%20Python-2ead33?style=flat-square&logoColor=white" alt="Playwright Test & Python" />
   <img src="https://img.shields.io/badge/Mobilewright-iOS%20%26%20Android-0ea5e9?style=flat-square&logoColor=white" alt="Mobilewright iOS & Android" />
+  <img src="https://img.shields.io/badge/API%20Studio-Postman%20%7C%20Insomnia%20%7C%20OpenAPI-06b6d4?style=flat-square&logoColor=white" alt="API Client Studio" />
   <img src="https://img.shields.io/badge/Swift-5.9%2B%20Native-f97316?style=flat-square&logo=swift&logoColor=white" alt="Pure Swift" />
   <img src="https://img.shields.io/badge/Runtime-Node.js%20%7C%20Bun%20%7C%20Python-10b981?style=flat-square&logoColor=white" alt="Node.js, Bun & Python" />
   <a href="LICENSE">
@@ -40,16 +41,17 @@
 
 ## Why Ceptra?
 
-Running **CodeceptJS 4.x**, **Playwright Test (`@playwright/test` &amp; `pytest-playwright`)**, or **Mobilewright (`@codeceptjs/mobilewright`)** across TypeScript, Python, ESM, mobile devices, and REST/GraphQL suites usually means juggling an editor, Appium/simulators, terminal tabs, ad-hoc logs, and config flags. **Ceptra** brings all of them into one native macOS workspace:
+Running **CodeceptJS 4.x**, **Playwright Test (`@playwright/test` &amp; `pytest-playwright`)**, **Mobilewright (`@codeceptjs/mobilewright`)**, and REST/GraphQL API collections across TypeScript, Python, ESM, and mobile devices usually means juggling an IDE, Postman/Insomnia, Appium/simulators, terminal tabs, and config flags. **Ceptra** brings all of them into one native macOS workspace:
 
 | Challenge | How Ceptra Solves It |
 | --- | --- |
-| **Slow, memory-hungry editors** | Native **SwiftUI + AppKit** (`TextKit 1`) — fast startup, crisp typography, smooth pinch &amp; scroll zoom, tab context menus, zero Electron footprint. |
-| **First-class CodeceptJS &amp; Playwright (TS/JS + Python)** | Auto-detects `codecept.conf.*`, `playwright.config.{ts,js,mjs,cjs}`, and Python `pytest.ini`/`pyproject.toml` (`uv`, `poetry`, `.venv`), embeds **Playwright UI Mode** &amp; `@codeceptjs/ui`, plus **Playwright Codegen**, `--project`/`--workers`/`--headed`/`--trace` controls, and framework-aware IntelliSense. |
+| **Slow, memory-hungry editors** | Native **SwiftUI + AppKit** (`TextKit 1`) — fast startup, crisp typography, smooth pinch &amp; scroll zoom, full tab context menus, anchored multi-tab switcher with duplicate-filename hints, and zero Electron footprint. |
+| **Switching to Postman or Insomnia** | **Built-in API Client Studio** (`⌘⌥I`) — clean-room import, edit, run, chain, and export collections &amp; environments across **Postman v2.1**, **Insomnia v4**, **OpenAPI 3.x**, **HAR 1.2**, **`.http`**, **`.env`**, and **cURL** — plus 1-click automated test generation &amp; Replay HTML export. |
+| **First-class CodeceptJS &amp; Playwright (TS/JS + Python)** | Auto-detects `codecept.conf.*`, `playwright.config.{ts,js,mjs,cjs}`, and Python `pytest.ini`/`pyproject.toml` (`uv`, `poetry`, `.venv`), scaffolds starter workspaces for all three, embeds **Playwright UI Mode** &amp; `@codeceptjs/ui`, plus **Playwright Codegen**, callback-arg IntelliSense, and adaptive terminal commands. |
 | **Native iOS &amp; Android mobile testing** | **Mobilewright Device Studio** (`⌘⌥M`) — guided 4-step Connect Device Wizard, live phone mirror sidebar with **Touch &amp; Swipe** / **Inspect** / **Wireframe** modes, exact hardware viewport calibration, ranked zero-CSS/XPath locators, and live step recording without an Appium server. |
-| **Blind test failures** | **Zero-config Web, API &amp; Mobile Time-Travel Replay** — automatic step screenshots, DOM/view-tree snapshots, HTTP/fetch capture, Playwright step/attachment capture, JSON tree &amp; timing waterfall, exported as a single offline HTML file. |
+| **Blind test failures** | **Zero-config Web, API &amp; Mobile Time-Travel Replay** — automatic step screenshots, full delta-reconstructed DOM/view-tree snapshots, HTTP/fetch &amp; `APIRequestContext` capture (including Python `pytest-playwright`), JSON tree &amp; timing waterfall, exported as a single offline HTML file. |
 | **Painful debugging** | **Built-in CDP Step-Through Debugger** (`⌘⇧B`) with gutter breakpoints, conditional breakpoints, logpoints, locals, watch expressions, `PWDEBUG=1` Inspector support, and CodeceptJS's interactive `pause()` shell. |
-| **Monorepo config mistakes** | **Automatic per-file `-c` config resolution** — detects every `codecept.conf.*`, `playwright.config.*`, and Python test root even in mixed monorepos, picks the owning config &amp; toolchain automatically, and switches between **Node.js, Bun, &amp; Python** or **Built-in &amp; System Console** in one click. |
+| **Monorepo config mistakes** | **Automatic per-file config &amp; runtime resolution** — detects every `codecept.conf.*`, `playwright.config.*`, and Python test root in polyglot monorepos, picks the owning config &amp; toolchain automatically, adapts terminal quick commands to `uv`/`poetry`/`.venv`/`npm`/`pnpm`/`yarn`/`bun`, and switches between Built-in &amp; System Console in one click. |
 | **Authoring &amp; fixing tests** | **Multi-Provider AI Assistant &amp; `/commands`** (`⌘⌥A`) — framework-aware prompts for CodeceptJS, Playwright TS/JS, Playwright Python, and Mobilewright with **Local Ollama**, Cloud APIs, or local CLI agents, multimodal attachments, portable `SKILL.md` skills, and 3-tier workspace permission controls. |
 | **Sharing test snippets** | **Code Block Screenshots** (`⌘⌥P` / `⌘⌥⇧P`) — 1-step 2×/3× Retina PNG snapshots of any selection or enclosing `test()` / `Scenario()` block with gradients, themes, and macOS chrome. |
 
@@ -57,11 +59,11 @@ Running **CodeceptJS 4.x**, **Playwright Test (`@playwright/test` &amp; `pytest-
 
 ## Feature Highlights
 
-### 1. Zero-Config Web &amp; API Time-Travel Replay
-Run any Web or API test and scrub backward and forward through every step — directly in the embedded **Replay Inspector** (`⌘⌥T`) or in a **self-contained offline HTML report** ready for CI artifacts, Jira tickets, or Slack.
+### 1. Zero-Config Web, API &amp; Playwright Python Time-Travel Replay
+Run any Web, API, or Mobile test across **CodeceptJS**, **Playwright (TS/JS)**, or **Playwright Python (`pytest-playwright`)** and scrub backward and forward through every step — directly in the embedded **Replay Inspector** (`⌘⌥T`) or in a **self-contained offline HTML report** ready for CI artifacts, Jira tickets, or Slack.
 
-- **API Replay**: Automatically captures `REST`, `GraphQL`, `node:http`/`https`, `fetch`, `axios`, and `flex-rest` traffic (including `BeforeSuite` setup and `br`/`gzip` decompression) with secret header redaction, collapsible **JSON Tree** with click-to-copy JSONPath, **DNS/TCP/TLS/TTFB/Download timing waterfall**, assertion cards, structural JSON diff, one-click **Copy as `cURL` / `fetch()` / CodeceptJS**, and inline **Live Replay**.
-- **Web Replay**: Captures **Before &amp; After screenshots** with curtain diff &amp; target selector reticles, **DOM snapshots**, correlated browser network requests, and console/page errors.
+- **API Replay**: Automatically captures `REST`, `GraphQL`, `node:http`/`https`, `fetch`, `axios`, `flex-rest`, Playwright `request`, and Playwright Python `APIRequestContext` + `expect(response).to_be_ok()` traffic (including `BeforeSuite` setup and `br`/`gzip` decompression) with secret header redaction, collapsible **JSON Tree** with click-to-copy JSONPath, **DNS/TCP/TLS/TTFB/Download timing waterfall**, assertion cards, structural JSON diff, one-click **Copy as `cURL` / `fetch()` / CodeceptJS / Playwright (TS &amp; Py)**, and inline **Live Replay**.
+- **Web Replay**: Captures **Before &amp; After screenshots** with curtain diff &amp; target selector reticles, full **DOM snapshots** (including Playwright 1.50+/1.60 incremental delta DOM reconstruction and teardown `trace.zip` hydration), correlated browser network requests, and console/page errors — automatically distinguishing Web, API, and Hybrid scenarios in mixed suites.
 
 <p align="center">
   <img src="docs/images/feature-api-replay.png" alt="Ceptra Interactive API Replay HTML Report with JSON Tree, Timing Waterfall and Copy cURL" width="100%" />
@@ -73,7 +75,18 @@ Run any Web or API test and scrub backward and forward through every step — di
 
 ---
 
-### 2. Mobilewright Device Studio (`⌘⌥M`) — Live Mirror &amp; Appium-Style Inspector
+### 2. Built-in API Client Studio (`⌘⌥I`) — Postman, Insomnia, OpenAPI, HAR &amp; cURL
+Import, edit, run, chain, and export API collections and environments right inside Ceptra — **zero third-party SDKs, clean-room MIT-compatible Swift implementation**:
+
+- **Auto-Detect Import &amp; Multi-Format Export**: Import **Postman Collection v2.1/v2.0**, **Postman Environments/Globals**, **Insomnia v4 JSON** (collections, folders &amp; base/sub environments in one file), **OpenAPI 3.x / Swagger 2.0 JSON**, **HAR 1.2**, **`.http`/`.rest`**, **`.env`**, and **cURL** (or right-click any matching file in the Explorer → **Import into API Studio**). Export back to **Postman v2.1** (with synthesized `pm.test` scripts), **Insomnia v4**, **`.http`**, **`.env`**, or Ceptra JSON.
+- **Full Request Editor &amp; Variable Chaining**: Edit Params, Headers, Auth inheritance (**Bearer**, **Basic**, **API Key**), Body (**JSON** with formatter, **Raw**, **Form URL-Encoded**, **Multipart File Upload**, **GraphQL Query + Variables**), declarative **Assertions** (Status, Latency, Headers, JSONPath, Regex), and **Variable Extractors** (`$.token` → `{{authToken}}`) with `{{var}}` and dynamic `{{$guid}}`/`{{$isoTimestamp}}` resolution.
+- **Secret-Safe Environments**: Manage multiple environments with separate shared `Initial Value` vs local `Current Value`, secret masking &amp; reveal toggle, and automatic **secret redaction on export** by default.
+- **Collection Runner → Replay HTML &amp; Automated Tests**: Run entire collections or folders sequentially with real DNS/TCP/TLS/TTFB/Download timings and cookie inspection, open runs directly in **Time-Travel Replay** or export offline **Replay HTML**, and generate **cURL / CodeceptJS / Playwright TS / Playwright Python** snippets or complete automated test suite files in one click.
+- **Instant Runnable Examples**: Load **3 live example collections** (*REST CRUD &amp; Variable Chaining*, *HTTPBin Auth/Forms/Cookies*, *Countries GraphQL*) directly into API Studio, or generate a full `api-examples/` folder of ready-to-import Postman, Insomnia, OpenAPI, `.http`, and `.env` files to test every importer/exporter immediately.
+
+---
+
+### 3. Mobilewright Device Studio (`⌘⌥M`) — Live Mirror &amp; Appium-Style Inspector
 Test native **iOS** and **Android** apps with [`@codeceptjs/mobilewright`](https://mobilewright.dev) directly inside Ceptra — no Appium server required:
 
 - **Guided 4-Step Connect Device Wizard**: Categorized **Virtual Devices** (**iOS Simulator** — free, zero signing; **Android Emulator**) vs **Physical Devices** (**Real Android USB**, **Real iPhone / iPad**), built-in `mobilewright doctor` with 1-click prerequisite installs, searchable `iPhone` / `iPad` / `All` simulator filters, and automatic `.mobileprovision` wildcard profile validation.
@@ -90,7 +103,7 @@ Test native **iOS** and **Android** apps with [`@codeceptjs/mobilewright`](https
 
 ---
 
-### 3. Interactive Step-Through CDP Debugger (`⌘⇧B`)
+### 4. Interactive Step-Through CDP Debugger (`⌘⇧B`)
 Debug CodeceptJS tests line-by-line in the editor with Chrome DevTools Protocol integration and source-mapped TypeScript support:
 
 - Toggle breakpoints in the gutter or right-click to add **Conditional Breakpoints** and non-pausing **Logpoints**.
@@ -103,7 +116,7 @@ Debug CodeceptJS tests line-by-line in the editor with Chrome DevTools Protocol 
 
 ---
 
-### 4. Native AI Assistant, Universal `/commands` &amp; `SKILL.md` (`⌘⌥A`)
+### 5. Native AI Assistant, Universal `/commands` &amp; `SKILL.md` (`⌘⌥A`)
 Write scenarios, harden flaky locators, and diagnose Replay traces using local models, cloud APIs, or local CLI tools:
 
 - **Local Ollama, Cloud APIs &amp; CLI Agents**:
@@ -122,7 +135,7 @@ Write scenarios, harden flaky locators, and diagnose Replay traces using local m
 
 ---
 
-### 5. Code Block Screenshots (`⌘⌥P` / `⌘⌥⇧P`)
+### 6. Code Block Screenshots (`⌘⌥P` / `⌘⌥⇧P`)
 Turn any selected lines — or the enclosing `Scenario()`, `Feature`, function, or Gherkin block at your caret — into a **2× / 3× Retina PNG** inside the IDE:
 
 - **1-Step Quick Copy (`⌘⌥⇧P`)** or right-click → **Quick Copy Screenshot** copies the PNG straight to your macOS clipboard (`⌘V` into Slack, GitHub, Notion, or Keynote).
@@ -138,12 +151,12 @@ Turn any selected lines — or the enclosing `Scenario()`, `Feature`, function, 
 
 ---
 
-### 6. Adaptive Light &amp; Dark Themes · Multi-Config Monorepo Intelligence
+### 7. Adaptive Light &amp; Dark Themes · Polyglot Monorepos &amp; Adaptive Terminal
 Supports **Obsidian Dark**, **Paper Light**, and **Match macOS**:
 
-- **Multi-Config Monorepo Support**: Automatically discovers every `codecept.conf.*` across nested packages (`tests/web/`, `tests/api/`, `configs/`), resolves the owning `-c` config per file on Run/Debug/Dry-Run, and auto-syncs the status bar helper (`Playwright` ↔ `REST`) and IntelliSense as you switch tabs.
-- **Node.js &amp; Bun Runtime Switcher**: Toggle between Node.js (with zero-config ESM/CJS &amp; TypeScript worker compatibility) and Bun in one click.
-- **Built-in Console or macOS System Console**: Stream tests inside Ceptra's drawer or launch natively in **Terminal.app**, **iTerm**, **Ghostty**, **Warp**, **Kitty**, **WezTerm**, or **Alacritty** (`⌘⇧T`).
+- **Polyglot Multi-Config Monorepo Support**: Automatically discovers every `codecept.conf.*`, `playwright.config.*`, and Python `pytest.ini`/`pyproject.toml` across nested packages (`tests/web/`, `tests/api/`, `configs/`), resolves the owning config &amp; runner per file on Run/Debug/Dry-Run, and auto-syncs the status bar helper (`Playwright` ↔ `Playwright (Py)` ↔ `REST`) and IntelliSense as you switch tabs.
+- **Adaptive Runtime-Detected Terminal Commands**: The Terminal drawer automatically detects your active runtime (`uv`, `poetry`, `.venv`, `pip`, `npm`, `pnpm`, `yarn`, `bun`) and adapts pre-suggested quick commands, dependency installs (including automatic `.venv` bootstrapping for Python), and framework CLI helpers accordingly.
+- **Node.js, Bun &amp; Python Switcher + System Console**: Toggle between Node.js (with zero-config ESM/CJS &amp; TypeScript worker compatibility) and Bun in one click, or launch natively in **Terminal.app**, **iTerm**, **Ghostty**, **Warp**, **Kitty**, **WezTerm**, or **Alacritty** (`⌘⇧T`).
 
 <p align="center">
   <img src="docs/images/studio-light.png" alt="Ceptra Paper Light theme with auto-detected REST API config and embedded API Replay" width="100%" />
@@ -151,13 +164,14 @@ Supports **Obsidian Dark**, **Paper Light**, and **Match macOS**:
 
 ---
 
-### 7. Editor &amp; Runner Craft (CodeceptJS, Playwright TS/JS &amp; Python)
+### 8. Editor &amp; Runner Craft (CodeceptJS, Playwright TS/JS &amp; Python)
 - **Gutter Scenario &amp; Test Play Buttons**: Click any `Scenario()`, `test()`, or Python `def test_*` in the gutter to run it immediately and see live pass/fail badges &amp; durations.
-- **Tab Context Menu**: Right-click any editor tab to close, close others, close to the right, close saved, copy path, or reveal in Finder.
+- **Many-Files Tab Context Menu &amp; Switcher**: Right-click any tab (or the empty tab rail) to **Close**, **Close Others (`⌘⌥W`)**, **Close Tabs to the Right / Left**, **Close Saved Tabs**, **Close All Tabs**, **Reopen Closed Tab**, **Save**, **Run/Debug Test File**, **Copy Path**, or **Reveal in Explorer / Finder**. Includes an anchored **Open Tabs Switcher** pill when multiple files are open and automatic parent-folder disambiguation for duplicate filenames.
+- **Starter Workspace Scaffolding**: Create ready-to-run **Playwright Test (TypeScript)**, **Playwright Python (`pytest-playwright`)**, or **CodeceptJS 4.x** workspaces directly from the Welcome screen, File menu, top-bar Workspace switcher, or Command Palette (`⌘K`).
 - **PyCharm-Style Symbol Navigation**: `⌘+Click` / `⌃+Click` / `F12` jumps across imports, `require()`, TypeScript path aliases, barrel re-exports, `include` Page Objects, custom `I.*` steps, Gherkin step definitions, and usages — with Back/Forward history (`⌃-` / `⌃⇧-`).
-- **Smart IntelliSense &amp; Code Folding**: Auto-complete on `.`, `@`, `/` or `Ctrl+Space` for `I.*` actions, `steps.d.ts`, Page Objects, and `@tags`; non-destructive folding (`⌘⌥[` / `⌘⌥]`) for JS/TS/JSON/Gherkin/YAML/Markdown/XML.
-- **Parallel Execution**: **`run-workers`** (`⌘⇧W` — `--by pool|test|suite`, `--serial`, `--last-failed`) and **`run-multiple`** (`⌘⇧M` — parsed `suite:browser` targets).
-- **Embedded `@codeceptjs/ui` Live (`⌘⌥U`)**: Launch and inspect CodeceptUI on loopback (`127.0.0.1`) inside the right inspector.
+- **Smart Framework-Aware IntelliSense &amp; Code Folding**: Auto-complete on `.`, `@`, `/` or `Ctrl+Space` for `I.*` actions, `steps.d.ts`, Playwright callback fixture arguments (`async ({ page, request })` &amp; `def test_(page: Page):`), snake_case Python Playwright APIs, Page Objects, and `@tags`; non-destructive folding (`⌘⌥[` / `⌘⌥]`) for JS/TS/Python/JSON/Gherkin/YAML/Markdown/XML.
+- **Parallel Execution**: **`run-workers`** (`⌘⇧W` — `--by pool|test|suite`, `--serial`, `--last-failed`, Playwright `--workers`, `pytest -n`) and **`run-multiple`** (`⌘⇧M` — parsed `suite:browser` / Playwright project targets).
+- **Embedded `@codeceptjs/ui` &amp; Playwright UI Live (`⌘⌥U`)**: Launch and inspect CodeceptUI or Playwright UI on loopback (`127.0.0.1`) inside the right inspector.
 - **Command Palette (`⌘K` / `⌘P`) &amp; Smooth Zoom**: Fuzzy-jump to any file, scenario, or action; pinch or `⌘+`/`⌘−`/`⌘0` to zoom smoothly with scroll anchoring.
 
 ---
@@ -188,9 +202,9 @@ cd Ceptra
   ```
 - Build distributable `.dmg`, `.zip`, and `SHA256SUMS.txt` locally:
   ```bash
-  ./scripts/package-app.sh --version 1.16.0 --arch native
+  ./scripts/package-app.sh --version 1.17.1 --arch native
   # or universal (arm64 + x86_64):
-  ./scripts/package-app.sh --version 1.16.0 --arch universal
+  ./scripts/package-app.sh --version 1.17.1 --arch universal
   ```
 - Run the Swift unit test suite or the offline Mobilewright demo:
   ```bash
@@ -219,7 +233,9 @@ cd Ceptra
 | `⌘⇧B` | Debug current test file (CDP breakpoints &amp; stepping) |
 | `⌘⇧W` / `⌘⇧M` | Run parallel workers (`run-workers`) / Run multiple suites (`run-multiple`) |
 | `⌘⌥A` | Toggle AI Assistant Inspector (`/commands` &amp; `SKILL.md`) |
+| `⌘⌥I` / `⌘↩` | Toggle API Client Studio / Send active API request |
 | `⌘⌥M` | Toggle Mobilewright Device Studio (Live Mirror &amp; Inspector) |
+| `⌘⌥W` | Close other editor tabs |
 | `⌘⌥P` / `⌘⌥⇧P` | Open Code Screenshot Studio / 1-Step Quick Copy Retina PNG |
 | `⌘⌥T` / `⌘⌥U` / `⌘⌥O` | Toggle Replay Inspector / CodeceptUI Live / Flow Outline |
 | `⌘+Click` / `F12` | Go to declaration, import target, `I.*` step, or usages |
